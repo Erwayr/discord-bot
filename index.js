@@ -29,6 +29,9 @@ client.on("raw", async (packet) => {
 
   // DM uniquement (pas de guild_id)
   if (!data.guild_id) {
+    // 🔒 Ignorer les messages envoyés par le bot lui-même
+    if (data.author.id === client.user.id) return;
+
     try {
       const user = await client.users.fetch(data.author.id);
       const content = data.content;
