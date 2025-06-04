@@ -6,18 +6,9 @@ const {
 } = require("discord.js");
 require("dotenv").config();
 
-const firebaseConfig = {
-  apiKey: "AIzaSyCTRl3JbgCVU079qCunBKdYfHk6Pnjppjk",
-  authDomain: "cadeau-du-moi.firebaseapp.com",
-  projectId: "cadeau-du-moi",
-  storageBucket: "cadeau-du-moi.firebasestorage.app",
-  messagingSenderId: "1078724131061",
-  appId: "1:1078724131061:web:115d0e779c4cbdb8be6dbc",
-  measurementId: "G-R3FLZZXMWK",
-};
-
 const admin = require("firebase-admin");
-admin.initializeApp({ credential: admin.credential.cert(firebaseConfig) });
+const svc = JSON.parse(process.env.FIREBASE_KEY_JSON); // variable d'env contenant la clé service
+admin.initializeApp({ credential: admin.credential.cert(svc) });
 const db = admin.firestore();
 
 const LOG_CHANNEL_ID = "1377870229153120257";
