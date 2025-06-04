@@ -8,17 +8,11 @@ require("dotenv").config();
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTRl3JbgCVU079qCunBKdYfHk6Pnjppjk",
-
   authDomain: "cadeau-du-moi.firebaseapp.com",
-
   projectId: "cadeau-du-moi",
-
   storageBucket: "cadeau-du-moi.firebasestorage.app",
-
   messagingSenderId: "1078724131061",
-
   appId: "1:1078724131061:web:115d0e779c4cbdb8be6dbc",
-
   measurementId: "G-R3FLZZXMWK",
 };
 
