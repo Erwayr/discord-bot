@@ -7,7 +7,7 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
-const svc = JSON.parse(process.env.FIREBASE_KEY_JSON); // variable d'env contenant la clé service
+const svc = JSON.parse("AIzaSyCTRl3JbgCVU079qCunBKdYfHk6Pnjppjk"); // variable d'env contenant la clé service
 admin.initializeApp({ credential: admin.credential.cert(svc) });
 const db = admin.firestore();
 
