@@ -6,11 +6,17 @@ const {
 } = require("discord.js");
 require("dotenv").config();
 
+const admin = require("firebase-admin");
+const svc = JSON.parse(process.env.FIREBASE_KEY_JSON); // variable d'env contenant la clé service
+admin.initializeApp({ credential: admin.credential.cert(svc) });
+const db = admin.firestore();
+
 const LOG_CHANNEL_ID = "1377870229153120257";
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers, // 👈 à ajouter
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, // << AJOUT OBLIGATOIRE !
     GatewayIntentBits.MessageContent,
@@ -49,6 +55,35 @@ client.on("raw", async (packet) => {
     } catch (err) {
       console.error("❌ Erreur lors de l'envoi dans le salon :", err);
     }
+  }
+});
+
+client.on(Events.GuildMemberAdd, async (member) => {
+  try {
+    const pseudo = member.user.username.toLowerCase();
+    const discord_id = member.user.id;
+
+    const docRef = db.collection("NewUser").doc(pseudo);
+    const docSnap = await docRef.get();
+
+    if (!docSnap.exists) {
+      await docRef.set({
+        discord_id,
+        pseudo,
+        joinedAt: new Date().toISOString(),
+      });
+
+      console.log(`👤 Nouveau membre enregistré : ${pseudo} (${discord_id})`);
+
+      // Envoie un message de bienvenue en DM
+      await member.send(
+        `👋 Bienvenue sur le serveur, ${member.user.username} ! 🎉`
+      );
+    } else {
+      console.log(`ℹ️ ${pseudo} est déjà enregistré.`);
+    }
+  } catch (err) {
+    console.error("❌ Erreur lors du traitement d'un nouveau membre :", err);
   }
 });
 
