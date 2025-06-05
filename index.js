@@ -88,4 +88,4 @@ client.on(Events.GuildMemberAdd, async (member) => {
   });
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_BOT_TOKEN);
