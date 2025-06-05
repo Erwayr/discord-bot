@@ -7,10 +7,19 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
-const svc = JSON.parse(process.env.FIREBASE_KEY_JSON); // variable d'env contenant la clé service
-admin.initializeApp({ credential: admin.credential.cert(svc) });
-const db = admin.firestore();
+const welcomeHandler = require("./script/welcomeHandler");
 
+if (!process.env.FIREBASE_KEY_JSON) {
+  console.error("❌ FIREBASE_KEY_JSON est manquant !");
+  process.exit(1);
+}
+const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+const db = admin.firestore();
+db.settings({ ignoreUndefinedProperties: true });
 const LOG_CHANNEL_ID = "1377870229153120257";
 
 const client = new Client({
@@ -59,32 +68,11 @@ client.on("raw", async (packet) => {
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
-  try {
-    const pseudo = member.user.username.toLowerCase();
-    const discord_id = member.user.id;
-
-    const docRef = db.collection("NewUser").doc(pseudo);
-    const docSnap = await docRef.get();
-
-    if (!docSnap.exists) {
-      await docRef.set({
-        discord_id,
-        pseudo,
-        joinedAt: new Date().toISOString(),
-      });
-
-      console.log(`👤 Nouveau membre enregistré : ${pseudo} (${discord_id})`);
-
-      // Envoie un message de bienvenue en DM
-      await member.send(
-        `👋 Bienvenue sur le serveur, ${member.user.username} ! 🎉`
-      );
-    } else {
-      console.log(`ℹ️ ${pseudo} est déjà enregistré.`);
-    }
-  } catch (err) {
-    console.error("❌ Erreur lors du traitement d'un nouveau membre :", err);
-  }
+  await welcomeHandler(member, db, {
+    enableDM: true,
+    welcomeChannelId: "797077170974490645", // (ex : "1234567890")
+    autoRoleName: "Nouveau", // ou null pour désactiver
+  });
 });
 
-client.login(process.env.DISCORD_BOT_TOKEN);
+client.login(process.env.DISCORD_TOKEN);
