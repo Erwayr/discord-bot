@@ -1,3 +1,4 @@
+console.log("🟢 Démarrage du bot...");
 const {
   Client,
   GatewayIntentBits,
@@ -9,10 +10,22 @@ require("dotenv").config();
 const admin = require("firebase-admin");
 const welcomeHandler = require("./script/welcomeHandler");
 
-if (!process.env.FIREBASE_KEY_JSON) {
-  console.error("❌ FIREBASE_KEY_JSON est manquant !");
-  process.exit(1);
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+console.log("Clé JSON : ", process.env.FIREBASE_KEY_JSON);
+try {
+  const key = JSON.parse(process.env.FIREBASE_KEY_JSON);
+  console.log("✅ Clé Firebase parsée !");
+} catch (e) {
+  console.error("❌ Erreur de parsing FIREBASE_KEY_JSON :", e);
 }
+
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
