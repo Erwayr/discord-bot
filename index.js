@@ -26,9 +26,8 @@ try {
   console.error("❌ Erreur de parsing FIREBASE_KEY_JSON :", e);
 }
 
-const serviceAccount = JSON.parse(process.env.FIREBASE_KEY_JSON);
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert(key),
 });
 
 const db = admin.firestore();
