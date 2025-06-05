@@ -17,10 +17,11 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
 });
+let key;
 
 console.log("Clé JSON : ", process.env.FIREBASE_KEY_JSON);
 try {
-  const key = JSON.parse(process.env.FIREBASE_KEY_JSON);
+  key = JSON.parse(process.env.FIREBASE_KEY_JSON);
   console.log("✅ Clé Firebase parsée !");
 } catch (e) {
   console.error("❌ Erreur de parsing FIREBASE_KEY_JSON :", e);
