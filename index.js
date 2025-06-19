@@ -9,6 +9,7 @@ require("dotenv").config();
 
 const admin = require("firebase-admin");
 const welcomeHandler = require("./script/welcomeHandler");
+const rankHandler = require("./script/rankHandler");
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
@@ -86,6 +87,14 @@ client.on(Events.GuildMemberAdd, async (member) => {
     welcomeChannelId: "797077170974490645", // (ex : "1234567890")
     autoRoleName: "Nouveau", // ou null pour désactiver
   });
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  if (!message.guild || message.author.bot) return;
+
+  if (message.content.trim() === "!rank") {
+    await rankHandler(message, db);
+  }
 });
 
 client.login(process.env.DISCORD_BOT_TOKEN);
