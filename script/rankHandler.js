@@ -51,7 +51,8 @@ module.exports = async function rankHandler(message, db) {
           name: "🃏 Cartes possédées",
           value: `${ownedCount} / ${totalCount}`,
           inline: true,
-        }
+        },
+        { name: "🥇 Lotteries gagnées", value: `${lotteriesWon}`, inline: true }
       )
       .setTimestamp();
 
