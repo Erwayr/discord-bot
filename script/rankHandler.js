@@ -53,8 +53,7 @@ module.exports = async function rankHandler(message, db) {
           inline: true,
         },
         { name: "🥇 Lotteries gagnées", value: `${lotteriesWon}`, inline: true }
-      )
-      .setTimestamp();
+      );
 
     await message.reply({ embeds: [embed] });
   } catch (err) {
