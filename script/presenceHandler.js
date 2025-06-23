@@ -21,9 +21,12 @@ async function presenceHandler(oldPresence, newPresence, db) {
   if (!playing) return;
 
   const discordId = newPresence.userId;
-  const userRef = db.collection("followers_all_time").doc(discordId);
-  const snap = await userRef.get();
-  if (!snap.exists) return; // pas un abonné → on stop
+  const querySnap = await colRef.where("discord_id", "==", discordId).get();
+  if (querySnap.empty) return; // pas trouvé dans tes abonnés
+
+  // On prend le premier document (idéalement, il n'y en a qu'un)
+  const userDoc = querySnap.docs[0];
+  const userRef = userDoc.ref;
 
   // 3️⃣ Lecture de l'historique actuel
   const data = snap.data();
