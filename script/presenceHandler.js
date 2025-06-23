@@ -30,7 +30,7 @@ async function presenceHandler(oldPresence, newPresence, db) {
   const userRef = userDoc.ref;
 
   // 3️⃣ Lecture de l'historique actuel
-  const data = snap.data();
+  const data = userDoc.data();
   const gamesHistory = Array.isArray(data.games_history)
     ? data.games_history
     : [];
