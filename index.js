@@ -83,7 +83,7 @@ client.once(Events.ClientReady, async () => {
 
         // 2) envoie la notif pour chacune
         const collectionURL =
-          "https://erwayr.github.io/ErwayrWebSite/collection.html";
+          "https://erwayr.github.io/ErwayrWebSite/index.html";
         const collectionLink = `[votre collection](${collectionURL})`;
 
         for (const card of newCards) {
