@@ -21,6 +21,7 @@ async function presenceHandler(oldPresence, newPresence, db) {
   if (!playing) return;
 
   const discordId = newPresence.userId;
+  const colRef = db.collection("followers_all_time");
   const querySnap = await colRef.where("discord_id", "==", discordId).get();
   if (querySnap.empty) return; // pas trouvé dans tes abonnés
 
