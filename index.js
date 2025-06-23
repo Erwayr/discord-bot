@@ -112,18 +112,6 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
     (act) => act.type === ActivityType.Playing
   );
   if (!playing) return;
-
-  try {
-    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
-    if (logChannel && logChannel.isTextBased()) {
-      const now = Math.floor(Date.now() / 1000);
-      await logChannel.send(
-        `🎮 **Présence** de ${newP.user.tag} à <t:${now}:F> : ${playing.name}`
-      );
-    }
-  } catch (err) {
-    console.error("❌ Impossible d'envoyer le log de présence :", err);
-  }
 });
 
 client.login(process.env.DISCORD_BOT_TOKEN);
