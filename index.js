@@ -3,6 +3,7 @@ const {
   Client,
   GatewayIntentBits,
   ChannelType,
+  ActivityType,
   Events,
 } = require("discord.js");
 require("dotenv").config();
@@ -99,8 +100,28 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-client.on(Events.PresenceUpdate, (oldP, newP) =>
-  presenceHandler(oldP, newP, db)
-);
+client.on(Events.PresenceUpdate, async (oldP, newP) => {
+  // 1️⃣ Mise à jour Firestore
+  await presenceHandler(oldP, newP, db);
+
+  // 2️⃣ Envoi du log dans le salon
+  // On ne loggue que si l'utilisateur a bien une activité "PLAYING"
+  const playing = newPresence.activities.find(
+    (act) => act.type === ActivityType.Playing
+  );
+  if (!playing) return;
+
+  try {
+    const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+    if (logChannel && logChannel.isTextBased()) {
+      const now = Math.floor(Date.now() / 1000);
+      await logChannel.send(
+        `🎮 **Présence** de ${newP.user.tag} à <t:${now}:F> : ${playing.name}`
+      );
+    }
+  } catch (err) {
+    console.error("❌ Impossible d'envoyer le log de présence :", err);
+  }
+});
 
 client.login(process.env.DISCORD_BOT_TOKEN);
