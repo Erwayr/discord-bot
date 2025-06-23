@@ -82,13 +82,19 @@ client.once(Events.ClientReady, async () => {
         if (newCards.length === 0) return;
 
         // 2) envoie la notif pour chacune
+        const collectionURL =
+          "https://erwayr.github.io/ErwayrWebSite/collection.html";
+        const collectionLink = `[votre collection](${collectionURL})`;
+
         for (const card of newCards) {
           const mention = `<@${data.discord_id}>`;
-          const message = card.title
+          // message titre ou générique
+          const baseMsg = card.title
             ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
             : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-          await generalChannel.send(message);
-          // marque-la comme notifiée
+          // on ajoute le lien réduit
+          const fullMsg = `${baseMsg}\n👉 Check en te connectant ${collectionLink}`;
+          await generalChannel.send(fullMsg);
           card.notifiedAt = new Date().toISOString();
         }
 
