@@ -61,6 +61,43 @@ client.once(Events.ClientReady, async () => {
     await guild.members.fetch();
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
+
+  const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+
+  db.collection("followers_all_time").onSnapshot(
+    (snapshot) => {
+      snapshot.docChanges().forEach(async (change) => {
+        if (change.type !== "modified") return;
+        const data = change.doc.data();
+        if (!data.discord_id) return;
+
+        const userRef = change.doc.ref;
+        const cards = Array.isArray(data.cards_generated)
+          ? data.cards_generated
+          : [];
+
+        // 1) repère les cartes non notifiées
+        const newCards = cards.filter((c) => !c.notifiedAt);
+
+        if (newCards.length === 0) return;
+
+        // 2) envoie la notif pour chacune
+        for (const card of newCards) {
+          await generalChannel.send(
+            `🎉 <@${data.discordId}> vient de gagner la carte **${card.title}** !`
+          );
+          // marque-la comme notifiée
+          card.notifiedAt = new Date().toISOString();
+        }
+
+        // 3) réécrit le tableau en BD avec les notifiedAt ajoutés
+        await userRef.update({ cards_generated: cards });
+      });
+    },
+    (err) => {
+      console.error("Listener Firestore error:", err);
+    }
+  );
 });
 
 // Log des DM bruts comme avant
