@@ -84,7 +84,7 @@ client.once(Events.ClientReady, async () => {
         // 2) envoie la notif pour chacune
         for (const card of newCards) {
           await generalChannel.send(
-            `🎉 <@${data.pseudo}> vient de gagner la carte **${card.title}** !`
+            `🎉 <@${data.discord_id}> vient de gagner la carte **${card.title}** !`
           );
           // marque-la comme notifiée
           card.notifiedAt = new Date().toISOString();
