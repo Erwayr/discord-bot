@@ -104,11 +104,6 @@ client.on(Events.MessageCreate, async (message) => {
 
 // PresenceUpdate : mise à jour Firestore + log en salon
 client.on(Events.PresenceUpdate, async (oldP, newP) => {
-  // Debug : logge systématiquement toute mise à jour de présence
-  console.log(
-    `🔔 presenceUpdate reçu pour ${newP.user.tag} — activités :`,
-    newP.activities.map((a) => `${a.type}:${a.name}`)
-  );
   // 1️⃣ Mise à jour Firestore
   await presenceHandler(oldP, newP, db);
 
