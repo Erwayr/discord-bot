@@ -62,7 +62,7 @@ client.once(Events.ClientReady, async () => {
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
 
-  const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+  const generalChannel = await client.channels.fetch("797077170974490645");
 
   db.collection("followers_all_time").onSnapshot(
     (snapshot) => {
