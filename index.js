@@ -1,8 +1,9 @@
+// index.js
 console.log("🟢 Démarrage du bot...");
+
 const {
   Client,
   GatewayIntentBits,
-  ChannelType,
   ActivityType,
   Events,
 } = require("discord.js");
@@ -20,8 +21,8 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
 });
-let key;
 
+let key;
 console.log("Clé JSON : ", process.env.FIREBASE_KEY_JSON);
 try {
   key = JSON.parse(process.env.FIREBASE_KEY_JSON);
@@ -36,6 +37,8 @@ admin.initializeApp({
 
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
+
+// ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
 
 const client = new Client({
@@ -45,32 +48,31 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildPresences,
+    GatewayIntentBits.GuildPresences, // ← nécessaire pour presenceUpdate
   ],
   partials: ["CHANNEL"],
 });
 
-client.once(Events.ClientReady, () => {
+client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
+
+  // ─── Pré-chargement des membres pour que presenceUpdate soit bien émis ───
+  for (const guild of client.guilds.cache.values()) {
+    await guild.members.fetch();
+    console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
+  }
 });
 
+// Log des DM bruts comme avant
 client.on("raw", async (packet) => {
   if (packet.t !== "MESSAGE_CREATE") return;
-
   const data = packet.d;
-
-  // DM uniquement (pas de guild_id)
   if (!data.guild_id) {
-    // 🔒 Ignorer les messages envoyés par le bot lui-même
     if (data.author.id === client.user.id) return;
-
     try {
       const user = await client.users.fetch(data.author.id);
       const content = data.content;
-
       console.log(`[DM RAW] ${user.tag} : ${content}`);
-
-      // Envoi dans le salon
       const logChannel = await client.channels.fetch(LOG_CHANNEL_ID);
       if (logChannel && logChannel.isTextBased()) {
         const now = Math.floor(Date.now() / 1000);
@@ -84,29 +86,29 @@ client.on("raw", async (packet) => {
   }
 });
 
+// Welcome et rank handlers
 client.on(Events.GuildMemberAdd, async (member) => {
   await welcomeHandler(member, db, {
     enableDM: true,
-    welcomeChannelId: "797077170974490645", // (ex : "1234567890")
-    autoRoleName: "Nouveau", // ou null pour désactiver
+    welcomeChannelId: "797077170974490645",
+    autoRoleName: "Nouveau",
   });
 });
 
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
-
   if (message.content.trim() === "!rank") {
     await rankHandler(message, db);
   }
 });
 
+// PresenceUpdate : mise à jour Firestore + log en salon
 client.on(Events.PresenceUpdate, async (oldP, newP) => {
   // 1️⃣ Mise à jour Firestore
   await presenceHandler(oldP, newP, db);
 
-  // 2️⃣ Envoi du log dans le salon
-  // On ne loggue que si l'utilisateur a bien une activité "PLAYING"
-  const playing = newPresence.activities.find(
+  // 2️⃣ Envoi du log de la présence detectée
+  const playing = newP.activities.find(
     (act) => act.type === ActivityType.Playing
   );
   if (!playing) return;
