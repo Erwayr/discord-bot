@@ -10,6 +10,7 @@ require("dotenv").config();
 const admin = require("firebase-admin");
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
+const presenceHandler = require("./script/presenceHandler");
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
@@ -39,10 +40,11 @@ const LOG_CHANNEL_ID = "1377870229153120257";
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // 👈 à ajouter
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.GuildMessages, // << AJOUT OBLIGATOIRE !
+    GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildPresences,
   ],
   partials: ["CHANNEL"],
 });
@@ -96,5 +98,9 @@ client.on(Events.MessageCreate, async (message) => {
     await rankHandler(message, db);
   }
 });
+
+client.on(Events.PresenceUpdate, (oldP, newP) =>
+  presenceHandler(oldP, newP, db)
+);
 
 client.login(process.env.DISCORD_BOT_TOKEN);
