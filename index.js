@@ -65,9 +65,13 @@ client.once(Events.ClientReady, async () => {
   const generalChannel = await client.channels.fetch("797077170974490645");
 
   db.collection("followers_all_time").onSnapshot(
+    { includeMetadataChanges: true },
     (snapshot) => {
       snapshot.docChanges().forEach(async (change) => {
-        if (change.type !== "modified") return;
+        // 1) on ne garde que les modifications “server‐acknowledged”
+        if (change.type !== "modified" || change.doc.metadata.hasPendingWrites)
+          return;
+
         const data = change.doc.data();
         if (!data.discord_id) return;
 
@@ -75,35 +79,27 @@ client.once(Events.ClientReady, async () => {
         const cards = Array.isArray(data.cards_generated)
           ? data.cards_generated
           : [];
-
-        // 1) repère les cartes non notifiées
         const newCards = cards.filter((c) => !c.notifiedAt);
-
         if (newCards.length === 0) return;
 
-        // 2) envoie la notif pour chacune
         const collectionURL =
           "https://erwayr.github.io/ErwayrWebSite/index.html";
         const collectionLink = `[votre collection](${collectionURL})`;
 
         for (const card of newCards) {
           const mention = `<@${data.discord_id}>`;
-          // message titre ou générique
           const baseMsg = card.title
             ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
             : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-          // on ajoute le lien réduit
           const fullMsg = `${baseMsg}\n👉 Check en te connectant ${collectionLink}`;
           await generalChannel.send(fullMsg);
+
+          // on marque la carte comme notifiée
           card.notifiedAt = new Date().toISOString();
         }
 
-        // 3) réécrit le tableau en BD avec les notifiedAt ajoutés
         await userRef.update({ cards_generated: cards });
       });
-    },
-    (err) => {
-      console.error("Listener Firestore error:", err);
     }
   );
 });
