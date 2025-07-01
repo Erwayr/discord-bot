@@ -62,45 +62,63 @@ client.once(Events.ClientReady, async () => {
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
 
-  const generalChannel = await client.channels.fetch("797077170974490645");
+  const processedCards = new Map();
 
   db.collection("followers_all_time").onSnapshot(
-    { includeMetadataChanges: true },
     (snapshot) => {
       snapshot.docChanges().forEach(async (change) => {
-        // 1) on ne garde que les modifications “server‐acknowledged”
-        if (change.type !== "modified" || change.doc.metadata.hasPendingWrites)
-          return;
+        if (change.type !== "modified") return;
 
+        const docId = change.doc.id;
         const data = change.doc.data();
         if (!data.discord_id) return;
 
-        const userRef = change.doc.ref;
         const cards = Array.isArray(data.cards_generated)
           ? data.cards_generated
           : [];
-        const newCards = cards.filter((c) => !c.notifiedAt);
+
+        // Récupère la Set locale, ou en crée une
+        let seen = processedCards.get(docId);
+        if (!seen) {
+          seen = new Set();
+          processedCards.set(docId, seen);
+        }
+
+        // Filtre les cartes sans notifiedAt ET non déjà traitées
+        const newCards = cards.filter((c) => {
+          const key = c.title ? c.title : JSON.stringify(c); // ou c.id si vous en avez un
+          return !c.notifiedAt && !seen.has(key);
+        });
+
         if (newCards.length === 0) return;
 
-        const collectionURL =
-          "https://erwayr.github.io/ErwayrWebSite/index.html";
-        const collectionLink = `[votre collection](${collectionURL})`;
+        const generalChannel = await client.channels.fetch(
+          "797077170974490645"
+        );
+        const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
         for (const card of newCards) {
           const mention = `<@${data.discord_id}>`;
           const baseMsg = card.title
             ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
             : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-          const fullMsg = `${baseMsg}\n👉 Check en te connectant ${collectionLink}`;
-          await generalChannel.send(fullMsg);
+          await generalChannel.send(
+            `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
+          );
 
-          // on marque la carte comme notifiée
+          // On marque la carte comme traitée localement
+          const key = card.title ? card.title : JSON.stringify(card);
+          seen.add(key);
+
+          // On marque en base
           card.notifiedAt = new Date().toISOString();
         }
 
-        await userRef.update({ cards_generated: cards });
+        // Mise à jour Firestore
+        await change.doc.ref.update({ cards_generated: cards });
       });
-    }
+    },
+    (err) => console.error("Listener Firestore error:", err)
   );
 });
 
