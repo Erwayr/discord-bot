@@ -92,8 +92,11 @@ client.once(Events.ClientReady, async () => {
 
         if (newCards.length === 0) return;
 
+        // const generalChannel = await client.channels.fetch(
+        //   "797077170974490645"
+        // );
         const generalChannel = await client.channels.fetch(
-          "797077170974490645"
+          "1377870229153120257" // Salon de logs
         );
         const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
