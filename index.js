@@ -159,6 +159,8 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
+
+  await electionHandler(message, db);
   if (message.content.trim() === "!rank") {
     await rankHandler(message, db);
   }
