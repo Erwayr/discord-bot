@@ -41,6 +41,8 @@ db.settings({ ignoreUndefinedProperties: true });
 
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
+// const GENERAL_CHANNEL_ID = "797077170974490645";
+const GENERAL_CHANNEL_ID = "1377870229153120257";
 
 const client = new Client({
   intents: [
@@ -93,12 +95,7 @@ client.once(Events.ClientReady, async () => {
 
         if (newCards.length === 0) return;
 
-        const generalChannel = await client.channels.fetch(
-          "797077170974490645"
-        );
-        // const generalChannel = await client.channels.fetch(
-        //   "1377870229153120257" // Salon de logs
-        // );
+        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
         const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
         for (const card of newCards) {
@@ -153,7 +150,7 @@ client.on("raw", async (packet) => {
 client.on(Events.GuildMemberAdd, async (member) => {
   await welcomeHandler(member, db, {
     enableDM: true,
-    welcomeChannelId: "797077170974490645",
+    welcomeChannelId: GENERAL_CHANNEL_ID,
     autoRoleName: "Nouveau",
   });
 });
@@ -161,7 +158,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
 
-  await electionHandler(message, db);
+  await electionHandler(message, db, LOG_CHANNEL_ID);
   if (message.content.trim() === "!rank") {
     await rankHandler(message, db);
   }
