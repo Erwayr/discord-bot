@@ -52,17 +52,6 @@ module.exports = async function electionHandler(message, db, channelId) {
       `🏆 ${autoText}<@${winnerId}> est le nouveau Gardien du Stream pour ${monthId} !`
     );
 
-    // Appel API pour mise à jour du site
-    await fetch("https://erwayr.github.io/ErwayrWebSite/api/gardien", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId: winnerId,
-        username: member.user.username,
-        month: monthId,
-      }),
-    });
-
     // --- Création de la carte Gardien dans Firestore ---
     try {
       // Récupérer la carte de base 'guardian'
@@ -73,38 +62,42 @@ module.exports = async function electionHandler(message, db, channelId) {
       if (!cardDoc.exists)
         throw new Error("cards_collections/guardian missing!");
       const baseCard = cardDoc.data();
-      // Construire la carte personnalisée
-      const guardianCard = {
-        ...baseCard,
-        pseudo: member.user.username,
-        month: monthId,
-        sentAt: new Date().toISOString(),
-      };
-      // Trouver l'utilisateur dans followers_all_time
+
+      // Trouver l'utilisateur dans followers_all_time pour récupérer son pseudo
       const followersSnap = await db
         .collection("followers_all_time")
         .where("discord_id", "==", winnerId)
         .get();
-      if (!followersSnap.empty) {
-        const userDoc = followersSnap.docs[0];
-        const userRef = userDoc.ref;
-        const data = userDoc.data();
-        const cards = Array.isArray(data.cards_generated)
-          ? data.cards_generated
-          : [];
-        // Vérifier présence
-        const existsIndex = cards.findIndex(
-          (c) =>
-            c.title === guardianCard.title && c.section === guardianCard.section
-        );
-        if (existsIndex === -1) {
-          cards.push(guardianCard);
-        } else {
-          // Mettre à jour si nécessaire
-          cards[existsIndex] = { ...cards[existsIndex], ...guardianCard };
-        }
-        await userRef.update({ cards_generated: cards });
+      if (followersSnap.empty) return;
+
+      const userDoc = followersSnap.docs[0];
+      const userRef = userDoc.ref;
+      const data = userDoc.data();
+      const userPseudo = data.pseudo || member.user.username;
+
+      // Construire la carte personnalisée avec le pseudo de la collection
+      const guardianCard = {
+        ...baseCard,
+        pseudo: userPseudo,
+        month: monthId,
+        sentAt: new Date().toISOString(),
+      };
+
+      // Mettre à jour ou ajouter dans cards_generated
+      const cards = Array.isArray(data.cards_generated)
+        ? data.cards_generated
+        : [];
+      const existsIndex = cards.findIndex(
+        (c) =>
+          c.title === guardianCard.title && c.section === guardianCard.section
+      );
+      if (existsIndex === -1) {
+        cards.push(guardianCard);
+      } else {
+        cards[existsIndex] = { ...cards[existsIndex], ...guardianCard };
       }
+
+      await userRef.update({ cards_generated: cards });
     } catch (err) {
       console.error("Erreur création carte Gardien :", err);
     }
