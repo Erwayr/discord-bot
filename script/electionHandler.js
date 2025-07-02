@@ -30,77 +30,87 @@ module.exports = async function electionHandler(message, db, channelId) {
   const guild = message.guild;
   const channel = await guild.channels.fetch(channelId);
 
-  // Fonction de fin d'élection
   async function finishElection(winnerId, isAuto = false) {
     const snap = await electionDoc.get();
     if (snap.data().endedAt) return; // déjà clôturée
-    await electionDoc.update({
-      winnerId,
-      endedAt: new Date(),
-    });
 
-    // Attribution du rôle Discord
-    const member = await guild.members.fetch(winnerId);
-    const role = guild.roles.cache.find((r) => r.name === "Gardien");
-    if (role) {
-      await member.roles.add(role, "Gagnant de l’élection Gardien du Stream");
-    }
-
-    // Envoi de l'annonce
-    const autoText = isAuto ? "(clôture automatique) " : "";
-    await channel.send(
-      `🏆 ${autoText}<@${winnerId}> est le nouveau Gardien du Stream pour ${monthId} !`
-    );
-
-    // --- Création de la carte Gardien dans Firestore ---
-    try {
-      // Récupérer la carte de base 'guardian'
-      const cardDoc = await db
-        .collection("cards_collections")
-        .doc("guardian")
-        .get();
-      if (!cardDoc.exists)
-        throw new Error("cards_collections/guardian missing!");
-      const baseCard = cardDoc.data();
-
-      // Trouver l'utilisateur dans followers_all_time pour récupérer son pseudo
-      const followersSnap = await db
+    // 1. Récupérer en parallèle la carte de base et les infos de l’utilisateur
+    const [followersSnap, cardDoc] = await Promise.all([
+      db
         .collection("followers_all_time")
         .where("discord_id", "==", winnerId)
-        .get();
-      if (followersSnap.empty) return;
+        .limit(1)
+        .get(),
+      db.collection("cards_collections").doc("guardian").get(),
+    ]);
 
-      const userDoc = followersSnap.docs[0];
-      const userRef = userDoc.ref;
-      const data = userDoc.data();
-      const userPseudo = data.pseudo || member.user.username;
-
-      // Construire la carte personnalisée avec le pseudo de la collection
-      const guardianCard = {
-        ...baseCard,
-        pseudo: userPseudo,
-        month: monthId,
-        sentAt: new Date().toISOString(),
-      };
-
-      // Mettre à jour ou ajouter dans cards_generated
-      const cards = Array.isArray(data.cards_generated)
-        ? data.cards_generated
-        : [];
-      const existsIndex = cards.findIndex(
-        (c) =>
-          c.title === guardianCard.title && c.section === guardianCard.section
-      );
-      if (existsIndex === -1) {
-        cards.push(guardianCard);
-      } else {
-        cards[existsIndex] = { ...cards[existsIndex], ...guardianCard };
-      }
-
-      await userRef.update({ cards_generated: cards });
-    } catch (err) {
-      console.error("Erreur création carte Gardien :", err);
+    if (followersSnap.empty) {
+      console.warn(`Aucun follower trouvé pour ${winnerId}`);
+      return;
     }
+
+    if (!cardDoc.exists) {
+      throw new Error("cards_collections/guardian missing!");
+    }
+
+    const userDoc = followersSnap.docs[0];
+    const userData = userDoc.data();
+
+    // Construire userInfo sans champs sensibles
+    const { cards_generated = [], ...rest } = userData;
+    const userInfo = { ...rest };
+
+    // Préparer la nouvelle carte
+    const endedAt = new Date();
+    const pseudo =
+      userData.pseudo || (await guild.members.fetch(winnerId)).user.username;
+    const baseCard = cardDoc.data();
+    const guardianCard = {
+      ...baseCard,
+      pseudo,
+      month: monthId,
+      sentAt: endedAt.toISOString(),
+    };
+
+    // Mettre à jour ou ajouter la carte dans cards_generated
+    const newCards = [...cards_generated];
+    const idx = newCards.findIndex(
+      (c) =>
+        c.title === guardianCard.title && c.section === guardianCard.section
+    );
+    if (idx === -1) newCards.push(guardianCard);
+    else newCards[idx] = { ...newCards[idx], ...guardianCard };
+
+    // 2. Créer un batch pour les écritures Firestore
+    const batch = db.batch();
+    batch.update(electionDoc, {
+      winnerId,
+      endedAt,
+      winnerInfo: userInfo,
+    });
+    batch.update(userDoc.ref, { cards_generated: newCards });
+
+    // 3. Exécuter batch + opérations Discord + envoi de message en parallèle
+    const memberPromise = guild.members.fetch(winnerId);
+    const batchCommit = batch.commit();
+    const sendMessage = channel.send(
+      `🏆 ${
+        isAuto ? "(clôture automatique) " : ""
+      }<@${winnerId}> est le nouveau Gardien du Stream pour ${monthId} !`
+    );
+
+    // Attribution du rôle
+    const rolePromise = memberPromise.then((member) => {
+      const role = guild.roles.cache.find((r) => r.name === "Gardien");
+      if (role)
+        return member.roles.add(
+          role,
+          "Gagnant de l’élection Gardien du Stream"
+        );
+    });
+
+    // Attendre que tout soit terminé
+    await Promise.all([batchCommit, rolePromise, sendMessage]);
   }
 
   // ─── Démarrer l'élection ───
