@@ -131,7 +131,7 @@ module.exports = async function electionHandler(message, db, channelId) {
       .setTitle(`📊 Élection du Gardien du Stream – ${monthId}`)
       .setDescription(
         "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !\n\n" +
-          "Le gagnant recevra un nouveau rôle sur Discord, une carte à collectionner ainsi que d'autres récompenses surprises !"
+          "Le gagnant recevra un nouveau rôle sur Discord et une carte à collectionner !"
       )
       .setFooter({
         text: "Fin des vote dans 4 jours",
