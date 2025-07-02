@@ -13,6 +13,7 @@ const admin = require("firebase-admin");
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
+const electionHandler = require("./script/electionHandler");
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
