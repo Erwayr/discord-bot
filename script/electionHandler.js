@@ -121,10 +121,10 @@ module.exports = async function electionHandler(message, db, channelId) {
       .setTitle(`📊 Élection du Gardien du Stream – ${monthId}`)
       .setDescription(
         "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !\n\n" +
-          "Le gagnant recevra un nouveau rôle exclusif sur Discord, une carte à collectionner personnalisée ainsi que d'autres récompenses surprises !"
+          "Le gagnant recevra un nouveau rôle sur Discord, une carte à collectionner ainsi que d'autres récompenses surprises !"
       )
       .setFooter({
-        text: "Clôture automatique dans 4 jours ou via `!election end`",
+        text: "Fin des vote dans 4 jours",
       });
 
     const poll = await channel.send({ embeds: [embed] });
