@@ -138,48 +138,54 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 });
 
 async function handleChange(change) {
-  console.log(`🔄 Traitement du changement pour ${change.doc.id}`);
-  const docId = change.doc.id;
+  const docRef = change.doc.ref;
   const data = change.doc.data();
   if (!data.discord_id) return;
 
   const cards = Array.isArray(data.cards_generated) ? data.cards_generated : [];
-
-  // Map des cartes déjà envoyées pour ce doc
-  let seen = processedCards.get(docId);
+  let seen = processedCards.get(change.doc.id);
   if (!seen) {
     seen = new Set();
-    processedCards.set(docId, seen);
+    processedCards.set(change.doc.id, seen);
   }
 
-  // Filtrer : nouvelles cartes sans notifiedAt et jamais vues
   const newCards = cards.filter(c => {
-    // utilisez c.id si disponible, sinon stableStringify
     const key = c.id ?? c.title;
     return !c.notifiedAt && !seen.has(key);
   });
   if (newCards.length === 0) return;
-  console.log(`🔔 Envoi de ${newCards.length} nouvelles cartes pour`);
+
   const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
   const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-
   for (const card of newCards) {
- const mention = `<@${data.discord_id}>`;
-          const baseMsg = card.title
-            ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
-            : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-          await generalChannel.send(
-            `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
-          );
+    const mention = `<@${data.discord_id}>`;
+    const baseMsg = card.title
+      ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
+      : `🎉 ${mention} vient de gagner une nouvelle carte !`;
+    await generalChannel.send(
+      `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
+    );
 
-    // On mémorise la clé et on prépare le serverTimestamp
+    // Mémoriser la clé locale
     const key = card.id ?? card.title;
-    seen.add(key);
-    card.notifiedAt = FieldValue.serverTimestamp();
+        seen.add(key);
   }
 
-  // Mise à jour atomique de la DB
-  await change.doc.ref.update({ cards_generated: cards });
+  // Construire l'objet de mise à jour ciblée
+  const updateObj = {};
+  for (const card of newCards) {
+    const key = card.id ?? card.title;
+    const idx = cards.findIndex(c => (c.id ?? c.title) === key);
+    if (idx !== -1) {
+      updateObj[`cards_generated.${idx}.notifiedAt`] = FieldValue.serverTimestamp();
+        }
+  }
+  // Un seul update(), sans passer un array contenant des FieldValue
+  if (Object.keys(updateObj).length > 0) {
+    await docRef.update(updateObj);
+  }
 }
+
+  
 
 client.login(process.env.DISCORD_BOT_TOKEN);
