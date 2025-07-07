@@ -149,15 +149,18 @@ async function handleChange(change) {
     processedCards.set(change.doc.id, seen);
   }
 
-  const newCards = cards.filter(c => {
-    const key = c.id ?? c.title;
-    return !c.notifiedAt && !seen.has(key);
-  });
-  if (newCards.length === 0) return;
+  const newEntries = cards
+    .map((card, idx) => ({ card, idx }))
+    .filter(({ card }) => {
+      const key = card.id ?? card.title;
+      return !card.notifiedAt && !seen.has(key);
+    });
+
+  if (newEntries.length === 0) return;
 
   const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
   const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-  for (const card of newCards) {
+  for (const { card } of newEntries) {
     const mention = `<@${data.discord_id}>`;
     const baseMsg = card.title
       ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
@@ -166,24 +169,17 @@ async function handleChange(change) {
       `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
     );
 
-    // Mémoriser la clé locale
-    const key = card.id ?? card.title;
-        seen.add(key);
+    seen.add(card.id ?? card.title);
+
   }
 
-  // Construire l'objet de mise à jour ciblée
-  const updateObj = {};
-  for (const card of newCards) {
-    const key = card.id ?? card.title;
-    const idx = cards.findIndex(c => (c.id ?? c.title) === key);
-    if (idx !== -1) {
-      updateObj[`cards_generated.${idx}.notifiedAt`] = FieldValue.serverTimestamp();
-        }
+const updateObj = {};
+  for (const { idx } of newEntries) {
+    updateObj[`cards_generated.${idx}.notifiedAt`] = FieldValue.serverTimestamp();
   }
-  // Un seul update(), sans passer un array contenant des FieldValue
-  if (Object.keys(updateObj).length > 0) {
-    await docRef.update(updateObj);
-  }
+
+  // UN SEUL update(), qui ne touche qu'aux champs .notifiedAt ciblés
+  await docRef.update(updateObj);
 }
 
   
