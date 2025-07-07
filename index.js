@@ -10,7 +10,7 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
-const { FieldValue } = require("firebase-admin").firestore;
+const { FieldValue,Timestamp} = require("firebase-admin").firestore;
 
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
@@ -145,6 +145,11 @@ async function handleChange(change) {
 
   const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
   const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
+
+ // 1️⃣ Préparez vos listes de remove / union
+ const toRemove = [];
+ const toAdd    = [];
+ const now      = Timestamp.now();
     for (const card of cards) {
     if (!card.notifiedAt) {
     const mention = `<@${data.discord_id}>`;
@@ -159,16 +164,27 @@ async function handleChange(change) {
         cards_generated: FieldValue.arrayRemove(card)
       });
 
-      // 3) …et on la ré-ajoute avec notifiedAt
-      const updated = {
-        ...card,
-        notifiedAt: FieldValue.serverTimestamp()
-      };
-      await docRef.update({
-        cards_generated: FieldValue.arrayUnion(updated)
-      });
+           // On prépare la suppression de l’ancienne carte…
+     toRemove.push(card);
+     // …et la réinsertion avec un vrai timestamp
+     toAdd.push({
+       ...card,
+       notifiedAt: now
+     });
   }
   }
+
+  // 2️⃣ Si on a des cartes à updater, on fait deux update() groupés
+ if (toRemove.length > 0) {
+   // retire toutes vos cartes « brutes »
+   await docRef.update({
+     cards_generated: FieldValue.arrayRemove(...toRemove)
+   });
+   // rajoute exactement les mêmes + notifiedAt: Timestamp
+   await docRef.update({
+     cards_generated: FieldValue.arrayUnion(...toAdd)
+   });
+ }
   // UN SEUL update(), qui ne touche qu'aux champs .notifiedAt ciblés
 }
 
