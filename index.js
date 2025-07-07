@@ -85,6 +85,7 @@ db.collection("followers_all_time").onSnapshot(
       for (const card of newCards) {
         // clé de queue = titre de la carte
         const titleKey = card.title + data.pseudo;
+        if (processingQueues.has(titleKey)) continue;
         const prev     = processingQueues.get(titleKey) || Promise.resolve();
 
         const next = prev.then(async () => {
@@ -105,6 +106,8 @@ db.collection("followers_all_time").onSnapshot(
         });
 
         processingQueues.set(titleKey, next);
+         // une fois le traitement fini, on nettoie la clé pour pouvoir la ré-rajouter plus tard
+        next.finally(() => processingQueues.delete(titleKey))
         next.catch(console.error);
       }
     });
