@@ -10,8 +10,6 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
-const { FieldValue,Timestamp} = require("firebase-admin").firestore;
-
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
@@ -58,8 +56,6 @@ const client = new Client({
   partials: ["CHANNEL"],
 });
 
-const processingQueues = new Map();
-
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
 
@@ -68,20 +64,73 @@ client.once(Events.ClientReady, async () => {
     await guild.members.fetch();
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
-  db.collection("followers_all_time")
-    .onSnapshot(snapshot => {
-      for (const change of snapshot.docChanges()) {
-        if (change.type !== "modified") continue;
 
-        const docId = change.doc.id;
-        const prev = processingQueues.get(docId) || Promise.resolve();
-        const next = prev.then(() => handleChange(change));
-        processingQueues.set(docId, next);
-        next.catch(console.error);
-      }
+  const processedCards = new Map();
+
+  const processingQueues = new Map();
+db.collection("followers_all_time").onSnapshot(
+  (snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type !== "modified") return;
+
+      const docId = change.doc.id;
+      // Récupère la promesse en cours ou une promesse résolue
+      const prev = processingQueues.get(docId) || Promise.resolve();
+      // Chaîne l’exécution de ton traitement
+      const next = prev.then(async () => {
+        const data = change.doc.data();
+        if (!data.discord_id) return;
+
+        const cards = Array.isArray(data.cards_generated)
+          ? data.cards_generated
+          : [];
+
+        // Récupère la Set locale, ou en crée une
+        let seen = processedCards.get(docId);
+        if (!seen) {
+          seen = new Set();
+          processedCards.set(docId, seen);
+        }
+
+        // Filtre les cartes sans notifiedAt ET non déjà traitées
+        const newCards = cards.filter((c) => {
+          const key = c.title ? c.title : JSON.stringify(c);
+          return !c.notifiedAt && !seen.has(key);
+        });
+
+        if (newCards.length === 0) return;
+
+        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
+        const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
+
+        for (const card of newCards) {
+          const mention = `<@${data.discord_id}>`;
+          const baseMsg = card.title
+            ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
+            : `🎉 ${mention} vient de gagner une nouvelle carte !`;
+          await generalChannel.send(
+            `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
+          );
+
+          // On marque la carte comme traitée localement
+          const key = card.title ? card.title : JSON.stringify(card);
+          seen.add(key);
+
+          // On marque en base
+          card.notifiedAt = new Date().toISOString();
+        }
+
+        // Mise à jour Firestore
+        await change.doc.ref.update({ cards_generated: cards });
+      });
+
+      // Sauvegarde et gère les erreurs
+      processingQueues.set(docId, next);
+      next.catch(console.error);
     });
-
-});
+  },
+  (err) => console.error("Listener Firestore error:", err)
+);
 
 // Log des DM bruts comme avant
 client.on("raw", async (packet) => {
@@ -135,57 +184,5 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
   );
   if (!playing) return;
 });
-
-async function handleChange(change) {
-  const docRef = change.doc.ref;
-  const data = change.doc.data();
-
-  if (!data.discord_id) return;
-  const cards = Array.isArray(data.cards_generated) ? data.cards_generated : [];
-
-  const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-  const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-
- // 1️⃣ Préparez vos listes de remove / union
- const toRemove = [];
- const toAdd    = [];
- const now      = Timestamp.now();
-    for (const card of cards) {
-    if (!card.notifiedAt) {
-    const mention = `<@${data.discord_id}>`;
-    const baseMsg = card.title
-      ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
-      : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-    
-      generalChannel.send(
-      `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
-    );
-          await docRef.update({
-        cards_generated: FieldValue.arrayRemove(card)
-      });
-
-           // On prépare la suppression de l’ancienne carte…
-     toRemove.push(card);
-     // …et la réinsertion avec un vrai timestamp
-     toAdd.push({
-       ...card,
-       notifiedAt: now
-     });
-  }
-  }
-
-  // 2️⃣ Si on a des cartes à updater, on fait deux update() groupés
- if (toRemove.length > 0) {
-   // retire toutes vos cartes « brutes »
-   await docRef.update({
-     cards_generated: FieldValue.arrayRemove(...toRemove)
-   });
-   // rajoute exactement les mêmes + notifiedAt: Timestamp
-   await docRef.update({
-     cards_generated: FieldValue.arrayUnion(...toAdd)
-   });
- }
-  // UN SEUL update(), qui ne touche qu'aux champs .notifiedAt ciblés
-}
 
 client.login(process.env.DISCORD_BOT_TOKEN);
