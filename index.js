@@ -138,6 +138,7 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 });
 
 async function handleChange(change) {
+  console.log(`🔄 Traitement du changement pour ${change.doc.id}`);
   const docId = change.doc.id;
   const data = change.doc.data();
   if (!data.discord_id) return;
@@ -154,11 +155,11 @@ async function handleChange(change) {
   // Filtrer : nouvelles cartes sans notifiedAt et jamais vues
   const newCards = cards.filter(c => {
     // utilisez c.id si disponible, sinon stableStringify
-    const key = c.id ?? c.title ?? JSON.stringify(stableStringify(c));
+    const key = c.id ?? c.title;
     return !c.notifiedAt && !seen.has(key);
   });
   if (newCards.length === 0) return;
-
+  console.log(`🔔 Envoi de ${newCards.length} nouvelles cartes pour`);
   const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
   const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
@@ -172,26 +173,13 @@ async function handleChange(change) {
           );
 
     // On mémorise la clé et on prépare le serverTimestamp
-    const key = card.id ?? card.title ?? JSON.stringify(stableStringify(card));
+    const key = card.id ?? card.title;
     seen.add(key);
     card.notifiedAt = FieldValue.serverTimestamp();
   }
 
   // Mise à jour atomique de la DB
   await change.doc.ref.update({ cards_generated: cards });
-}
-
-function stableStringify(obj) {
-  if (Array.isArray(obj)) return obj.map(stableStringify);
-  if (obj && typeof obj === "object") {
-    return Object.keys(obj)
-      .sort()
-      .reduce((acc, key) => {
-        acc[key] = stableStringify(obj[key]);
-        return acc;
-      }, {});
-  }
-  return obj;
 }
 
 client.login(process.env.DISCORD_BOT_TOKEN);
