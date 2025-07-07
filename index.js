@@ -71,29 +71,26 @@ db.collection("followers_all_time").onSnapshot(
     snapshot.docChanges().forEach((change) => {
       if (change.type !== "modified") return;
 
-      const docId = change.doc.id;
-      // Récupère la promesse en cours ou une promesse résolue
-      const prev = processingQueues.get(docId) || Promise.resolve();
-      // Chaîne l’exécution de ton traitement
-      const next = prev.then(async () => {
-        const data = change.doc.data();
-        if (!data.discord_id) return;
+      const data = change.doc.data();
+      if (!data.discord_id) return;
 
-        const cards = Array.isArray(data.cards_generated)
-          ? data.cards_generated
-          : [];
+      const cards = Array.isArray(data.cards_generated)
+        ? data.cards_generated
+        : [];
 
-        // Filtre les cartes sans notifiedAt ET non déjà traitées
-        const newCards = cards.filter((c) => {
-          return !c.notifiedAt
-        });
+      // ne garder que les cartes sans notifiedAt
+      const newCards = cards.filter((c) => !c.notifiedAt);
+      if (newCards.length === 0) return;
 
-        if (newCards.length === 0) return;
+      for (const card of newCards) {
+        // clé de queue = titre de la carte
+        const titleKey = card.title;
+        const prev     = processingQueues.get(titleKey) || Promise.resolve();
 
-        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-        const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
+        const next = prev.then(async () => {
+          const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
+          const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
-        for (const card of newCards) {
           const mention = `<@${data.discord_id}>`;
           const baseMsg = card.title
             ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
@@ -102,17 +99,14 @@ db.collection("followers_all_time").onSnapshot(
             `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
           );
 
-          // On marque en base
+          // marque en base
           card.notifiedAt = new Date().toISOString();
-        }
+          await change.doc.ref.update({ cards_generated: cards });
+        });
 
-        // Mise à jour Firestore
-        await change.doc.ref.update({ cards_generated: cards });
-      });
-
-      // Sauvegarde et gère les erreurs
-      processingQueues.set(docId, next);
-      next.catch(console.error);
+        processingQueues.set(titleKey, next);
+        next.catch(console.error);
+      }
     });
   },
   (err) => console.error("Listener Firestore error:", err)
