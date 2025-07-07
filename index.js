@@ -64,9 +64,6 @@ client.once(Events.ClientReady, async () => {
     await guild.members.fetch();
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
-
-  const processedCards = new Map();
-// Avant ton listener, déclare la Map de queues
 const processingQueues = new Map();
 
 db.collection("followers_all_time").onSnapshot(
@@ -86,17 +83,9 @@ db.collection("followers_all_time").onSnapshot(
           ? data.cards_generated
           : [];
 
-        // Récupère la Set locale, ou en crée une
-        let seen = processedCards.get(docId);
-        if (!seen) {
-          seen = new Set();
-          processedCards.set(docId, seen);
-        }
-
         // Filtre les cartes sans notifiedAt ET non déjà traitées
         const newCards = cards.filter((c) => {
-          const key = c.title ? c.title : JSON.stringify(c);
-          return !c.notifiedAt && !seen.has(key);
+          return !c.notifiedAt
         });
 
         if (newCards.length === 0) return;
