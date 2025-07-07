@@ -102,6 +102,7 @@ db.collection("followers_all_time").onSnapshot(
 
           // marque en base
           card.notifiedAt = new Date().toISOString();
+          if(!card.isAlreadyView) card.isAlreadyView = false;
           await change.doc.ref.update({ cards_generated: cards });
         });
 
