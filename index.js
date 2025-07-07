@@ -143,43 +143,27 @@ async function handleChange(change) {
   if (!data.discord_id) return;
 
   const cards = Array.isArray(data.cards_generated) ? data.cards_generated : [];
-  let seen = processedCards.get(change.doc.id);
-  if (!seen) {
-    seen = new Set();
-    processedCards.set(change.doc.id, seen);
-  }
 
-  const newEntries = cards
-    .map((card, idx) => ({ card, idx }))
-    .filter(({ card }) => {
-      const key = card.id ?? card.title;
-      return !card.notifiedAt && !seen.has(key);
-    });
-
-  if (newEntries.length === 0) return;
 
   const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
   const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-  for (const { card } of newEntries) {
+   cards.forEach((card, idx) => {
+    if (!card.notifiedAt) {
     const mention = `<@${data.discord_id}>`;
     const baseMsg = card.title
       ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
       : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-    await generalChannel.send(
+    
+      generalChannel.send(
       `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
     );
-
-    seen.add(card.id ?? card.title);
-
+          updateObj[`cards_generated.${idx}.notifiedAt`] = FieldValue.serverTimestamp();
   }
-
-const updateObj = {};
-  for (const { idx } of newEntries) {
-    updateObj[`cards_generated.${idx}.notifiedAt`] = FieldValue.serverTimestamp();
+  })
+    if (Object.keys(updateObj).length > 0) {
+    await docRef.update(updateObj);
   }
-
   // UN SEUL update(), qui ne touche qu'aux champs .notifiedAt ciblés
-  await docRef.update(updateObj);
 }
 
   
