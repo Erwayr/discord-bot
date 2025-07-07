@@ -73,8 +73,6 @@ client.once(Events.ClientReady, async () => {
     .onSnapshot(snapshot => {
       for (const change of snapshot.docChanges()) {
         if (change.type !== "modified") continue;
-        // On ne réagit pas à nos propres write()
-        if (change.doc.metadata.hasPendingWrites) continue;
 
         const docId = change.doc.id;
         const prev = processingQueues.get(docId) || Promise.resolve();
