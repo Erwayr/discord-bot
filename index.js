@@ -66,8 +66,9 @@ client.once(Events.ClientReady, async () => {
   }
 
   const processedCards = new Map();
+// Avant ton listener, déclare la Map de queues
+const processingQueues = new Map();
 
-  const processingQueues = new Map();
 db.collection("followers_all_time").onSnapshot(
   (snapshot) => {
     snapshot.docChanges().forEach((change) => {
@@ -131,6 +132,8 @@ db.collection("followers_all_time").onSnapshot(
   },
   (err) => console.error("Listener Firestore error:", err)
 );
+
+});
 
 // Log des DM bruts comme avant
 client.on("raw", async (packet) => {
