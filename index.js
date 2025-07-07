@@ -58,7 +58,6 @@ const client = new Client({
   partials: ["CHANNEL"],
 });
 
-const processedCards = new Map();
 const processingQueues = new Map();
 
 client.once(Events.ClientReady, async () => {
@@ -140,6 +139,8 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 async function handleChange(change) {
   const docRef = change.doc.ref;
   const data = change.doc.data();
+  const updateObj = {};
+
   if (!data.discord_id) return;
 
   const cards = Array.isArray(data.cards_generated) ? data.cards_generated : [];
@@ -165,7 +166,5 @@ async function handleChange(change) {
   }
   // UN SEUL update(), qui ne touche qu'aux champs .notifiedAt ciblés
 }
-
-  
 
 client.login(process.env.DISCORD_BOT_TOKEN);
