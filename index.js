@@ -102,10 +102,6 @@ db.collection("followers_all_time").onSnapshot(
             `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
           );
 
-          // On marque la carte comme traitée localement
-          const key = card.title ? card.title : JSON.stringify(card);
-          seen.add(key);
-
           // On marque en base
           card.notifiedAt = new Date().toISOString();
         }
