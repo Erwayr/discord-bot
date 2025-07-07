@@ -139,16 +139,13 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 async function handleChange(change) {
   const docRef = change.doc.ref;
   const data = change.doc.data();
-  const updateObj = {};
 
   if (!data.discord_id) return;
-
   const cards = Array.isArray(data.cards_generated) ? data.cards_generated : [];
-
 
   const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
   const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-   cards.forEach((card, idx) => {
+    for (const card of cards) {
     if (!card.notifiedAt) {
     const mention = `<@${data.discord_id}>`;
     const baseMsg = card.title
@@ -158,11 +155,19 @@ async function handleChange(change) {
       generalChannel.send(
       `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
     );
-          updateObj[`cards_generated.${idx}.notifiedAt`] = FieldValue.serverTimestamp();
+          await docRef.update({
+        cards_generated: FieldValue.arrayRemove(card)
+      });
+
+      // 3) …et on la ré-ajoute avec notifiedAt
+      const updated = {
+        ...card,
+        notifiedAt: FieldValue.serverTimestamp()
+      };
+      await docRef.update({
+        cards_generated: FieldValue.arrayUnion(updated)
+      });
   }
-  })
-    if (Object.keys(updateObj).length > 0) {
-    await docRef.update(updateObj);
   }
   // UN SEUL update(), qui ne touche qu'aux champs .notifiedAt ciblés
 }
