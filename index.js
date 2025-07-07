@@ -106,8 +106,6 @@ db.collection("followers_all_time").onSnapshot(
         });
 
         processingQueues.set(titleKey, next);
-         // une fois le traitement fini, on nettoie la clé pour pouvoir la ré-rajouter plus tard
-        next.finally(() => processingQueues.delete(titleKey))
         next.catch(console.error);
       }
     });
