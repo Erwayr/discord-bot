@@ -10,6 +10,8 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
+const { FieldValue } = require("firebase-admin").firestore;
+
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
@@ -56,6 +58,9 @@ const client = new Client({
   partials: ["CHANNEL"],
 });
 
+const processedCards = new Map();
+const processingQueues = new Map();
+
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
 
@@ -64,63 +69,21 @@ client.once(Events.ClientReady, async () => {
     await guild.members.fetch();
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
-
-  const processedCards = new Map();
-
-  db.collection("followers_all_time").onSnapshot(
-    (snapshot) => {
-      snapshot.docChanges().forEach(async (change) => {
-        if (change.type !== "modified") return;
+  db.collection("followers_all_time")
+    .onSnapshot(snapshot => {
+      for (const change of snapshot.docChanges()) {
+        if (change.type !== "modified") continue;
+        // On ne réagit pas à nos propres write()
+        if (change.doc.metadata.hasPendingWrites) continue;
 
         const docId = change.doc.id;
-        const data = change.doc.data();
-        if (!data.discord_id) return;
+        const prev = processingQueues.get(docId) || Promise.resolve();
+        const next = prev.then(() => handleChange(change));
+        processingQueues.set(docId, next);
+        next.catch(console.error);
+      }
+    });
 
-        const cards = Array.isArray(data.cards_generated)
-          ? data.cards_generated
-          : [];
-
-        // Récupère la Set locale, ou en crée une
-        let seen = processedCards.get(docId);
-        if (!seen) {
-          seen = new Set();
-          processedCards.set(docId, seen);
-        }
-
-        // Filtre les cartes sans notifiedAt ET non déjà traitées
-        const newCards = cards.filter((c) => {
-          const key = c.title ? c.title : JSON.stringify(c); // ou c.id si vous en avez un
-          return !c.notifiedAt && !seen.has(key);
-        });
-
-        if (newCards.length === 0) return;
-
-        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-        const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-
-        for (const card of newCards) {
-          const mention = `<@${data.discord_id}>`;
-          const baseMsg = card.title
-            ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
-            : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-          await generalChannel.send(
-            `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
-          );
-
-          // On marque la carte comme traitée localement
-          const key = card.title ? card.title : JSON.stringify(card);
-          seen.add(key);
-
-          // On marque en base
-          card.notifiedAt = new Date().toISOString();
-        }
-
-        // Mise à jour Firestore
-        await change.doc.ref.update({ cards_generated: cards });
-      });
-    },
-    (err) => console.error("Listener Firestore error:", err)
-  );
 });
 
 // Log des DM bruts comme avant
@@ -175,5 +138,62 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
   );
   if (!playing) return;
 });
+
+async function handleChange(change) {
+  const docId = change.doc.id;
+  const data = change.doc.data();
+  if (!data.discord_id) return;
+
+  const cards = Array.isArray(data.cards_generated) ? data.cards_generated : [];
+
+  // Map des cartes déjà envoyées pour ce doc
+  let seen = processedCards.get(docId);
+  if (!seen) {
+    seen = new Set();
+    processedCards.set(docId, seen);
+  }
+
+  // Filtrer : nouvelles cartes sans notifiedAt et jamais vues
+  const newCards = cards.filter(c => {
+    // utilisez c.id si disponible, sinon stableStringify
+    const key = c.id ?? c.title ?? JSON.stringify(stableStringify(c));
+    return !c.notifiedAt && !seen.has(key);
+  });
+  if (newCards.length === 0) return;
+
+  const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
+  const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
+
+  for (const card of newCards) {
+ const mention = `<@${data.discord_id}>`;
+          const baseMsg = card.title
+            ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
+            : `🎉 ${mention} vient de gagner une nouvelle carte !`;
+          await generalChannel.send(
+            `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
+          );
+
+    // On mémorise la clé et on prépare le serverTimestamp
+    const key = card.id ?? card.title ?? JSON.stringify(stableStringify(card));
+    seen.add(key);
+    card.notifiedAt = FieldValue.serverTimestamp();
+  }
+
+  // Mise à jour atomique de la DB
+  await change.doc.ref.update({ cards_generated: cards });
+}
+
+function stableStringify(obj) {
+  if (Array.isArray(obj)) return obj.map(stableStringify);
+  if (obj && typeof obj === "object") {
+    return Object.keys(obj)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = stableStringify(obj[key]);
+        return acc;
+      }, {});
+  }
+  return obj;
+}
 
 client.login(process.env.DISCORD_BOT_TOKEN);
