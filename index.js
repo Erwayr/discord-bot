@@ -84,12 +84,11 @@ db.collection("followers_all_time").onSnapshot(
 
       for (const card of newCards) {
         // clé de queue = titre de la carte
-const idSource = card.title !== undefined && card.title !== null
-  ? card.title
-  : (card.archived_at instanceof Date
-      ? card.archived_at.toISOString()
-      : String(card.archived_at));
-const titleKey = `${idSource}${data.pseudo}`;        if (processingQueues.has(titleKey)) continue;
+      const idSource = card.title != null
+        ? card.title
+        : `${data.isSub}_${data.hasRedemption}`;
+      const titleKey = `${idSource}${data.pseudo}`;
+        if (processingQueues.has(titleKey)) continue;
         const prev     = processingQueues.get(titleKey) || Promise.resolve();
 
         const next = prev.then(async () => {
