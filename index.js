@@ -84,9 +84,9 @@ db.collection("followers_all_time").onSnapshot(
 
       for (const card of newCards) {
         // clé de queue = titre de la carte
-      const idSource = card.title != null
+      const idSource = card.title != null && card.title !== "" && card.title !== undefined
         ? card.title
-        : `${data.isSub}_${data.hasRedemption}`;
+        : `${card.isSub}_${card.hasRedemption}`;
       const titleKey = `${idSource}${data.pseudo}`;
         if (processingQueues.has(titleKey)) continue;
         const prev     = processingQueues.get(titleKey) || Promise.resolve();
