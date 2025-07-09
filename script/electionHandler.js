@@ -1,8 +1,8 @@
 // script/electionHandler.js
 const { EmbedBuilder, PermissionsBitField } = require("discord.js");
 const fetch = require("node-fetch"); // npm install node-fetch@2
+const { FieldValue } = require("firebase-admin").firestore;   // ← ajout
 
-// ID du salon spécifique pour les annonces
 // Durée avant clôture automatique (en millisecondes) : 4 jours
 const AUTO_CLOSE_DELAY = 4 * 24 * 60 * 60 * 1000;
 
@@ -30,9 +30,21 @@ module.exports = async function electionHandler(message, db, channelId) {
   const guild = message.guild;
   const channel = await guild.channels.fetch(channelId);
 
-  async function finishElection(winnerId, isAuto = false) {
+  async function finishElection(explicitWinnerId, isAuto = false) {
     const snap = await electionDoc.get();
     if (snap.data().endedAt) return; // déjà clôturée
+
+     const voterIds = docSnap.data().voters || [];
+    if (voterIds.length === 0) {
+      // Pas de votant
+      await electionDoc.update({ endedAt: new Date() });
+      return channel.send("Aucun participant, élection annulée.");
+    }
+
+    // Choix du gagnant (paramètre ou tirage aléatoire)
+    const winnerId =
+      explicitWinnerId ||
+      voterIds[Math.floor(Math.random() * voterIds.length)];
 
     // 1. Récupérer en parallèle la carte de base et les infos de l’utilisateur
     const [followersSnap, cardDoc] = await Promise.all([
@@ -43,6 +55,7 @@ module.exports = async function electionHandler(message, db, channelId) {
         .get(),
       db.collection("cards_collections").doc("guardian").get(),
     ]);
+    
 
     if (followersSnap.empty) {
       console.warn(`Aucun follower trouvé pour ${winnerId}`);
@@ -96,7 +109,7 @@ module.exports = async function electionHandler(message, db, channelId) {
     const sendMessage = channel.send(
       `🏆 ${
         isAuto ? "(clôture automatique) " : ""
-      }<@${winnerId}> est le nouveau Gardien du Stream pour ${monthId} !`
+      }<@${pseudo}> est le nouveau Gardien du Stream pour ${monthId} !`
     );
 
     // Attribution du rôle
@@ -125,6 +138,7 @@ module.exports = async function electionHandler(message, db, channelId) {
       winnerId: null,
       endedAt: null,
       pollMessageId: null,
+      voters: []  
     });
 
     const embed = new EmbedBuilder()
@@ -142,22 +156,34 @@ module.exports = async function electionHandler(message, db, channelId) {
     await electionDoc.update({ pollMessageId: poll.id });
     await poll.pin();
 
+        // ─── collector pour stocker/supprimer en base à chaque réaction ───
+    const filter = (reaction, user) =>
+      reaction.emoji.name === "👍" && !user.bot;
+    const collector = poll.createReactionCollector({
+      filter,
+      dispose: true, // pour émettre 'remove'
+    });
+
+    collector.on("collect", async (reaction, user) => {
+      await electionDoc.update({
+        voters: FieldValue.arrayUnion(user.id),
+      });
+    });
+    collector.on("remove", async (reaction, user) => {
+      await electionDoc.update({
+        voters: FieldValue.arrayRemove(user.id),
+      });
+    });
+
     setTimeout(async () => {
       const doc = await electionDoc.get();
       if (!doc.exists || doc.data().endedAt) return;
-      const pollMsgId = doc.data().pollMessageId;
-      const pollMsg = await channel.messages.fetch(pollMsgId);
-      const reaction = pollMsg.reactions.cache.get("👍");
-      const users = reaction
-        ? (await reaction.users.fetch()).filter((u) => !u.bot).map((u) => u.id)
-        : [];
-      if (users.length > 0) {
-        const winnerId = users[Math.floor(Math.random() * users.length)];
+      const { pollMessageId, voters } = doc.data();
+       if (voters && voters.length > 0) {
+        const winnerId = voters[Math.floor(Math.random() * voters.length)];
         await finishElection(winnerId, true);
       } else {
-        await channel.send(
-          "Aucun participant, élection annulée automatiquement."
-        );
+        await channel.send("Aucun participant, élection annulée automatiquement.");
         await electionDoc.update({ endedAt: new Date() });
       }
     }, AUTO_CLOSE_DELAY);
@@ -171,19 +197,15 @@ module.exports = async function electionHandler(message, db, channelId) {
     if (!snap.exists || snap.data().endedAt) {
       return message.reply("Pas d’élection en cours à terminer.");
     }
-    const { pollMessageId } = snap.data();
-    const poll = await channel.messages.fetch(pollMessageId);
-    const reaction = poll.reactions.cache.get("👍");
-    const users = reaction
-      ? (await reaction.users.fetch()).filter((u) => !u.bot).map((u) => u.id)
-      : [];
-    if (users.length === 0) {
+
+    const voterIds = snap.data().voters || [];
+    if (voterIds.length === 0) {
       await channel.send("Aucun participant, élection annulée.");
       await electionDoc.update({ endedAt: new Date() });
       return;
     }
 
-    const winnerId = users[Math.floor(Math.random() * users.length)];
+    const winnerId = voterIds[Math.floor(Math.random() * voterIds.length)];
     await finishElection(winnerId, false);
     return;
   }
