@@ -6,6 +6,7 @@ const {
   GatewayIntentBits,
   ActivityType,
   Events,
+  Partials
 } = require("discord.js");
 require("dotenv").config();
 
@@ -52,9 +53,13 @@ const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildPresences, // ← nécessaire pour presenceUpdate
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildPresences
   ],
-  partials: ["CHANNEL"],
+  partials: [
+    Partials.Channel,
+   Partials.Message,        // ← pour récupérer les vieux messages
+   Partials.Reaction  ],
 });
 
 client.once(Events.ClientReady, async () => {
