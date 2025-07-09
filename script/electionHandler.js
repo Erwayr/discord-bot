@@ -12,8 +12,8 @@ const AUTO_CLOSE_DELAY = 4 * 24 * 60 * 60 * 1000;
  * @param {FirebaseFirestore.Firestore} db
  */
 module.exports = async function electionHandler(message, db, channelId) {
-  const args = message.content.trim().split(/ +/);
-  const cmd = args[0];
+  const [cmd, sub] = message.content.trim().split(/ +/);
+
   if (cmd !== "!election") return;
 
   // Vérification permissions
@@ -22,19 +22,16 @@ module.exports = async function electionHandler(message, db, channelId) {
       "❌ Tu n'as pas la permission pour gérer les élections."
     );
   }
-
-  const sub = args[1]; // 'start' ou 'end'
   const monthId = new Date().toISOString().slice(0, 7); // ex: "2025-07"
-  const electionsColl = db.collection("elections");
-  const electionDoc = electionsColl.doc(monthId);
+  const electionDoc = db.collection("elections").doc(monthId);
   const guild = message.guild;
   const channel = await guild.channels.fetch(channelId);
 
   async function finishElection(explicitWinnerId, isAuto = false) {
-   const docSnap = await electionDoc.get();
-    if (docSnap.data().endedAt) return;
+ const snap = await electionDoc.get();
+    if (snap.data().endedAt) return;
 
-     const voterIds = docSnap.data().voters || [];
+    const voterIds = snap.data().voters || [];
     if (voterIds.length === 0) {
       // Pas de votant
       await electionDoc.update({ endedAt: new Date() });
@@ -127,71 +124,39 @@ module.exports = async function electionHandler(message, db, channelId) {
   }
 
   // ─── Démarrer l'élection ───
-  if (sub === "start") {
+ if (sub === "start") {
     const snap = await electionDoc.get();
-    if (snap.exists && !snap.data().endedAt)
+    if (snap.exists && !snap.data().endedAt) {
       return message.reply("Une élection est déjà en cours ce mois-ci !");
+    }
 
+    // Initialise l’élection avec tableau vide
     await electionDoc.set({
       startedAt: new Date(),
       winnerId: null,
       endedAt: null,
       pollMessageId: null,
-      voters: [],            // ← initialisation du tableau
+      voters: [],
     });
 
     const embed = new EmbedBuilder()
       .setTitle(`📊 Élection du Gardien du Stream – ${monthId}`)
       .setDescription(
-        "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !\n\n" +
-        "Le gagnant recevra un nouveau rôle sur Discord et une carte à collectionner !"
+        "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !"
       )
       .setFooter({ text: "Fin des votes dans 4 jours" });
 
     const poll = await channel.send({ embeds: [embed] });
     await poll.react("👍");
     await electionDoc.update({ pollMessageId: poll.id });
-    await poll.pin();
-
-    // ─── Collector qui dure 4 jours ───
-    const filter = (reaction, user) =>
-      reaction.emoji.name === "👍" && !user.bot;
-    const collector = poll.createReactionCollector({
-      filter,
-      dispose: true,
-      time: AUTO_CLOSE_DELAY,
-    });
-
-    // On gère les réactions partielles
-    collector.on("collect", async (reaction, user) => {
-      try {
-        if (reaction.partial) await reaction.fetch();
-        await electionDoc.update({
-          voters: FieldValue.arrayUnion(user.id),
-        });
-      } catch (err) {
-        console.error("Erreur collect:", err);
-      }
-    });
-    collector.on("remove", async (reaction, user) => {
-      try {
-        if (reaction.partial) await reaction.fetch();
-        await electionDoc.update({
-          voters: FieldValue.arrayRemove(user.id),
-        });
-      } catch (err) {
-        console.error("Erreur remove:", err);
-      }
-    });
 
     // Auto‐close après 4 jours
     setTimeout(async () => {
       const doc = await electionDoc.get();
       if (!doc.exists || doc.data().endedAt) return;
-      const { voters } = doc.data();
-      if (voters && voters.length > 0) {
-        const winnerId = voters[Math.floor(Math.random() * voters.length)];
-        await finishElection(winnerId, true);
+      const votes = doc.data().voters || [];
+      if (votes.length > 0) {
+        await finishElection(votes[Math.floor(Math.random() * votes.length)], true);
       } else {
         await channel.send("Aucun participant, élection annulée automatiquement.");
         await electionDoc.update({ endedAt: new Date() });
@@ -201,20 +166,19 @@ module.exports = async function electionHandler(message, db, channelId) {
     return channel.send("✅ Élection lancée : réaction 👍 pour participer !");
   }
 
-  // ─── Clôture manuelle ───
+  // ─── End ───
   if (sub === "end") {
-    const snap2 = await electionDoc.get();
-    if (!snap2.exists || snap2.data().endedAt)
+    const snap = await electionDoc.get();
+    if (!snap.exists || snap.data().endedAt) {
       return message.reply("Pas d’élection en cours à terminer.");
-
-    const voterIds = snap2.data().voters || [];
+    }
+    const voterIds = snap.data().voters || [];
     if (voterIds.length === 0) {
       await channel.send("Aucun participant, élection annulée.");
       await electionDoc.update({ endedAt: new Date() });
       return;
     }
-    const winnerId = voterIds[Math.floor(Math.random() * voterIds.length)];
-    await finishElection(winnerId, false);
+    await finishElection(voterIds[Math.floor(Math.random() * voterIds.length)], false);
     return;
   }
   return message.reply(

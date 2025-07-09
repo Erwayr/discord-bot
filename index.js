@@ -14,6 +14,7 @@ const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
+const handleVoteChange = require("./script/handleVoteChange");
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
@@ -150,6 +151,9 @@ client.on(Events.GuildMemberAdd, async (member) => {
     autoRoleName: "Nouveau",
   });
 });
+
+client.on(Events.MessageReactionAdd, (r, u) => handleVoteChange(r, u, true));
+client.on(Events.MessageReactionRemove, (r, u) => handleVoteChange(r, u, false));
 
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
