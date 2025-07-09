@@ -106,7 +106,10 @@ module.exports = async function electionHandler(message, db, channelId) {
     const sendMessage = channel.send(
       `🏆 ${
         isAuto ? "(clôture automatique) " : ""
-      }<@${pseudo}> est le nouveau Gardien du Stream pour ${monthId} !`
+      } @${pseudo} est le nouveau Gardien du Stream pour ${monthId} !`
+    );
+    const sendMessageRole = channel.send(
+      `Tu as été élu Gardien du Stream ! Tu peux maintenant profiter de ton rôle spécial.`
     );
 
     // Attribution du rôle
@@ -120,7 +123,7 @@ module.exports = async function electionHandler(message, db, channelId) {
     });
 
     // Attendre que tout soit terminé
-    await Promise.all([batchCommit, rolePromise, sendMessage]);
+    await Promise.all([batchCommit, rolePromise, sendMessage,sendMessageRole]);
   }
 
   // ─── Démarrer l'élection ───
