@@ -4,7 +4,7 @@ const fetch = require("node-fetch"); // npm install node-fetch@2
 const { FieldValue } = require("firebase-admin").firestore;   // ← ajout
 
 // Durée avant clôture automatique (en millisecondes) : 4 jours
-const AUTO_CLOSE_DELAY = 4 * 24 * 60 * 60 * 1000;
+const AUTO_CLOSE_DELAY = 2 * 24 * 60 * 60 * 1000;
 
 /**
  * Handle election commands and auto-close after 4 days
@@ -147,7 +147,7 @@ module.exports = async function electionHandler(message, db, channelId) {
       .setDescription(
         "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !"
       )
-      .setFooter({ text: "Fin des votes dans 4 jours" });
+      .setFooter({ text: "Fin des votes dans 2 jours" });
 
     const poll = await channel.send({ embeds: [embed] });
     await poll.react("👍");
