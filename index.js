@@ -99,14 +99,14 @@ db.collection("followers_all_time").onSnapshot(
 
         const next = prev.then(async () => {
           const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-          const collectionLink = `[votre collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
+          const collectionLink = `[collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
           const mention = `<@${data.discord_id}>`;
           const baseMsg = card.title
             ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
             : `🎉 ${mention} vient de gagner une nouvelle carte !`;
           await generalChannel.send(
-            `${baseMsg}\n👉 Check en te connectant ${collectionLink}`
+            `${baseMsg}\n👉 Check ta ${collectionLink}`
           );
 
           // marque en base
