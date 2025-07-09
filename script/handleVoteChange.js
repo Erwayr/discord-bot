@@ -1,4 +1,4 @@
-const { FieldValue } = require("firebase-admin").firestore;s
+const { FieldValue } = require("firebase-admin").firestore;
 
 module.exports = async function handleVoteChange(reaction, user, added,db) {
   if (user.bot || reaction.emoji.name !== "👍") return;
