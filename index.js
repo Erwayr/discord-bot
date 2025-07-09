@@ -152,8 +152,8 @@ client.on(Events.GuildMemberAdd, async (member) => {
   });
 });
 
-client.on(Events.MessageReactionAdd, (r, u) => handleVoteChange(r, u, true));
-client.on(Events.MessageReactionRemove, (r, u) => handleVoteChange(r, u, false));
+client.on(Events.MessageReactionAdd, (r, u) => handleVoteChange(r, u, true,db));
+client.on(Events.MessageReactionRemove, (r, u) => handleVoteChange(r, u, false,db));
 
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
