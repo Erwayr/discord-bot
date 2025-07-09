@@ -111,7 +111,7 @@ module.exports = async function electionHandler(message, db, channelId) {
 
     // Attribution du rôle
     const rolePromise = memberPromise.then((member) => {
-      const role = guild.roles.cache.find((r) => r.name === "Gardien");
+      const role = guild.roles.cache.find((r) => r.name === "👑 Gardien");
       if (role)
         return member.roles.add(
           role,
