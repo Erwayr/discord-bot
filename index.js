@@ -348,7 +348,7 @@ async function subscribeToFollows() {
       condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
       transport: {
         method:   "webhook",
-        callback: `${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`,
+        callback: `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`,
         secret:   TWITCH_SECRET
       }
     },
