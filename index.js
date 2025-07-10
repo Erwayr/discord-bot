@@ -361,8 +361,7 @@ async function subscribeToFollows() {
     return;
   }
 
-  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
-
+const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
 console.log("→ Subscribing EventSub to:", endpoint);
 const payload = {
   type:      "channel.follow",
@@ -375,11 +374,14 @@ const payload = {
   },
 };
 console.log("→ Payload:", JSON.stringify(payload, null, 2));
+
+try {
 await axios.post(endpoint, payload, { headers: { ...headers, "Content-Type":"application/json" } });
 
   console.log("✅ Subscription channel.follow créée, ID =", createRes.data.data[0].id);
   } catch (err) {
       console.error("Twitch subscription error status:", err.response?.status);
   console.error("Twitch subscription error body:", err.response?.data);
-  throw err;}
+  throw err;
+}
 }
