@@ -16,6 +16,8 @@ const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
+const cron = require("node-cron");
+
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
@@ -43,8 +45,8 @@ db.settings({ ignoreUndefinedProperties: true });
 
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
-const GENERAL_CHANNEL_ID = "797077170974490645";
-//const GENERAL_CHANNEL_ID = "1377870229153120257";
+//const GENERAL_CHANNEL_ID = "797077170974490645";
+const GENERAL_CHANNEL_ID = "1377870229153120257";
 
 const client = new Client({
   intents: [
@@ -70,6 +72,19 @@ client.once(Events.ClientReady, async () => {
     await guild.members.fetch();
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
+
+  try {
+    await assignOldMemberCards(db);
+  } catch (err) {
+    console.error('❌ assignOldMemberCards échouée :', err);
+  }
+
+  // Programmation quotidienne à minuit
+  cron.schedule('0 0 * * *', () => {
+    console.log('🕛 Tâche quotidienne : assignOldMemberCards');
+    assignOldMemberCards(db).catch(console.error);
+  });
+
 const processingQueues = new Map();
 
 db.collection("followers_all_time").onSnapshot(
@@ -182,3 +197,42 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 });
 
 client.login(process.env.DISCORD_BOT_TOKEN);
+async function assignOldMemberCards(db) {
+  // 1️⃣ – Récupérer la carte dans 'card-collection'
+  const cardRef = db.collection('card-collection').doc('discord_old_member');
+  const cardSnap = await cardRef.get();
+  if (!cardSnap.exists) {
+    console.error('❌ Carte "discord_old_member" introuvable dans card-collection');
+    return;
+  }
+  const oldMemberCard = { id: cardSnap.id, ...cardSnap.data() };
+
+  const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+
+  // 2️⃣ – Pour chaque guilde connue du bot
+  for (const guild of client.guilds.cache.values()) {
+    console.log(`🔍 Vérif anciens membres dans "${guild.name}"…`);
+    const members = await guild.members.fetch();
+
+    for (const member of members.values()) {
+      if (member.user.bot || !member.joinedTimestamp) continue;
+      if (member.joinedTimestamp > oneYearAgo) continue;
+
+      // 3️⃣ – Trouver le doc utilisateur
+      const q = await db
+        .collection('followers_all_time')
+        .where('discord_id', '==', member.id)
+        .limit(1)
+        .get();
+
+      if (q.empty) continue;
+      const userDocRef = q.docs[0].ref;
+
+      // 4️⃣ – Ajouter l’objet de la carte dans cards_generated
+      await userDocRef.update({
+        cards_generated: admin.firestore.FieldValue.arrayUnion(oldMemberCard)
+      });
+      console.log(`🎉 Carte ajoutée à ${member.user.tag}`);
+    }
+  }
+}
