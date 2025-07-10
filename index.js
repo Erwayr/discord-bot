@@ -346,7 +346,7 @@ async function subscribeToFollows() {
       transport: {
         method:   "webhook",
         callback: `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`,
-        secret:   TWITCH_CLIENT_SECRET
+        secret:   process.env.TWITCH_CLIENT_SECRET
       }
     },
     {
