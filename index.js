@@ -331,9 +331,7 @@ async function subscribeToFollows() {
   const appAccessTokenRes = await axios.post("https://id.twitch.tv/oauth2/token",
     null, {
       params: {
-        client_id:     process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type:    "client_credentials"
+        client_id: process.env.TWITCH_CLIENT_ID,client_secret: process.env.TWITCH_CLIENT_SECRET,grant_type:"client_credentials"
       }
     }
   );
@@ -348,7 +346,7 @@ async function subscribeToFollows() {
       transport: {
         method:   "webhook",
         callback: `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`,
-        secret:   TWITCH_SECRET
+        secret:   TWITCH_CLIENT_SECRET
       }
     },
     {
