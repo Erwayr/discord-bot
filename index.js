@@ -363,10 +363,18 @@ async function subscribeToFollows() {
 
 const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
 let domain = process.env.RAILWAY_PUBLIC_DOMAIN || "";
-// coupe tous les ; ou espaces en fin de chaîne
+
+
+// Juste après ton replace
 domain = domain.replace(/[;\s]+$/, "");
 
-const callbackUrl = `https://${domain}/twitch-callback`
+// DEBUG → affiche exactement ce qu'il reste dans domain
+console.log("RAW domain après replace:", JSON.stringify(domain));
+
+const callbackUrl = `https://${domain}/twitch-callback`;
+
+// DEBUG → affiche exactement callbackUrl
+console.log("RAW callbackUrl:", JSON.stringify(callbackUrl));
 
 console.log("→ Subscribing EventSub to:", endpoint);
 const payload = {
