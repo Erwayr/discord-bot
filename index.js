@@ -362,9 +362,11 @@ async function subscribeToFollows() {
   }
 
 const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
-const callbackUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`;
+let domain = process.env.RAILWAY_PUBLIC_DOMAIN || "";
+// coupe tous les ; ou espaces en fin de chaîne
+domain = domain.replace(/[;\s]+$/, "");
 
-console.log(callbackUrl,"callbaaaackUrl");
+const callbackUrl = `https://${domain}/twitch-callback`;
 
 console.log("→ Subscribing EventSub to:", endpoint);
 const payload = {
