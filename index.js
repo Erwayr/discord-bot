@@ -362,6 +362,10 @@ async function subscribeToFollows() {
   }
 
 const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+const callbackUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`;
+
+console.log(callbackUrl,"callbaaaackUrl");
+
 console.log("→ Subscribing EventSub to:", endpoint);
 const payload = {
   type:      "channel.follow",
