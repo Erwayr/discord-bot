@@ -328,34 +328,64 @@ async function assignOldMemberCards(db) {
 }
 
 async function subscribeToFollows() {
-  const appAccessTokenRes = await axios.post("https://id.twitch.tv/oauth2/token",
-    null, {
+  // 1️⃣ Récupère le token d’app
+  const { data: tokenData } = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null,
+    {
       params: {
-        client_id: process.env.TWITCH_CLIENT_ID,client_secret: process.env.TWITCH_CLIENT_SECRET,grant_type:"client_credentials"
-      }
+        client_id:     process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+        grant_type:    "client_credentials",
+      },
     }
   );
-  const appAccessToken = appAccessTokenRes.data.access_token;
+  const appToken = tokenData.access_token;
 
-  await axios.post(
+  const headers = {
+    "Client-ID":     process.env.TWITCH_CLIENT_ID,
+    "Authorization": `Bearer ${appToken}`,
+  };
+
+  // 2️⃣ Liste les souscriptions existantes
+  const listRes = await axios.get(
+    "https://api.twitch.tv/helix/eventsub/subscriptions",
+    { headers }
+  );
+  const existing = listRes.data.data.find(sub =>
+    sub.type === "channel.follow" &&
+    sub.condition.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+  );
+  if (existing) {
+    console.log("ℹ️ Subscription channel.follow déjà existante, ID =", existing.id);
+    return;
+  }
+
+  // 3️⃣ Crée la souscription
+  const callbackUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`;
+  try {
+  const createRes = await axios.post(
     "https://api.twitch.tv/helix/eventsub/subscriptions",
     {
-      type:    "channel.follow",
-      version: "1",
+      type:      "channel.follow",
+      version:   "1",
       condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
       transport: {
         method:   "webhook",
-        callback: `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`,
-        secret:   process.env.TWITCH_CLIENT_SECRET
-      }
+        callback: callbackUrl,
+        secret:   process.env.TWITCH_CLIENT_SECRET,
+      },
     },
     {
       headers: {
-        "Client-ID":     process.env.TWITCH_CLIENT_ID,
-        "Authorization": `Bearer ${appAccessToken}`,
-        "Content-Type":  "application/json"
-      }
+        ...headers,
+        "Content-Type": "application/json",
+      },
     }
   );
-  console.log("✅ Subscription channel.follow créée");
+  console.log("✅ Subscription channel.follow créée, ID =", createRes.data.data[0].id);
+  } catch (err) {
+      console.error("Twitch subscription error status:", err.response?.status);
+  console.error("Twitch subscription error body:", err.response?.data);
+  throw err;}
 }
