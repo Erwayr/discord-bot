@@ -410,7 +410,7 @@ async function subscribeToFollows() {
     transport: {
       method:   "webhook",
       callback: callbackUrl,
-      secret:   process.env.TWITCH_SECRET,
+      secret:   process.env.WEBHOOK_SECRET,
     }
   };
   console.log("🔍 Payload ready:", JSON.stringify(payload, null, 2));
