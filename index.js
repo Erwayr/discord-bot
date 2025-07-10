@@ -151,6 +151,10 @@ client.once(Events.ClientReady, async () => {
     assignOldMemberCards(db).catch(console.error)
   );
 
+  cron.schedule("0 */4 * * *", () => {
+  refreshModeratorToken(db).catch(console.error);
+});
+
 const processingQueues = new Map();
 
 db.collection("followers_all_time").onSnapshot(
@@ -262,6 +266,37 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
   if (!playing) return;
 });
 
+// Fonction pour échanger un refresh_token contre un nouvel access_token
+async function refreshModeratorToken(db) {
+  const ref = db.doc("settings/twitch_moderator");
+  const snap = await ref.get();
+  if (!snap.exists) throw new Error("Pas de refresh_token en base !");
+  const oldRefresh = snap.data().refresh_token;
+
+  // Appel pour rafraîchir
+  const res = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null,
+    {
+      params: {
+        grant_type:    "refresh_token",
+        refresh_token: oldRefresh,
+        client_id:     process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+      }
+    }
+  );
+
+  const { access_token, refresh_token: newRefresh } = res.data;
+
+  // Sauvegarde le nouveau refresh_token
+  await ref.update({ refresh_token: newRefresh });
+
+  console.log("🔄 Moderator token refreshed");
+  return access_token;
+}
+
+
 client.login(process.env.DISCORD_BOT_TOKEN);
 
 
@@ -328,74 +363,66 @@ async function assignOldMemberCards(db) {
 }
 
 async function subscribeToFollows() {
-  // 1️⃣ Récupère le token d’app
-  const { data: tokenData } = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
-    null,
-    {
-      params: {
-        client_id:     process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type:    "client_credentials",
-      },
-    }
-  );
-  const appToken = tokenData.access_token;
+  // ─── 0️⃣ Préconditions: tu dois avoir dans ton .env ───
+  // TWITCH_MODERATOR_OAUTH_TOKEN = un token OAuth "user" avec scope "moderator:read:followers"
+  // TWITCH_MODERATOR_USER_ID    = l'ID numeric du compte modérateur
+  // TWITCH_CHANNEL_ID           = l'ID numeric de ta chaîne
+  // RAILWAY_PUBLIC_DOMAIN       = ton domaine sans "https://" ni "/"
 
+  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+
+    const modToken = await refreshModeratorToken(db);
+
+
+  // 1️⃣ Headers avec le token modérateur, pas client_credentials
   const headers = {
     "Client-ID":     process.env.TWITCH_CLIENT_ID,
-    "Authorization": `Bearer ${appToken}`,
+    "Authorization": `Bearer ${modToken}`,
+    "Content-Type":  "application/json",
   };
 
-  // 2️⃣ Liste les souscriptions existantes
-  const listRes = await axios.get(
-    "https://api.twitch.tv/helix/eventsub/subscriptions",
-    { headers }
-  );
+  // 2️⃣ Liste les souscriptions existantes pour éviter le duplicate
+  const listRes = await axios.get(endpoint, { headers });
   const existing = listRes.data.data.find(sub =>
     sub.type === "channel.follow" &&
-    sub.condition.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+    sub.version === "2" &&
+    sub.condition.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID &&
+    sub.condition.moderator_user_id   === process.env.TWITCH_CHANNEL_ID
   );
   if (existing) {
-    console.log("ℹ️ Subscription channel.follow déjà existante, ID =", existing.id);
+    console.log("ℹ️ Subscription channel.follow v2 déjà existante, ID =", existing.id);
     return;
   }
 
-const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+  // 3️⃣ Construis ton callback URL proprement
+  let domain = (process.env.RAILWAY_PUBLIC_DOMAIN || "").replace(/[;\s]+$/, "");
+  const callbackUrl = `https://${domain}/twitch-callback`;
+  console.log("🔍 Final callbackUrl:", JSON.stringify(callbackUrl));
 
-// 1) Construis ton callbackUrl
-let domain = process.env.RAILWAY_PUBLIC_DOMAIN || "";
-domain = domain.replace(/[;\s]+$/, "");
-let callbackUrl = `https://${domain}/twitch-callback`;
+  // 4️⃣ Monte le payload en version 2
+  const payload = {
+    type:    "channel.follow",
+    version: "2",
+    condition: {
+      broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,
+      moderator_user_id:   process.env.TWITCH_CHANNEL_ID
+    },
+    transport: {
+      method:   "webhook",
+      callback: callbackUrl,
+      secret:   process.env.TWITCH_SECRET,
+    }
+  };
+  console.log("🔍 Payload ready:", JSON.stringify(payload, null, 2));
 
-// 2) Coupe aussi un éventuel ';' sur callbackUrl lui-même
-callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
-
-// 3) Log pour vérifier qu’il n’y a plus de ';' nulle part
-console.log("🔍 Final callbackUrl:", JSON.stringify(callbackUrl));
-
-// 4) Monte ton payload en réutilisant callbackUrl
-const payload = {
-  type:      "channel.follow",
-  version:   "1",
-  condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
-  transport: {
-    method:   "webhook",
-    callback: callbackUrl,
-    secret:   process.env.TWITCH_CLIENT_SECRET,
-  },
-};
-
-// 5) Encore un log pour t’assurer que le payload est clean
-console.log("🔍 Final transport.callback in payload:", JSON.stringify(payload.transport.callback));
-
-try {
-await axios.post(endpoint, payload, { headers: { ...headers, "Content-Type":"application/json" } });
-
-  console.log("✅ Subscription channel.follow créée, ID =", createRes.data.data[0].id);
+  // 5️⃣ Envoi la création
+  try {
+    const createRes = await axios.post(endpoint, payload, { headers });
+    console.log("✅ Subscription channel.follow v2 créée, ID =", createRes.data.data[0].id);
   } catch (err) {
-      console.error("Twitch subscription error status:", err.response?.status);
-  console.error("Twitch subscription error body:", err.response?.data);
-  throw err;
+    console.error("Twitch subscription error status:", err.response?.status);
+    console.error("Twitch subscription error body:", err.response?.data);
+    throw err;
+  }
 }
-}
+
