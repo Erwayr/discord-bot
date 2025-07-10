@@ -328,8 +328,7 @@ async function assignOldMemberCards(db) {
 }
 
 async function subscribeToFollows() {
-  const appAccessTokenRes = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
+  const appAccessTokenRes = await axios.post("https://id.twitch.tv/oauth2/token",
     null, {
       params: {
         client_id:     process.env.TWITCH_CLIENT_ID,
