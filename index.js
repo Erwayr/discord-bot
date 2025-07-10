@@ -362,21 +362,19 @@ async function subscribeToFollows() {
   }
 
 const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+
+// 1) Construis ton callbackUrl
 let domain = process.env.RAILWAY_PUBLIC_DOMAIN || "";
-
-
-// Juste après ton replace
 domain = domain.replace(/[;\s]+$/, "");
+let callbackUrl = `https://${domain}/twitch-callback`;
 
-// DEBUG → affiche exactement ce qu'il reste dans domain
-console.log("RAW domain après replace:", JSON.stringify(domain));
+// 2) Coupe aussi un éventuel ';' sur callbackUrl lui-même
+callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
 
-const callbackUrl = `https://${domain}/twitch-callback`;
+// 3) Log pour vérifier qu’il n’y a plus de ';' nulle part
+console.log("🔍 Final callbackUrl:", JSON.stringify(callbackUrl));
 
-// DEBUG → affiche exactement callbackUrl
-console.log("RAW callbackUrl:", JSON.stringify(callbackUrl));
-
-console.log("→ Subscribing EventSub to:", endpoint);
+// 4) Monte ton payload en réutilisant callbackUrl
 const payload = {
   type:      "channel.follow",
   version:   "1",
@@ -387,7 +385,9 @@ const payload = {
     secret:   process.env.TWITCH_CLIENT_SECRET,
   },
 };
-console.log("→ Payload:", JSON.stringify(payload, null, 2));
+
+// 5) Encore un log pour t’assurer que le payload est clean
+console.log("🔍 Final transport.callback in payload:", JSON.stringify(payload.transport.callback));
 
 try {
 await axios.post(endpoint, payload, { headers: { ...headers, "Content-Type":"application/json" } });
