@@ -199,7 +199,7 @@ const BATCH_SIZE = 10;
 async function assignOldMemberCards(db) {
   // 1️⃣ Récupérer la carte
   const cardSnap = await db
-    .collection('card-collection')
+    .collection('cards-collections')
     .doc('discord_old_member')
     .get();
   if (!cardSnap.exists) {
