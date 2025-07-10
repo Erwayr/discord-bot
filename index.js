@@ -11,6 +11,10 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
+const axios = require("axios");
+const express     = require("express");
+const bodyParser  = require("body-parser");
+const crypto      = require("crypto");
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
@@ -28,7 +32,6 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 let key;
-console.log("Clé JSON : ", process.env.FIREBASE_KEY_JSON);
 try {
   key = JSON.parse(process.env.FIREBASE_KEY_JSON);
   console.log("✅ Clé Firebase parsée !");
@@ -64,8 +67,76 @@ const client = new Client({
    Partials.Reaction  ],
 });
 
+const app = express();
+app.use(bodyParser.json()); // pour parser les JSON Twitch
+
+const TWITCH_SECRET = process.env.TWITCH_CLIENT_SECRET; 
+// le "secret" que tu donnes à Twitch lors de la création de la webhook
+
+// Fonction utilitaire pour vérifier la signature Twitch
+function verifyTwitchSignature(req) {
+  const messageId    = req.header("Twitch-Eventsub-Message-Id");
+  const timestamp    = req.header("Twitch-Eventsub-Message-Timestamp");
+  const signature    = req.header("Twitch-Eventsub-Message-Signature");
+  const body         = JSON.stringify(req.body);
+  const hmac         = crypto.createHmac("sha256", TWITCH_SECRET);
+  hmac.update(messageId + timestamp + body);
+  const expectedSig  = `sha256=${hmac.digest("hex")}`;
+  return crypto.timingSafeEqual(
+    Buffer.from(expectedSig), 
+    Buffer.from(signature)
+  );
+}
+
+// Route de callback pour Twitch EventSub
+app.post("/twitch-callback", async (req, res) => {
+  // 1) Lors de l'enregistrement, Twitch envoie un challenge
+  if (req.body.challenge) {
+    return res.status(200).send(req.body.challenge);
+  }
+
+  // 2) Sécurité : refuser si signature invalide
+  if (!verifyTwitchSignature(req)) {
+    return res.status(403).send("Invalid signature");
+  }
+
+  const { subscription, event } = req.body;
+  if (subscription.type === "channel.follow") {
+    const login     = event.user_login;    // pseudo Twitch
+    const userId    = event.user_id;       // id numérique
+    const followedAt= new Date(event.followed_at);
+
+    const ref = db.collection("followers_all_time").doc(login.tolowerCase());
+    const snap = await ref.get();
+
+    if (snap.exists) {
+      // optionnel : mettre à jour la date du dernier follow
+      await ref.update({ lastFollowed: followedAt });
+    } else {
+      // création du doc pour ce nouveau follower
+      await ref.set({
+        pseudo: login.tolowerCase(),
+        twitchId: userId,
+        followDate: followedAt,
+        cards_generated: [],
+      });
+    }
+    console.log(`⚡ Nouveau follow détecté : ${login}`);
+  }
+
+  // 3) Toujours répondre 2xx pour acknowledge
+  res.sendStatus(200);
+});
+
+// Démarre Express sur le port fourni par Railway ou 3000
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Express server listening on port ${PORT}`);
+});
+
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
+  await subscribeToFollows().catch(console.error);
 
   // ─── Pré-chargement des membres pour que presenceUpdate soit bien émis ───
   for (const guild of client.guilds.cache.values()) {
@@ -254,4 +325,40 @@ async function assignOldMemberCards(db) {
     await batch.commit();
     console.log(`✅ Batch de ${chunk.length} membres traité.`);
   }
+}
+
+async function subscribeToFollows() {
+  const appAccessTokenRes = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null, {
+      params: {
+        client_id:     process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+        grant_type:    "client_credentials"
+      }
+    }
+  );
+  const appAccessToken = appAccessTokenRes.data.access_token;
+
+  await axios.post(
+    "https://api.twitch.tv/helix/eventsub/subscriptions",
+    {
+      type:    "channel.follow",
+      version: "1",
+      condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
+      transport: {
+        method:   "webhook",
+        callback: `${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`,
+        secret:   TWITCH_SECRET
+      }
+    },
+    {
+      headers: {
+        "Client-ID":     process.env.TWITCH_CLIENT_ID,
+        "Authorization": `Bearer ${appAccessToken}`,
+        "Content-Type":  "application/json"
+      }
+    }
+  );
+  console.log("✅ Subscription channel.follow créée");
 }
