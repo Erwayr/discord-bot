@@ -361,28 +361,22 @@ async function subscribeToFollows() {
     return;
   }
 
-  // 3️⃣ Crée la souscription
-  const callbackUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/twitch-callback`;
-  try {
-  const createRes = await axios.post(
-    "https://api.twitch.tv/helix/eventsub/subscriptions",
-    {
-      type:      "channel.follow",
-      version:   "1",
-      condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
-      transport: {
-        method:   "webhook",
-        callback: callbackUrl,
-        secret:   process.env.TWITCH_CLIENT_SECRET,
-      },
-    },
-    {
-      headers: {
-        ...headers,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+
+console.log("→ Subscribing EventSub to:", endpoint);
+const payload = {
+  type:      "channel.follow",
+  version:   "1",
+  condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
+  transport: {
+    method:   "webhook",
+    callback: callbackUrl,
+    secret:   process.env.TWITCH_CLIENT_SECRET,
+  },
+};
+console.log("→ Payload:", JSON.stringify(payload, null, 2));
+await axios.post(endpoint, payload, { headers: { ...headers, "Content-Type":"application/json" } });
+
   console.log("✅ Subscription channel.follow créée, ID =", createRes.data.data[0].id);
   } catch (err) {
       console.error("Twitch subscription error status:", err.response?.status);
