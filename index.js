@@ -73,17 +73,12 @@ client.once(Events.ClientReady, async () => {
     console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
   }
 
-  try {
-    await assignOldMemberCards(db);
-  } catch (err) {
-    console.error('❌ assignOldMemberCards échouée :', err);
-  }
+  await assignOldMemberCards(db).catch(console.error);
 
-  // Programmation quotidienne à minuit
-  cron.schedule('0 0 * * *', () => {
-    console.log('🕛 Tâche quotidienne : assignOldMemberCards');
-    assignOldMemberCards(db).catch(console.error);
-  });
+  // Planification quotidienne à minuit
+  cron.schedule("0 0 * * *", () =>
+    assignOldMemberCards(db).catch(console.error)
+  );
 
 const processingQueues = new Map();
 
@@ -197,42 +192,66 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 });
 
 client.login(process.env.DISCORD_BOT_TOKEN);
+
+
+const BATCH_SIZE = 10;
+
 async function assignOldMemberCards(db) {
-  // 1️⃣ – Récupérer la carte dans 'card-collection'
-  const cardRef = db.collection('card-collection').doc('discord_old_member');
-  const cardSnap = await cardRef.get();
+  // 1️⃣ Récupérer la carte
+  const cardSnap = await db
+    .collection('card-collection')
+    .doc('discord_old_member')
+    .get();
   if (!cardSnap.exists) {
-    console.error('❌ Carte "discord_old_member" introuvable dans card-collection');
+    console.error('❌ Carte "discord_old_member" introuvable');
     return;
   }
   const oldMemberCard = { id: cardSnap.id, ...cardSnap.data() };
 
+  // 2️⃣ Collecter tous les IDs Discord éligibles (>1 an)
   const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
-
-  // 2️⃣ – Pour chaque guilde connue du bot
+  const eligibleIds = [];
   for (const guild of client.guilds.cache.values()) {
-    console.log(`🔍 Vérif anciens membres dans "${guild.name}"…`);
     const members = await guild.members.fetch();
+    members.forEach(m => {
+      if (
+        !m.user.bot &&
+        m.joinedTimestamp &&
+        m.joinedTimestamp < oneYearAgo
+      ) eligibleIds.push(m.id);
+    });
+  }
+  if (eligibleIds.length === 0) return;
 
-    for (const member of members.values()) {
-      if (member.user.bot || !member.joinedTimestamp) continue;
-      if (member.joinedTimestamp > oneYearAgo) continue;
+  // 3️⃣ Chunker par 10 pour la requête 'in'
+  for (let i = 0; i < eligibleIds.length; i += BATCH_SIZE) {
+    const chunk = eligibleIds.slice(i, i + BATCH_SIZE);
+    const snap = await db
+      .collection('followers_all_time')
+      .where('discord_id', 'in', chunk)
+      .get();
+    if (snap.empty) continue;
 
-      // 3️⃣ – Trouver le doc utilisateur
-      const q = await db
-        .collection('followers_all_time')
-        .where('discord_id', '==', member.id)
-        .limit(1)
-        .get();
+    const batch = db.batch();
 
-      if (q.empty) continue;
-      const userDocRef = q.docs[0].ref;
+    snap.docs.forEach(doc => {
+      const data = doc.data();
 
-      // 4️⃣ – Ajouter l’objet de la carte dans cards_generated
-      await userDocRef.update({
-        cards_generated: admin.firestore.FieldValue.arrayUnion(oldMemberCard)
+      // 4️⃣ Vérifier la propriété isAlreadyWinDiscordOldMember
+      if (data.isAlreadyWinDiscordOldMember) {
+        // déjà passé, on skip
+        return;
+      }
+
+      // 5️⃣ On ajoute la carte ET on positionne le flag
+      batch.update(doc.ref, {
+        cards_generated: admin.firestore.FieldValue.arrayUnion(oldMemberCard),
+        isAlreadyWinDiscordOldMember: true
       });
-      console.log(`🎉 Carte ajoutée à ${member.user.tag}`);
-    }
+      console.log(`🎉 Carte "discord_old_member" attribuée à ${data.discord_id}`);
+    });
+
+    await batch.commit();
+    console.log(`✅ Batch de ${chunk.length} membres traité.`);
   }
 }
