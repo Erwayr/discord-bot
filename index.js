@@ -366,7 +366,7 @@ let domain = process.env.RAILWAY_PUBLIC_DOMAIN || "";
 // coupe tous les ; ou espaces en fin de chaîne
 domain = domain.replace(/[;\s]+$/, "");
 
-const callbackUrl = `https://${domain}/twitch-callback`;
+const callbackUrl = `https://${domain}/twitch-callback`
 
 console.log("→ Subscribing EventSub to:", endpoint);
 const payload = {
