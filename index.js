@@ -90,11 +90,6 @@ function verifyTwitchSignature(req) {
 
 // Route de callback pour Twitch EventSub
 app.post("/twitch-callback", async (req, res) => {
-    console.log("📬 /twitch-callback headers:", req.headers);
-  console.log("📬 /twitch-callback body:", JSON.stringify(req.body));
-  // 1) Lors de l'enregistrement, Twitch envoie un challenge
-  console.log("➡️ Received challenge:", req.body.challenge);
-
   if (req.body.challenge) {
     return res.status(200).send(req.body.challenge);
   }
@@ -402,7 +397,6 @@ async function subscribeToFollows() {
     sub.condition.moderator_user_id   === process.env.TWITCH_CHANNEL_ID
   );
   if (existing) {
-    console.log("ℹ️ Subscription channel.follow v2 déjà existante, ID =", existing.id);
     return;
   }
 
@@ -421,10 +415,7 @@ async function subscribeToFollows() {
   // 5️⃣ Envoi la création
   try {
     const createRes = await axios.post(endpoint, payload, { headers });
-    console.log("✅ Subscription channel.follow v2 créée, ID =", createRes.data.data[0].id);
   } catch (err) {
-    console.error("Twitch subscription error status:", err.response?.status);
-    console.error("Twitch subscription error body:", err.response?.data);
     throw err;
   }
 }
