@@ -420,10 +420,6 @@ async function subscribeToFollows() {
       secret:   process.env.WEBHOOK_SECRET,
     }
   };
-
-  payload = stripSemicolons(payload);
-
-console.log("🛠 Payload sanitized:", JSON.stringify(payload, null, 2));
   // 5️⃣ Envoi la création
   try {
     const createRes = await axios.post(endpoint, payload, { headers });
