@@ -420,6 +420,7 @@ async function subscribeToFollows() {
 
   payload = deepStripSemicolons(payload);
 
+payload = deepStripSemicolons(payload);
 payload.transport.callback =
   payload.transport.callback
     .replace(/[\s\u00A0\uFEFF]+$/g, "")
@@ -432,6 +433,9 @@ console.log(
   "→ derniers chars:",
   [...cb].slice(-5).map(c => `${c}|${c.charCodeAt(0)}`).join("  ")
 );
+
+    console.log("🛠 Payload sanitized:", JSON.stringify(payload, null, 2));
+    console.log("🛠 endpoint sanitized:", endpoint);
 
   // 5️⃣ Envoi la création
   try {
