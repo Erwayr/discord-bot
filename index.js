@@ -407,7 +407,8 @@ async function subscribeToFollows() {
   }
 
   let callbackUrl = "https://discord-bot-production-95c5.up.railway.app/twitch-callback";
-
+// et enlève à nouveau tout ; ou espace qui traînerait
+callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
 console.log("🔍 Final callbackUrl:", callbackUrl);
 
   // 4️⃣ Monte le payload en version 2
@@ -425,6 +426,9 @@ console.log("🔍 Final callbackUrl:", callbackUrl);
     }
   };
 
+  payload = stripSemicolons(payload);
+
+console.log("🛠 Payload sanitized:", JSON.stringify(payload, null, 2));
   // 5️⃣ Envoi la création
   try {
     const createRes = await axios.post(endpoint, payload, { headers });
@@ -436,3 +440,17 @@ console.log("🔍 Final callbackUrl:", callbackUrl);
   }
 }
 
+function stripSemicolons(obj) {
+  if (typeof obj === "string") {
+    return obj.replace(/;/g, "");
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(stripSemicolons);
+  }
+  if (obj !== null && typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [k, stripSemicolons(v)])
+    );
+  }
+  return obj;
+}
