@@ -411,11 +411,10 @@ async function subscribeToFollows() {
     "https://api.twitch.tv/helix/eventsub/subscriptions",
     {
       headers,
-      params: { type: "channel.follow",verdion: "2" ,condition:{broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,moderator_user_id:process.env.TWITCH_CHANNEL_ID}},
+      params: { type: "channel.follow" },
     }
   );
   console.log("🗑️ Anciennes souscriptions channel.follow supprimées");
-
   // 4️⃣ Monte le payload en version 2
   let payload = {
     type:"channel.follow",
