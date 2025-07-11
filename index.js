@@ -393,6 +393,16 @@ async function subscribeToFollows() {
     "Content-Type":  "application/json",
   };
 
+      // 1️⃣ Supprime les anciennes souscriptions channel.follow
+  await axios.delete(
+    "https://api.twitch.tv/helix/eventsub/subscriptions",
+    {
+      headers,
+      params: { type: "channel.follow" },
+    }
+  );
+  console.log("🗑️ Anciennes souscriptions channel.follow supprimées");
+
   // 2️⃣ Liste les souscriptions existantes pour éviter le duplicate
   const listRes = await axios.get(endpoint, { headers });
   const existing = listRes.data.data.find(sub =>
@@ -406,15 +416,7 @@ async function subscribeToFollows() {
     return;
   }
 
-    // 1️⃣ Supprime les anciennes souscriptions channel.follow
-  await axios.delete(
-    "https://api.twitch.tv/helix/eventsub/subscriptions",
-    {
-      headers,
-      params: { type: "channel.follow" },
-    }
-  );
-  console.log("🗑️ Anciennes souscriptions channel.follow supprimées");
+
   // 4️⃣ Monte le payload en version 2
   let payload = {
     type:"channel.follow",
