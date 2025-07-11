@@ -417,6 +417,11 @@ async function subscribeToFollows() {
       secret:process.env.WEBHOOK_SECRET,
     }
   };
+
+  payload = deepStripSemicolons(payload);
+    console.log("🛠 Payload sanitized:", JSON.stringify(payload, null, 2));
+    console.log("🛠 endpoint sanitized:", endpoint);
+
   // 5️⃣ Envoi la création
   try {
     const createRes = await axios.post(endpoint, payload, { headers });
@@ -428,17 +433,17 @@ async function subscribeToFollows() {
   }
 }
 
-function stripSemicolons(obj) {
-  if (typeof obj === "string") {
-    return obj.replace(/;/g, "");
+function deepStripSemicolons(value) {
+  if (typeof value === "string") {
+    return value.replace(/;/g, "");
   }
-  if (Array.isArray(obj)) {
-    return obj.map(stripSemicolons);
+  if (Array.isArray(value)) {
+    return value.map(deepStripSemicolons);
   }
-  if (obj !== null && typeof obj === "object") {
+  if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(obj).map(([k, v]) => [k, stripSemicolons(v)])
+      Object.entries(value).map(([k, v]) => [k, deepStripSemicolons(v)])
     );
   }
-  return obj;
+  return value;
 }
