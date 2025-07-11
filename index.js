@@ -406,11 +406,6 @@ async function subscribeToFollows() {
     return;
   }
 
-  let callbackUrl = "https://discord-bot-production-95c5.up.railway.app/twitch-callback";
-// et enlève à nouveau tout ; ou espace qui traînerait
-callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
-console.log("🔍 Final callbackUrl:", callbackUrl);
-
   // 4️⃣ Monte le payload en version 2
   let payload = {
     type:    "channel.follow",
@@ -421,7 +416,7 @@ console.log("🔍 Final callbackUrl:", callbackUrl);
     },
     transport: {
       method:   "webhook",
-      callback: callbackUrl,
+      callback: "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
       secret:   process.env.WEBHOOK_SECRET,
     }
   };
