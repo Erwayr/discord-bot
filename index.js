@@ -408,7 +408,12 @@ async function subscribeToFollows() {
 
   // 3️⃣ Construis ton callback URL proprement
   let domain = (process.env.RAILWAY_PUBLIC_DOMAIN || "").replace(/[;\s]+$/, "");
-  const callbackUrl = `https://${domain}/twitch-callback`;
+
+  let callbackUrl = `https://${domain}/twitch-callback`;
+// et enlève à nouveau tout ; ou espace qui traînerait
+callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
+
+console.log("🔍 Final callbackUrl:", callbackUrl);
 
   // 4️⃣ Monte le payload en version 2
   const payload = {
