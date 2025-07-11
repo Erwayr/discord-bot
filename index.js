@@ -110,7 +110,7 @@ app.post("/twitch-callback", async (req, res) => {
     const userId    = event.user_id;       // id numérique
     const followedAt= new Date(event.followed_at);
 
-    const ref = db.collection("followers_all_time").doc(login.tolowerCase());
+    const ref = db.collection("followers_all_time").doc(login.toLowerCase());
     const snap = await ref.get();
 
     if (snap.exists) {
@@ -119,7 +119,7 @@ app.post("/twitch-callback", async (req, res) => {
     } else {
       // création du doc pour ce nouveau follower
       await ref.set({
-        pseudo: login.tolowerCase(),
+        pseudo: login.toLowerCase(),
         twitchId: userId,
         followDate: followedAt,
         cards_generated: [],
