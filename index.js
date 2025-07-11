@@ -414,13 +414,11 @@ async function subscribeToFollows() {
     transport:{
       callback:"https://discord-bot-production-95c5.up.railway.app/twitch-callback",
       method:"webhook",
-      secret:process.env.WEBHOOK_SECRET,
+      secret:process.env.WEBHOOK_SECRET
     }
   };
 
   payload = deepStripSemicolons(payload);
-
-payload = deepStripSemicolons(payload);
 payload.transport.callback =
   payload.transport.callback
     .replace(/[\s\u00A0\uFEFF]+$/g, "")
