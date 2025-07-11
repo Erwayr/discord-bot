@@ -405,7 +405,6 @@ async function subscribeToFollows() {
   // 3️⃣ Construis ton callback URL proprement
   let domain = (process.env.RAILWAY_PUBLIC_DOMAIN || "").replace(/[;\s]+$/, "");
   const callbackUrl = `https://${domain}/twitch-callback`;
-  console.log("🔍 Final callbackUrl:", JSON.stringify(callbackUrl));
 
   // 4️⃣ Monte le payload en version 2
   const payload = {
@@ -421,7 +420,6 @@ async function subscribeToFollows() {
       secret:   process.env.WEBHOOK_SECRET,
     }
   };
-  console.log("🔍 Payload ready:", JSON.stringify(payload, null, 2));
 
   // 5️⃣ Envoi la création
   try {
