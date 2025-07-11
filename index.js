@@ -363,21 +363,29 @@ async function assignOldMemberCards(db) {
 }
 
 async function subscribeToFollows() {
-  // ─── 0️⃣ Préconditions: tu dois avoir dans ton .env ───
-  // TWITCH_MODERATOR_OAUTH_TOKEN = un token OAuth "user" avec scope "moderator:read:followers"
-  // TWITCH_MODERATOR_USER_ID    = l'ID numeric du compte modérateur
-  // TWITCH_CHANNEL_ID           = l'ID numeric de ta chaîne
-  // RAILWAY_PUBLIC_DOMAIN       = ton domaine sans "https://" ni "/"
 
   const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
 
-    const modToken = await refreshModeratorToken(db);
+  await refreshModeratorToken(db);
 
 
-  // 1️⃣ Headers avec le token modérateur, pas client_credentials
+// 1️⃣ Récupère l’App Access Token (client_credentials)
+  const { data: appData } = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null,
+    {
+      params: {
+        client_id:     process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+        grant_type:    "client_credentials",
+      }
+    }
+  );
+  const appToken = appData.access_token;
+
   const headers = {
     "Client-ID":     process.env.TWITCH_CLIENT_ID,
-    "Authorization": `Bearer ${modToken}`,
+    "Authorization": `Bearer ${appToken}`,
     "Content-Type":  "application/json",
   };
 
