@@ -417,6 +417,9 @@ async function subscribeToFollows() {
       secret:process.env.WEBHOOK_SECRET,
     }
   };
+
+    payload = JSON.parse(payload);
+
   // 5️⃣ Envoi la création
   try {
     const createRes = await axios.post(endpoint, payload, { headers });
