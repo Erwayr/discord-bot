@@ -419,6 +419,9 @@ async function subscribeToFollows() {
   };
 
   payload = deepStripSemicolons(payload);
+
+  payload.transport.callback = payload.transport.callback.replace(/;+$/, "");
+
     console.log("🛠 Payload sanitized:", JSON.stringify(payload, null, 2));
     console.log("🛠 endpoint sanitized:", endpoint);
 
