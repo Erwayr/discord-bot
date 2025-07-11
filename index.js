@@ -388,7 +388,7 @@ async function subscribeToFollows() {
   const appToken = appData.access_token;
 
   const headers = {
-    "Client-ID":     process.env.TWITCH_CLIENT_ID,
+    "Client-ID": process.env.TWITCH_CLIENT_ID,
     "Authorization": `Bearer ${appToken}`,
     "Content-Type":  "application/json",
   };
@@ -406,6 +406,16 @@ async function subscribeToFollows() {
     return;
   }
 
+    // 1️⃣ Supprime les anciennes souscriptions channel.follow
+  await axios.delete(
+    "https://api.twitch.tv/helix/eventsub/subscriptions",
+    {
+      headers,
+      params: { type: "channel.follow" },
+    }
+  );
+  console.log("🗑️ Anciennes souscriptions channel.follow supprimées");
+  
   // 4️⃣ Monte le payload en version 2
   let payload = {
     type:"channel.follow",
