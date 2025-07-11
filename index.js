@@ -412,7 +412,7 @@ callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
 console.log("🔍 Final callbackUrl:", callbackUrl);
 
   // 4️⃣ Monte le payload en version 2
-  const payload = {
+  let payload = {
     type:    "channel.follow",
     version: "2",
     condition: {
