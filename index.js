@@ -410,16 +410,13 @@ async function subscribeToFollows() {
   let payload = {
     type:"channel.follow",
     version:"2",
-    condition:{broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,moderator_user_id:   process.env.TWITCH_CHANNEL_ID},
+    condition:{broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,moderator_user_id:process.env.TWITCH_CHANNEL_ID},
     transport:{
       callback:"https://discord-bot-production-95c5.up.railway.app/twitch-callback",
       method:"webhook",
       secret:process.env.WEBHOOK_SECRET,
     }
   };
-
-    payload = JSON.parse(payload);
-
   // 5️⃣ Envoi la création
   try {
     const createRes = await axios.post(endpoint, payload, { headers });
