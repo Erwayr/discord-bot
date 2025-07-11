@@ -412,28 +412,11 @@ async function subscribeToFollows() {
     version:"2",
     condition:{broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,moderator_user_id:process.env.TWITCH_CHANNEL_ID},
     transport:{
-      callback:"https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+      callback:"https://discord-bot-production-95c5.up.railway.app/twitch-callbackcoucou",
       method:"webhook",
       secret:process.env.WEBHOOK_SECRET
     }
   };
-
-  payload = deepStripSemicolons(payload);
-payload.transport.callback =
-  payload.transport.callback
-    .replace(/[\s\u00A0\uFEFF]+$/g, "")
-    .replace(/[\u003B\uFF1B]+$/g, "");
-
-// 3) diagnostic
-const cb = payload.transport.callback;
-console.log("→ raw callback:", JSON.stringify(cb));
-console.log(
-  "→ derniers chars:",
-  [...cb].slice(-5).map(c => `${c}|${c.charCodeAt(0)}`).join("  ")
-);
-
-    console.log("🛠 Payload sanitized:", JSON.stringify(payload, null, 2));
-    console.log("🛠 endpoint sanitized:", endpoint);
 
   // 5️⃣ Envoi la création
   try {
