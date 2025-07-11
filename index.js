@@ -88,15 +88,13 @@ function verifyTwitchSignature(req) {
   );
 }
 
-
-app.get("/health", (_req, res) => {
-  return res.status(200).send("OK");
-});
 // Route de callback pour Twitch EventSub
 app.post("/twitch-callback", async (req, res) => {
     console.log("📬 /twitch-callback headers:", req.headers);
   console.log("📬 /twitch-callback body:", JSON.stringify(req.body));
   // 1) Lors de l'enregistrement, Twitch envoie un challenge
+  console.log("➡️ Received challenge:", req.body.challenge);
+
   if (req.body.challenge) {
     return res.status(200).send(req.body.challenge);
   }
