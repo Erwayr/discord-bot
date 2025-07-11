@@ -70,7 +70,7 @@ const client = new Client({
 const app = express();
 app.use(bodyParser.json()); // pour parser les JSON Twitch
 
-const TWITCH_SECRET = process.env.TWITCH_CLIENT_SECRET; 
+const TWITCH_SECRET = process.env.WEBHOOK_SECRET; 
 // le "secret" que tu donnes à Twitch lors de la création de la webhook
 
 // Fonction utilitaire pour vérifier la signature Twitch
