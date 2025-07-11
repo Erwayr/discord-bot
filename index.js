@@ -438,14 +438,16 @@ async function subscribeToFollows() {
 
 function deepStripSemicolons(value) {
   if (typeof value === "string") {
-    return value.replace(/;/g, "");
+    // supprime à la fois ; ASCII (U+003B) et full-width (U+FF1B)
+    return value.replace(/[\u003B\uFF1B]/g, "");
   }
   if (Array.isArray(value)) {
     return value.map(deepStripSemicolons);
   }
-  if (value !== null && typeof value === "object") {
+  if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, deepStripSemicolons(v)])
+      Object.entries(value)
+            .map(([k, v]) => [k, deepStripSemicolons(v)])
     );
   }
   return value;
