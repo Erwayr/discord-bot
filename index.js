@@ -406,12 +406,7 @@ async function subscribeToFollows() {
     return;
   }
 
-  // 3️⃣ Construis ton callback URL proprement
-  let domain = (process.env.RAILWAY_PUBLIC_DOMAIN || "").replace(/[;\s]+$/, "");
-
-  let callbackUrl = `https://${domain}/twitch-callback`;
-// et enlève à nouveau tout ; ou espace qui traînerait
-callbackUrl = callbackUrl.replace(/[;\s]+$/, "");
+  let callbackUrl = "https://discord-bot-production-95c5.up.railway.app/twitch-callback";
 
 console.log("🔍 Final callbackUrl:", callbackUrl);
 
