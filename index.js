@@ -88,6 +88,10 @@ function verifyTwitchSignature(req) {
   );
 }
 
+
+app.get("/health", (_req, res) => {
+  return res.status(200).send("OK");
+});
 // Route de callback pour Twitch EventSub
 app.post("/twitch-callback", async (req, res) => {
     console.log("📬 /twitch-callback headers:", req.headers);
