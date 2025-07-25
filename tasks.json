@@ -1,0 +1,56 @@
+[
+  {
+    "day": 1,
+    "type": "clip",
+    "description": "📺 Partage ton clip Twitch préféré d’Erwayr dans #vos-clips",
+    "channel": "vos-clips",
+    "points": 4
+  },
+  {
+    "day": 3,
+    "type": "vote",
+    "description": "🗳️ Va dans #vos-clips, regarde les clips postés hier, et réagis à celui que tu préfères avec un ❤️.",
+    "channel": "clips-du-jour",
+    "emoji": "❤️",
+    "points": 3
+  },
+  {
+    "day": 5,
+    "type": "discussion",
+    "description": "💬 Lance une discussion dans #vos-jeux-incontournables sur un jeu que tu attends (minimum 20 mots)",
+    "channel":"vos-jeux-incontournables",
+    "minWords": 20,
+    "points": 3
+  },
+  {
+    "day": 7,
+    "type": "idea",
+    "description": "🌐 Propose une amélioration ou une nouvelle fonctionnalité que tu aimerais voir sur le site de la commu ! Poste ton idée dans #idée-site-commu (au moins 15 mots).",
+    "channel": "idée-site-commu",
+    "minWords": 15,
+    "points": 4
+  },
+  {
+    "day": 9,
+    "type": "quiz",
+    "description": "🧠 Réponds correctement au quiz du jour dans #général",
+    "channel": "général",
+    "points": 4
+  },
+  {
+    "day": 11,
+    "type": "media",
+    "description": "🎨 Poste un meme ou une image originale dans #humour pour faire rire la commu !",
+    "channel": "humour",
+    "requiresImage": true,
+    "points": 3
+  },
+  {
+    "day": 13,
+    "type": "fanart",
+    "description": "🖌️ Crée un fanart pour la chaîne et poste-le dans #fanarts (dessin, montage, affiche, peu importe ton style !)",
+    "channel": "fanarts",
+    "requiresImage": true,
+    "points": 5
+  }
+]
