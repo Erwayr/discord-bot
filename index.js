@@ -6,22 +6,21 @@ const {
   GatewayIntentBits,
   ActivityType,
   Events,
-  Partials
+  Partials,
 } = require("discord.js");
 require("dotenv").config();
 
 const admin = require("firebase-admin");
 const axios = require("axios");
-const express     = require("express");
-const bodyParser  = require("body-parser");
-const crypto      = require("crypto");
+const express = require("express");
+const bodyParser = require("body-parser");
+const crypto = require("crypto");
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
 const cron = require("node-cron");
-
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
@@ -59,31 +58,32 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.GuildPresences
+    GatewayIntentBits.GuildPresences,
   ],
   partials: [
     Partials.Channel,
-   Partials.Message,        // ← pour récupérer les vieux messages
-   Partials.Reaction  ],
+    Partials.Message, // ← pour récupérer les vieux messages
+    Partials.Reaction,
+  ],
 });
 
 const app = express();
 app.use(bodyParser.json()); // pour parser les JSON Twitch
 
-const TWITCH_SECRET = process.env.WEBHOOK_SECRET; 
+const TWITCH_SECRET = process.env.WEBHOOK_SECRET;
 // le "secret" que tu donnes à Twitch lors de la création de la webhook
 
 // Fonction utilitaire pour vérifier la signature Twitch
 function verifyTwitchSignature(req) {
-  const messageId    = req.header("Twitch-Eventsub-Message-Id");
-  const timestamp    = req.header("Twitch-Eventsub-Message-Timestamp");
-  const signature    = req.header("Twitch-Eventsub-Message-Signature");
-  const body         = JSON.stringify(req.body);
-  const hmac         = crypto.createHmac("sha256", TWITCH_SECRET);
+  const messageId = req.header("Twitch-Eventsub-Message-Id");
+  const timestamp = req.header("Twitch-Eventsub-Message-Timestamp");
+  const signature = req.header("Twitch-Eventsub-Message-Signature");
+  const body = JSON.stringify(req.body);
+  const hmac = crypto.createHmac("sha256", TWITCH_SECRET);
   hmac.update(messageId + timestamp + body);
-  const expectedSig  = `sha256=${hmac.digest("hex")}`;
+  const expectedSig = `sha256=${hmac.digest("hex")}`;
   return crypto.timingSafeEqual(
-    Buffer.from(expectedSig), 
+    Buffer.from(expectedSig),
     Buffer.from(signature)
   );
 }
@@ -101,9 +101,9 @@ app.post("/twitch-callback", async (req, res) => {
 
   const { subscription, event } = req.body;
   if (subscription.type === "channel.follow") {
-    const login     = event.user_login;    // pseudo Twitch
-    const userId    = event.user_id;       // id numérique
-    const followedAt= new Date(event.followed_at);
+    const login = event.user_login; // pseudo Twitch
+    const userId = event.user_id; // id numérique
+    const followedAt = new Date(event.followed_at);
 
     const ref = db.collection("followers_all_time").doc(login.toLowerCase());
     const snap = await ref.get();
@@ -151,62 +151,64 @@ client.once(Events.ClientReady, async () => {
   );
 
   cron.schedule("0 */4 * * *", () => {
-  refreshModeratorToken(db).catch(console.error);
-});
+    refreshModeratorToken(db).catch(console.error);
+  });
 
-const processingQueues = new Map();
+  const processingQueues = new Map();
 
-db.collection("followers_all_time").onSnapshot(
-  (snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      if (change.type !== "modified") return;
+  db.collection("followers_all_time").onSnapshot(
+    (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type !== "modified") return;
 
-      const data = change.doc.data();
-      if (!data.discord_id) return;
+        const data = change.doc.data();
+        if (!data.discord_id) return;
 
-      const cards = Array.isArray(data.cards_generated)
-        ? data.cards_generated
-        : [];
+        const cards = Array.isArray(data.cards_generated)
+          ? data.cards_generated
+          : [];
 
-      // ne garder que les cartes sans notifiedAt
-      const newCards = cards.filter((c) => !c.notifiedAt);
-      if (newCards.length === 0) return;
+        // ne garder que les cartes sans notifiedAt
+        const newCards = cards.filter((c) => !c.notifiedAt);
+        if (newCards.length === 0) return;
 
-      for (const card of newCards) {
-        // clé de queue = titre de la carte
-      const idSource = card.title != null && card.title !== "" && card.title !== undefined
-        ? card.title
-        : `${card.isSub}_${card.hasRedemption}`;
-      const titleKey = `${idSource}${data.pseudo}`;
-        if (processingQueues.has(titleKey)) continue;
-        const prev     = processingQueues.get(titleKey) || Promise.resolve();
+        for (const card of newCards) {
+          // clé de queue = titre de la carte
+          const idSource =
+            card.title != null && card.title !== "" && card.title !== undefined
+              ? card.title
+              : `${card.isSub}_${card.hasRedemption}`;
+          const titleKey = `${idSource}${data.pseudo}`;
+          if (processingQueues.has(titleKey)) continue;
+          const prev = processingQueues.get(titleKey) || Promise.resolve();
 
-        const next = prev.then(async () => {
-          const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-          const collectionLink = `[collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
+          const next = prev.then(async () => {
+            const generalChannel = await client.channels.fetch(
+              GENERAL_CHANNEL_ID
+            );
+            const collectionLink = `[collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
 
-          const mention = `<@${data.discord_id}>`;
-          const baseMsg = card.title
-            ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
-            : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-          await generalChannel.send(
-            `${baseMsg}\n👉 Check ta ${collectionLink}`
-          );
+            const mention = `<@${data.discord_id}>`;
+            const baseMsg = card.title
+              ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
+              : `🎉 ${mention} vient de gagner une nouvelle carte !`;
+            await generalChannel.send(
+              `${baseMsg}\n👉 Check ta ${collectionLink}`
+            );
 
-          // marque en base
-          card.notifiedAt = new Date().toISOString();
-          if(!card.isAlreadyView) card.isAlreadyView = false;
-          await change.doc.ref.update({ cards_generated: cards });
-        });
+            // marque en base
+            card.notifiedAt = new Date().toISOString();
+            if (!card.isAlreadyView) card.isAlreadyView = false;
+            await change.doc.ref.update({ cards_generated: cards });
+          });
 
-        processingQueues.set(titleKey, next);
-        next.catch(console.error);
-      }
-    });
-  },
-  (err) => console.error("Listener Firestore error:", err)
-);
-
+          processingQueues.set(titleKey, next);
+          next.catch(console.error);
+        }
+      });
+    },
+    (err) => console.error("Listener Firestore error:", err)
+  );
 });
 
 // Log des DM bruts comme avant
@@ -241,11 +243,17 @@ client.on(Events.GuildMemberAdd, async (member) => {
   });
 });
 
-client.on(Events.MessageReactionAdd, (r, u) => handleVoteChange(r, u, true,db));
-client.on(Events.MessageReactionRemove, (r, u) => handleVoteChange(r, u, false,db));
+client.on(Events.MessageReactionAdd, (r, u) =>
+  handleVoteChange(r, u, true, db)
+);
+client.on(Events.MessageReactionRemove, (r, u) =>
+  handleVoteChange(r, u, false, db)
+);
 
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
+
+  await messageCountHandler(message, db); // 🔄 Mise à jour du compteur
 
   await electionHandler(message, db, GENERAL_CHANNEL_ID);
   if (message.content.trim() === "!rank") {
@@ -273,18 +281,14 @@ async function refreshModeratorToken(db) {
   const oldRefresh = snap.data().refresh_token;
 
   // Appel pour rafraîchir
-  const res = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
-    null,
-    {
-      params: {
-        grant_type:    "refresh_token",
-        refresh_token: oldRefresh,
-        client_id:     process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-      }
-    }
-  );
+  const res = await axios.post("https://id.twitch.tv/oauth2/token", null, {
+    params: {
+      grant_type: "refresh_token",
+      refresh_token: oldRefresh,
+      client_id: process.env.TWITCH_CLIENT_ID,
+      client_secret: process.env.TWITCH_CLIENT_SECRET,
+    },
+  });
 
   const { access_token, refresh_token: newRefresh } = res.data;
 
@@ -295,17 +299,15 @@ async function refreshModeratorToken(db) {
   return access_token;
 }
 
-
 client.login(process.env.DISCORD_BOT_TOKEN);
-
 
 const BATCH_SIZE = 10;
 
 async function assignOldMemberCards(db) {
   // 1️⃣ Récupérer la carte
   const cardSnap = await db
-    .collection('cards_collections')
-    .doc('discord_old_member')
+    .collection("cards_collections")
+    .doc("discord_old_member")
     .get();
   if (!cardSnap.exists) {
     console.error('❌ Carte "discord_old_member" introuvable');
@@ -318,12 +320,9 @@ async function assignOldMemberCards(db) {
   const eligibleIds = [];
   for (const guild of client.guilds.cache.values()) {
     const members = await guild.members.fetch();
-    members.forEach(m => {
-      if (
-        !m.user.bot &&
-        m.joinedTimestamp &&
-        m.joinedTimestamp < oneYearAgo
-      ) eligibleIds.push(m.id);
+    members.forEach((m) => {
+      if (!m.user.bot && m.joinedTimestamp && m.joinedTimestamp < oneYearAgo)
+        eligibleIds.push(m.id);
     });
   }
   if (eligibleIds.length === 0) return;
@@ -332,14 +331,14 @@ async function assignOldMemberCards(db) {
   for (let i = 0; i < eligibleIds.length; i += BATCH_SIZE) {
     const chunk = eligibleIds.slice(i, i + BATCH_SIZE);
     const snap = await db
-      .collection('followers_all_time')
-      .where('discord_id', 'in', chunk)
+      .collection("followers_all_time")
+      .where("discord_id", "in", chunk)
       .get();
     if (snap.empty) continue;
 
     const batch = db.batch();
 
-    snap.docs.forEach(doc => {
+    snap.docs.forEach((doc) => {
       const data = doc.data();
 
       // 4️⃣ Vérifier la propriété isAlreadyWinDiscordOldMember
@@ -351,9 +350,11 @@ async function assignOldMemberCards(db) {
       // 5️⃣ On ajoute la carte ET on positionne le flag
       batch.update(doc.ref, {
         cards_generated: admin.firestore.FieldValue.arrayUnion(oldMemberCard),
-        isAlreadyWinDiscordOldMember: true
+        isAlreadyWinDiscordOldMember: true,
       });
-      console.log(`🎉 Carte "discord_old_member" attribuée à ${data.discord_id}`);
+      console.log(
+        `🎉 Carte "discord_old_member" attribuée à ${data.discord_id}`
+      );
     });
 
     await batch.commit();
@@ -362,39 +363,38 @@ async function assignOldMemberCards(db) {
 }
 
 async function subscribeToFollows() {
-
   const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
 
   await refreshModeratorToken(db);
 
-
-// 1️⃣ Récupère l’App Access Token (client_credentials)
+  // 1️⃣ Récupère l’App Access Token (client_credentials)
   const { data: appData } = await axios.post(
     "https://id.twitch.tv/oauth2/token",
     null,
     {
       params: {
-        client_id:     process.env.TWITCH_CLIENT_ID,
+        client_id: process.env.TWITCH_CLIENT_ID,
         client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type:    "client_credentials",
-      }
+        grant_type: "client_credentials",
+      },
     }
   );
   const appToken = appData.access_token;
 
   const headers = {
-    "Client-ID":     process.env.TWITCH_CLIENT_ID,
-    "Authorization": `Bearer ${appToken}`,
-    "Content-Type":  "application/json",
+    "Client-ID": process.env.TWITCH_CLIENT_ID,
+    Authorization: `Bearer ${appToken}`,
+    "Content-Type": "application/json",
   };
 
   // 2️⃣ Liste les souscriptions existantes pour éviter le duplicate
   const listRes = await axios.get(endpoint, { headers });
-  const existing = listRes.data.data.find(sub =>
-    sub.type === "channel.follow" &&
-    sub.version === "2" &&
-    sub.condition.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID &&
-    sub.condition.moderator_user_id   === process.env.TWITCH_CHANNEL_ID
+  const existing = listRes.data.data.find(
+    (sub) =>
+      sub.type === "channel.follow" &&
+      sub.version === "2" &&
+      sub.condition.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID &&
+      sub.condition.moderator_user_id === process.env.TWITCH_CHANNEL_ID
   );
   if (existing) {
     return;
@@ -402,14 +402,18 @@ async function subscribeToFollows() {
 
   // 4️⃣ Monte le payload en version 2
   let payload = {
-    type:"channel.follow",
-    version:"2",
-    condition:{broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,moderator_user_id:process.env.TWITCH_CHANNEL_ID},
-    transport:{
-      callback:"https://discord-bot-production-95c5.up.railway.app/twitch-callback",
-      method:"webhook",
-      secret:process.env.WEBHOOK_SECRET
-    }
+    type: "channel.follow",
+    version: "2",
+    condition: {
+      broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,
+      moderator_user_id: process.env.TWITCH_CHANNEL_ID,
+    },
+    transport: {
+      callback:
+        "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+      method: "webhook",
+      secret: process.env.WEBHOOK_SECRET,
+    },
   };
 
   // 5️⃣ Envoi la création
@@ -430,8 +434,7 @@ function deepStripSemicolons(value) {
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value)
-            .map(([k, v]) => [k, deepStripSemicolons(v)])
+      Object.entries(value).map(([k, v]) => [k, deepStripSemicolons(v)])
     );
   }
   return value;
