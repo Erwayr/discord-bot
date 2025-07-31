@@ -17,6 +17,7 @@ const bodyParser = require("body-parser");
 const crypto = require("crypto");
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
+const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
