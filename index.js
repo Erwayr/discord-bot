@@ -25,6 +25,7 @@ const {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
   upsertParticipantFromSubscription,
+  upsertFollowerMonthsFromSub,
 } = require("./script/manageRedemption");
 const { mountTwitchAuth } = require("./script/authTwitch");
 const { createTokenManager } = require("./script/tokenManager");
@@ -186,13 +187,38 @@ app.post("/twitch-callback", async (req, res) => {
     }
     console.log(`⚡ Nouveau follow détecté : ${login}`);
   }
-
   if (
     subscription.type === "channel.subscribe" ||
     subscription.type === "channel.subscription.message"
   ) {
     try {
-      await upsertParticipantFromSubscription(db, event); // (voir fonction ci-dessous)
+      // 1) upsert participant (isSub=true)
+      await upsertParticipantFromSubscription(db, event);
+
+      await upsertFollowerMonthsFromSub(db, event);
+
+      // 2) message Discord
+      try {
+        const login = (
+          event.user_login ||
+          event.user?.login ||
+          ""
+        ).toLowerCase();
+        const display = event.user_name || event.user?.name || login;
+        const mention = await buildSubMention(db, login, display); // mentionne le discord si on l’a
+        const text = formatSubDiscordMessage(event, {
+          type: subscription.type,
+          mention,
+        });
+
+        const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+        if (generalChannel?.isTextBased()) {
+          await generalChannel.send(text);
+        }
+      } catch (e) {
+        console.warn("Discord notify (sub) failed:", e.message);
+      }
+
       console.log(
         `⭐ Sub enregistré pour ${event.user_login || event.user?.login}`
       );
@@ -578,4 +604,50 @@ async function subscribeToSubs() {
 
   await ensure("channel.subscribe"); // nouveaux abonnements (incl. gifts destinataire)
   await ensure("channel.subscription.message"); // resub / share sub
+}
+
+function tierLabelFromEvent(e) {
+  const map = {
+    1000: "Tier 1",
+    2000: "Tier 2",
+    3000: "Tier 3",
+    Prime: "Prime",
+  };
+  return map[e?.tier] || (e?.is_prime ? "Prime" : "Tier ?");
+}
+
+async function buildSubMention(db, login, display) {
+  try {
+    const snap = await db.collection("participants").doc(login).get();
+    const discordId = snap.exists ? snap.data()?.discord_id : null;
+    return discordId ? `<@${discordId}>` : display || login;
+  } catch {
+    return display || login;
+  }
+}
+
+function formatSubDiscordMessage(e, { type, mention }) {
+  const tier = tierLabelFromEvent(e);
+  const isGift = !!e?.is_gift;
+  const gifter = e?.gifter_user_name || e?.gifter_user_login;
+
+  if (type === "channel.subscription.message") {
+    const months =
+      e?.cumulative_months ?? e?.duration_months ?? e?.streak_months;
+    const msg = e?.message?.text?.trim();
+    let line =
+      isGift && gifter
+        ? `🎁 ${mention} a reçu un sub ${tier} offert par **${gifter}** — merci !`
+        : `⭐ ${mention} s'est réabonné (${tier}${
+            months ? ` • ${months} mois` : ""
+          })`;
+    if (msg) line += `\n💬 “${msg.slice(0, 180)}”`;
+    return line;
+  }
+
+  // channel.subscribe
+  if (isGift && gifter) {
+    return `🎁 ${mention} a reçu un sub ${tier} offert par **${gifter}** — bienvenue !`;
+  }
+  return `⭐ ${mention} s'est abonné (${tier}) — bienvenue !`;
 }

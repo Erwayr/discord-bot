@@ -137,8 +137,56 @@ async function upsertParticipantFromSubscription(db, e) {
   });
 }
 
+async function upsertFollowerMonthsFromSub(db, e) {
+  // e peut venir de "channel.subscribe" ou "channel.subscription.message"
+  const login = (e.user_login || e.user?.login || "").toLowerCase();
+  if (!login) return;
+
+  // Mois cumulés / durée / série (selon le type d’event, tout n’est pas toujours présent)
+  const monthsTotal = Number(
+    e.cumulative_months ?? e.duration_months ?? e.streak_months ?? 1
+  );
+  const monthsStreak =
+    e.streak_months != null ? Number(e.streak_months) : undefined;
+
+  // Tier lisible
+  const tierMap = { 1000: "Tier 1", 2000: "Tier 2", 3000: "Tier 3" };
+  const isPrime = !!e.is_prime || e.tier === "Prime";
+  const tierLabel = isPrime ? "Prime" : tierMap[String(e.tier)] || null;
+
+  const ref = db.collection("followers_all_time").doc(login);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? snap.data() : {};
+
+    // On évite de "réduire" la valeur si Twitch nous renvoie moins d’info
+    const newTotal = Math.max(
+      Number(existing.subMonthsTotal || 0),
+      isNaN(monthsTotal) ? 0 : monthsTotal
+    );
+
+    const update = {
+      // champs top-level pour rester homogène avec ta collection
+      subMonthsTotal: newTotal,
+      // si Twitch ne fournit pas streak, on garde l’ancienne valeur
+      ...(monthsStreak != null ? { subMonthsStreak: monthsStreak } : {}),
+      subTier: tierLabel,
+      lastSubAt: new Date().toISOString(),
+      lastSubIsGift: !!e.is_gift,
+    };
+
+    // Backfill léger s'il manque le pseudo/twitchId (optionnel)
+    if (!existing.pseudo) update.pseudo = login;
+    if (!existing.twitchId && e.user_id) update.twitchId = e.user_id;
+
+    tx.set(ref, update, { merge: true });
+  });
+}
+
 module.exports = {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
   upsertParticipantFromSubscription,
+  upsertFollowerMonthsFromSub,
 };
