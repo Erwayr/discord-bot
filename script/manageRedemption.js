@@ -1,7 +1,7 @@
 const MAX_IDS = 50;
 
 /** PATCH Twitch: FULFILLED/CANCELED pour 1..n redemptions */
-async function updateRedemptionStatus({
+module.exports = async function updateRedemptionStatus({
   broadcasterId,
   rewardId,
   redemptionIds,
@@ -28,7 +28,7 @@ async function updateRedemptionStatus({
       }
     );
   }
-}
+};
 
 /**
  * Ajoute/met à jour un participant dans `participants/{login}`.
@@ -36,7 +36,7 @@ async function updateRedemptionStatus({
  * - remplit les champs manquants depuis `followers_all_time/{login}` si dispo
  * - met `hasRedemption: true` + timestamps
  */
-async function upsertParticipantFromRedemption(db, r) {
+module.exports = async function upsertParticipantFromRedemption(db, r) {
   const login = (r.user_login || r.user?.login || "").toLowerCase();
   if (!login) return;
 
@@ -86,4 +86,4 @@ async function upsertParticipantFromRedemption(db, r) {
 
     tx.set(partRef, update, { merge: true });
   });
-}
+};
