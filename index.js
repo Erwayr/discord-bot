@@ -21,12 +21,12 @@ const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
-const manageRedemption = require("./script/manageRedemption");
+const {
+  updateRedemptionStatus,
+  upsertParticipantFromRedemption,
+} = require("./script/manageRedemption");
 const { mountTwitchAuth } = require("./script/authTwitch");
 const { createTokenManager } = require("./script/tokenManager");
-const tokenManager = createTokenManager(db, {
-  docPath: "settings/twitch_moderator",
-});
 const cron = require("node-cron");
 
 process.on("uncaughtException", (err) => {
@@ -51,6 +51,10 @@ admin.initializeApp({
 
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
+
+const tokenManager = createTokenManager(db, {
+  docPath: "settings/twitch_moderator",
+});
 
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
@@ -135,7 +139,7 @@ app.post("/twitch-callback", async (req, res) => {
       });
 
       // 2) Upsert participant (sans stocker la rédemption)
-      await manageRedemption.upsertParticipantFromRedemption(db, r);
+      await upsertParticipantFromRedemption(db, r);
 
       // 3) Optionnel: message Discord live
       try {
