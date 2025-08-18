@@ -61,6 +61,11 @@ async function upsertParticipantFromRedemption(db, r) {
       fetched_at: nowISO,
     };
 
+    // ⚖️ logique isSub demandée
+    if (!exists) {
+      update.isSub = false; // ✅ nouveau participant → isSub=false
+    }
+
     const backfill = (key, ...cands) => {
       if (existing[key] != null) return;
       for (const c of cands) {
@@ -85,4 +90,55 @@ async function upsertParticipantFromRedemption(db, r) {
   });
 }
 
-module.exports = { updateRedemptionStatus, upsertParticipantFromRedemption };
+async function upsertParticipantFromSubscription(db, e) {
+  const login = (e.user_login || e.user?.login || "").toLowerCase();
+  if (!login) return;
+
+  const partRef = db.collection("participants").doc(login);
+  const follRef = db.collection("followers_all_time").doc(login);
+
+  await db.runTransaction(async (tx) => {
+    const [partSnap, follSnap] = await Promise.all([
+      tx.get(partRef),
+      tx.get(follRef),
+    ]);
+    const existing = partSnap.exists ? partSnap.data() : {};
+    const foll = follSnap.exists ? follSnap.data() : {};
+    const nowISO = new Date().toISOString();
+
+    const update = {
+      pseudo: login,
+      display_name: e.user_name ?? existing.display_name,
+      twitch_id: e.user_id ?? existing.twitch_id,
+      isSub: true, // ✅ impose sub=true
+      subCheckedAt: nowISO,
+      fetched_at: nowISO,
+    };
+
+    // backfill sans écraser ce qui existe
+    const backfill = (key, ...cands) => {
+      if (existing[key] != null) return;
+      for (const c of cands)
+        if (foll[c] != null) {
+          update[key] = foll[c];
+          break;
+        }
+    };
+    backfill("avatar", "avatar", "avatar_url", "profile_image_url");
+    backfill("discord_id", "discord_id");
+    backfill("wizebotExp", "wizebotExp");
+    backfill("wizebotLevel", "wizebotLevel");
+    backfill("wizebotRank", "wizebotRank");
+    backfill("wizebotRankName", "wizebotRankName");
+    backfill("wizebotUptime", "wizebotUptime");
+    backfill("wizebotUptimeRank", "wizebotUptimeRank");
+
+    tx.set(partRef, update, { merge: true });
+  });
+}
+
+module.exports = {
+  updateRedemptionStatus,
+  upsertParticipantFromRedemption,
+  upsertParticipantFromSubscription,
+};

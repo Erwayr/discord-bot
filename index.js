@@ -24,6 +24,7 @@ const handleVoteChange = require("./script/handleVoteChange");
 const {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
+  upsertParticipantFromSubscription,
 } = require("./script/manageRedemption");
 const { mountTwitchAuth } = require("./script/authTwitch");
 const { createTokenManager } = require("./script/tokenManager");
@@ -144,7 +145,7 @@ app.post("/twitch-callback", async (req, res) => {
 
       // 3) Optionnel: message Discord live
       try {
-        const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
           await generalChannel.send(
             `🎟️ ${r.user_name} a utilisé **${r.reward.title}** — participation enregistrée ✅`
@@ -186,6 +187,21 @@ app.post("/twitch-callback", async (req, res) => {
     console.log(`⚡ Nouveau follow détecté : ${login}`);
   }
 
+  if (
+    subscription.type === "channel.subscribe" ||
+    subscription.type === "channel.subscription.message"
+  ) {
+    try {
+      await upsertParticipantFromSubscription(db, event); // (voir fonction ci-dessous)
+      console.log(
+        `⭐ Sub enregistré pour ${event.user_login || event.user?.login}`
+      );
+    } catch (e) {
+      console.error("Sub upsert error:", e.response?.data || e.message);
+    }
+    return res.sendStatus(200);
+  }
+
   // 3) Toujours répondre 2xx pour acknowledge
   res.sendStatus(200);
 });
@@ -200,6 +216,7 @@ client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
   await subscribeToFollows().catch(console.error);
   await subscribeToRedemptions().catch(console.error);
+  await subscribeToSubs().catch(console.error);
 
   // ─── Pré-chargement des membres pour que presenceUpdate soit bien émis ───
   for (const guild of client.guilds.cache.values()) {
@@ -511,4 +528,54 @@ async function subscribeToRedemptions() {
 
   const created = await axios.post(endpoint, payload, { headers });
   console.log("✅ EventSub redemption.add créé:", created.data.data?.[0]?.id);
+}
+
+// AJOUTE ça dans index.js (à côté des autres subscribeTo*)
+async function subscribeToSubs() {
+  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+  const { data: appData } = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null,
+    {
+      params: {
+        client_id: process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+        grant_type: "client_credentials",
+      },
+    }
+  );
+  const appToken = appData.access_token;
+  const headers = {
+    "Client-ID": process.env.TWITCH_CLIENT_ID,
+    Authorization: `Bearer ${appToken}`,
+    "Content-Type": "application/json",
+  };
+
+  const list = await axios.get(endpoint, { headers });
+  const ensure = async (type) => {
+    const exists = list.data.data.find(
+      (s) =>
+        s.type === type &&
+        s.condition?.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+    );
+    if (exists) return;
+    await axios.post(
+      endpoint,
+      {
+        type,
+        version: "1",
+        condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
+        transport: {
+          method: "webhook",
+          callback:
+            "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+          secret: process.env.WEBHOOK_SECRET,
+        },
+      },
+      { headers }
+    );
+  };
+
+  await ensure("channel.subscribe"); // nouveaux abonnements (incl. gifts destinataire)
+  await ensure("channel.subscription.message"); // resub / share sub
 }
