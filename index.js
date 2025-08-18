@@ -146,10 +146,10 @@ app.post("/twitch-callback", async (req, res) => {
 
       // 3) Optionnel: message Discord live
       try {
-        const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
           await generalChannel.send(
-            `🎟️ ${r.user_name} a utilisé **${r.reward.title}** — participation enregistrée ✅`
+            `📜 Note prise : participation de ${r.user_name} confirmée — **${r.reward.title}** 🎟️`
           );
         }
       } catch (e) {
@@ -211,7 +211,7 @@ app.post("/twitch-callback", async (req, res) => {
           mention,
         });
 
-        const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
         if (generalChannel?.isTextBased()) {
           await generalChannel.send(text);
         }
