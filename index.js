@@ -87,7 +87,7 @@ mountTwitchAuth(app, db, {
   clientId: process.env.TWITCH_CLIENT_ID,
   clientSecret: process.env.TWITCH_CLIENT_SECRET,
   redirectUri:
-    "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+    "https://discord-bot-production-95c5.up.railway.app/auth/twitch/callback",
 });
 
 const TWITCH_SECRET = process.env.WEBHOOK_SECRET;
