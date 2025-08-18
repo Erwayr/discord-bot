@@ -49,7 +49,9 @@ async function upsertParticipantFromRedemption(db, r) {
       tx.get(partRef),
       tx.get(follRef),
     ]);
-    const existing = partSnap.exists ? partSnap.data() : {};
+
+    const exists = partSnap.exists; // ← ajoute cette ligne
+    const existing = exists ? partSnap.data() : {}; // ← utilise-la
     const foll = follSnap.exists ? follSnap.data() : {};
 
     const nowISO = new Date().toISOString();
@@ -77,7 +79,6 @@ async function upsertParticipantFromRedemption(db, r) {
     };
     backfill("avatar", "avatar", "avatar_url", "profile_image_url");
     backfill("discord_id", "discord_id");
-    backfill("isSub", "isSub");
     backfill("subCheckedAt", "subCheckedAt");
     backfill("wizebotExp", "wizebotExp");
     backfill("wizebotLevel", "wizebotLevel");
