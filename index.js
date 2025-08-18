@@ -22,6 +22,7 @@ const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
 const manageRedemption = require("./script/manageRedemption");
+const tokenManager = require("./script/manageRedemption");
 const cron = require("node-cron");
 
 process.on("uncaughtException", (err) => {
@@ -111,7 +112,7 @@ app.post("/twitch-callback", async (req, res) => {
 
     try {
       // 1) Fulfill immédiat
-      const accessToken = await refreshModeratorToken(db); // ton helper existant
+      const accessToken = await tokenManager.getAccessToken(); // ✅
       await updateRedemptionStatus({
         broadcasterId: process.env.TWITCH_CHANNEL_ID,
         rewardId: r.reward.id,
