@@ -114,6 +114,7 @@ app.post("/twitch-callback", async (req, res) => {
   if (!verifyTwitchSignature(req))
     return res.status(403).send("Invalid signature");
   const { subscription, event } = req.body;
+  console.log("🔔 Événement Twitch reçu:", subscription.type);
   if (
     subscription.type === "channel.channel_points_custom_reward_redemption.add"
   ) {

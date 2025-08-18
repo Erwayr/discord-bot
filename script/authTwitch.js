@@ -3,6 +3,8 @@ const axios = require("axios");
 const crypto = require("crypto");
 const { FieldValue } = require("firebase-admin/firestore");
 
+// https://discord-bot-production-95c5.up.railway.app/auth/twitch/start?set=core A lancer sur railway
+
 // Scopes minimaux pour ton use-case: FULFILL + lecture rédemptions + subscriptions + chat
 const CORE_SCOPES = [
   "channel:manage:redemptions",
