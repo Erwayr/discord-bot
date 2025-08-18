@@ -1,7 +1,11 @@
+// ./script/manageRedemption.js
+const axios = require("axios");
+const { FieldValue } = require("firebase-admin/firestore");
+
 const MAX_IDS = 50;
 
 /** PATCH Twitch: FULFILLED/CANCELED pour 1..n redemptions */
-module.exports = async function updateRedemptionStatus({
+async function updateRedemptionStatus({
   broadcasterId,
   rewardId,
   redemptionIds,
@@ -28,15 +32,12 @@ module.exports = async function updateRedemptionStatus({
       }
     );
   }
-};
+}
 
-/**
- * Ajoute/met à jour un participant dans `participants/{login}`.
- * - n’écrase pas ce qui existe déjà (merge)
- * - remplit les champs manquants depuis `followers_all_time/{login}` si dispo
- * - met `hasRedemption: true` + timestamps
- */
-module.exports = async function upsertParticipantFromRedemption(db, r) {
+/** Upsert participants/{login} à partir d’un event redemption.add */
+async function upsertParticipantFromRedemption(db, r) {
+  if (!r || typeof r !== "object")
+    throw new Error("payload redemption invalide");
   const login = (r.user_login || r.user?.login || "").toLowerCase();
   if (!login) return;
 
@@ -52,8 +53,6 @@ module.exports = async function upsertParticipantFromRedemption(db, r) {
     const foll = follSnap.exists ? follSnap.data() : {};
 
     const nowISO = new Date().toISOString();
-
-    // base toujours mise à jour
     const update = {
       pseudo: login,
       display_name: r.user_name ?? existing.display_name,
@@ -62,17 +61,15 @@ module.exports = async function upsertParticipantFromRedemption(db, r) {
       fetched_at: nowISO,
     };
 
-    // backfill conditionnel: on complète UNIQUEMENT si manquant
-    const backfill = (key, ...candidates) => {
+    const backfill = (key, ...cands) => {
       if (existing[key] != null) return;
-      for (const c of candidates) {
+      for (const c of cands) {
         if (foll[c] != null) {
           update[key] = foll[c];
           break;
         }
       }
     };
-
     backfill("avatar", "avatar", "avatar_url", "profile_image_url");
     backfill("discord_id", "discord_id");
     backfill("isSub", "isSub");
@@ -86,4 +83,6 @@ module.exports = async function upsertParticipantFromRedemption(db, r) {
 
     tx.set(partRef, update, { merge: true });
   });
-};
+}
+
+module.exports = { updateRedemptionStatus, upsertParticipantFromRedemption };

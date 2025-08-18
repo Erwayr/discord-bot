@@ -21,8 +21,10 @@ const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
-const updateRedemptionStatus = require("./script/manageRedemption");
-const upsertParticipantFromRedemption = require("./script/manageRedemption");
+const {
+  updateRedemptionStatus,
+  upsertParticipantFromRedemption,
+} = require("./script/manageRedemption");
 const { mountTwitchAuth } = require("./script/authTwitch");
 const { createTokenManager } = require("./script/tokenManager");
 const cron = require("node-cron");
