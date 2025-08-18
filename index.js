@@ -199,6 +199,7 @@ app.listen(PORT, () => {
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
   await subscribeToFollows().catch(console.error);
+  await subscribeToRedemptions().catch(console.error);
 
   // ─── Pré-chargement des membres pour que presenceUpdate soit bien émis ───
   for (const guild of client.guilds.cache.values()) {
@@ -453,4 +454,61 @@ async function subscribeToFollows() {
   } catch (err) {
     throw err;
   }
+}
+
+async function subscribeToRedemptions() {
+  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+
+  // App Access Token (client_credentials) — pas besoin de scopes user ici
+  const { data: appData } = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null,
+    {
+      params: {
+        client_id: process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+        grant_type: "client_credentials",
+      },
+    }
+  );
+  const appToken = appData.access_token;
+
+  const headers = {
+    "Client-ID": process.env.TWITCH_CLIENT_ID,
+    Authorization: `Bearer ${appToken}`,
+    "Content-Type": "application/json",
+  };
+
+  // (debug) lister ce qui existe déjà
+  const list = await axios.get(endpoint, { headers });
+  const exists = list.data.data.find(
+    (s) =>
+      s.type === "channel.channel_points_custom_reward_redemption.add" &&
+      s.condition?.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+  );
+  if (exists) {
+    console.log("✅ EventSub redemption.add déjà présent:", exists.id);
+    return;
+  }
+
+  // condition obligatoire
+  const condition = { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID };
+  // si tu veux filtrer au niveau Twitch (optionnel) :
+  if (process.env.TICKET_REWARD_ID)
+    condition.reward_id = process.env.TICKET_REWARD_ID;
+
+  const payload = {
+    type: "channel.channel_points_custom_reward_redemption.add",
+    version: "1",
+    condition,
+    transport: {
+      method: "webhook",
+      callback:
+        "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+      secret: process.env.WEBHOOK_SECRET,
+    },
+  };
+
+  const created = await axios.post(endpoint, payload, { headers });
+  console.log("✅ EventSub redemption.add créé:", created.data.data?.[0]?.id);
 }
