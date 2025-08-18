@@ -21,6 +21,7 @@ const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
+const manageRedemption = require("./script/manageRedemption");
 const cron = require("node-cron");
 
 process.on("uncaughtException", (err) => {
@@ -91,16 +92,58 @@ function verifyTwitchSignature(req) {
 
 // Route de callback pour Twitch EventSub
 app.post("/twitch-callback", async (req, res) => {
-  if (req.body.challenge) {
-    return res.status(200).send(req.body.challenge);
-  }
-
-  // 2) Sécurité : refuser si signature invalide
-  if (!verifyTwitchSignature(req)) {
+  if (req.body.challenge) return res.status(200).send(req.body.challenge);
+  if (!verifyTwitchSignature(req))
     return res.status(403).send("Invalid signature");
-  }
-
   const { subscription, event } = req.body;
+  if (
+    subscription.type === "channel.channel_points_custom_reward_redemption.add"
+  ) {
+    const r = event;
+
+    // Filtrer le BON reward (ID conseillé). À défaut, fallback sur le titre.
+    const WANTED_REWARD_ID = process.env.TICKET_REWARD_ID || null;
+    const isTicket = WANTED_REWARD_ID
+      ? r.reward?.id === WANTED_REWARD_ID
+      : /ticket d'or/i.test(r.reward?.title || "");
+
+    if (!isTicket) return res.sendStatus(200);
+
+    try {
+      // 1) Fulfill immédiat
+      const accessToken = await refreshModeratorToken(db); // ton helper existant
+      await updateRedemptionStatus({
+        broadcasterId: process.env.TWITCH_CHANNEL_ID,
+        rewardId: r.reward.id,
+        redemptionIds: [r.id],
+        status: "FULFILLED",
+        accessToken,
+      });
+
+      // 2) Upsert participant (sans stocker la rédemption)
+      await upsertParticipantFromRedemption(db, r);
+
+      // 3) Optionnel: message Discord live
+      try {
+        const generalChannel = await client.channels.fetch(LOG_CHANNEL_ID);
+        if (generalChannel?.isTextBased()) {
+          await generalChannel.send(
+            `🎟️ ${r.user_name} a utilisé **${r.reward.title}** — participation enregistrée ✅`
+          );
+        }
+      } catch (e) {
+        console.warn("Discord notify failed:", e.message);
+      }
+    } catch (e) {
+      console.error(
+        "Fulfill+participant error:",
+        e.response?.data || e.message
+      );
+      // on renvoie 200 pour éviter un spam de retries si tu préfères (sinon 4xx)
+    }
+
+    return res.sendStatus(200);
+  }
   if (subscription.type === "channel.follow") {
     const login = event.user_login; // pseudo Twitch
     const userId = event.user_id; // id numérique
@@ -423,20 +466,4 @@ async function subscribeToFollows() {
   } catch (err) {
     throw err;
   }
-}
-
-function deepStripSemicolons(value) {
-  if (typeof value === "string") {
-    // supprime à la fois ; ASCII (U+003B) et full-width (U+FF1B)
-    return value.replace(/[\u003B\uFF1B]/g, "");
-  }
-  if (Array.isArray(value)) {
-    return value.map(deepStripSemicolons);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, deepStripSemicolons(v)])
-    );
-  }
-  return value;
 }
