@@ -22,7 +22,11 @@ const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
 const manageRedemption = require("./script/manageRedemption");
-const tokenManager = require("./script/manageRedemption");
+const { mountTwitchAuth } = require("./script/authTwitch");
+const { createTokenManager } = require("./script/tokenManager");
+const tokenManager = createTokenManager(db, {
+  docPath: "settings/twitch_moderator",
+});
 const cron = require("node-cron");
 
 process.on("uncaughtException", (err) => {
@@ -73,6 +77,15 @@ const client = new Client({
 const app = express();
 app.use(bodyParser.json()); // pour parser les JSON Twitch
 
+// Monte les routes d'auth
+mountTwitchAuth(app, db, {
+  docPath: "settings/twitch_moderator",
+  clientId: process.env.TWITCH_CLIENT_ID,
+  clientSecret: process.env.TWITCH_CLIENT_SECRET,
+  redirectUri:
+    "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+});
+
 const TWITCH_SECRET = process.env.WEBHOOK_SECRET;
 // le "secret" que tu donnes à Twitch lors de la création de la webhook
 
@@ -122,7 +135,7 @@ app.post("/twitch-callback", async (req, res) => {
       });
 
       // 2) Upsert participant (sans stocker la rédemption)
-      await upsertParticipantFromRedemption(db, r);
+      await manageRedemption.upsertParticipantFromRedemption(db, r);
 
       // 3) Optionnel: message Discord live
       try {
@@ -194,10 +207,6 @@ client.once(Events.ClientReady, async () => {
   cron.schedule("0 0 * * *", () =>
     assignOldMemberCards(db).catch(console.error)
   );
-
-  cron.schedule("0 */4 * * *", () => {
-    refreshModeratorToken(db).catch(console.error);
-  });
 
   const processingQueues = new Map();
 
@@ -318,32 +327,6 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
   if (!playing) return;
 });
 
-// Fonction pour échanger un refresh_token contre un nouvel access_token
-async function refreshModeratorToken(db) {
-  const ref = db.doc("settings/twitch_moderator");
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error("Pas de refresh_token en base !");
-  const oldRefresh = snap.data().refresh_token;
-
-  // Appel pour rafraîchir
-  const res = await axios.post("https://id.twitch.tv/oauth2/token", null, {
-    params: {
-      grant_type: "refresh_token",
-      refresh_token: oldRefresh,
-      client_id: process.env.TWITCH_CLIENT_ID,
-      client_secret: process.env.TWITCH_CLIENT_SECRET,
-    },
-  });
-
-  const { access_token, refresh_token: newRefresh } = res.data;
-
-  // Sauvegarde le nouveau refresh_token
-  await ref.update({ refresh_token: newRefresh });
-
-  console.log("🔄 Moderator token refreshed");
-  return access_token;
-}
-
 client.login(process.env.DISCORD_BOT_TOKEN);
 
 const BATCH_SIZE = 10;
@@ -409,8 +392,6 @@ async function assignOldMemberCards(db) {
 
 async function subscribeToFollows() {
   const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
-
-  await refreshModeratorToken(db);
 
   // 1️⃣ Récupère l’App Access Token (client_credentials)
   const { data: appData } = await axios.post(
