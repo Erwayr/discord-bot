@@ -163,13 +163,13 @@ async function upsertFollowerMonthsFromSub(db, e) {
 
     // On évite de "réduire" la valeur si Twitch nous renvoie moins d’info
     const newTotal = Math.max(
-      Number(existing.subMonthsTotal || 0),
+      Number(existing.subMonths || 0),
       isNaN(monthsTotal) ? 0 : monthsTotal
     );
 
     const update = {
       // champs top-level pour rester homogène avec ta collection
-      subMonthsTotal: newTotal,
+      subMonths: newTotal,
       // si Twitch ne fournit pas streak, on garde l’ancienne valeur
       ...(monthsStreak != null ? { subMonthsStreak: monthsStreak } : {}),
       subTier: tierLabel,
