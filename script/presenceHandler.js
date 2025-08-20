@@ -1,58 +1,64 @@
 // script/presenceHandler.js
-
-const { ActivityType, Events } = require("discord.js");
+const admin = require("firebase-admin"); // <- pour Timestamp
+const { ActivityType } = require("discord.js");
 
 /**
- * Gère les mises à jour de présence pour tenir à jour, dans Firestore,
- * un tableau games_history[] avec { name, count }.
- *
- * @param {import('discord.js').Presence} oldPresence
- * @param {import('discord.js').Presence} newPresence
- * @param {import('firebase-admin').firestore.Firestore} db
+ * Met à jour followers_all_time.games_history[] avec:
+ *  - { name, count, lastPlayedAt }
+ *  - lastPlayedAt est écrasé à chaque fois que l'utilisateur rejoue à ce jeu.
  */
 async function presenceHandler(oldPresence, newPresence, db) {
-  // 1️⃣ On ne s'intéresse qu'aux guildes et aux activités
-  if (!newPresence.guild || !newPresence.activities.length) return;
+  if (!newPresence?.guild || !newPresence.activities?.length) return;
 
-  // 2️⃣ On ne gère que les activités de type "PLAYING"
   const playing = newPresence.activities.find(
-    (act) => act.type === ActivityType.Playing
+    (a) => a.type === ActivityType.Playing
   );
-  if (!playing) return;
+  if (!playing || !playing.name) return;
 
   const discordId = newPresence.userId;
   const colRef = db.collection("followers_all_time");
-  const querySnap = await colRef.where("discord_id", "==", discordId).get();
-  if (querySnap.empty) return; // pas trouvé dans tes abonnés
+  const snap = await colRef.where("discord_id", "==", discordId).get();
+  if (snap.empty) return;
 
-  // On prend le premier document (idéalement, il n'y en a qu'un)
-  const userDoc = querySnap.docs[0];
+  const userDoc = snap.docs[0];
   const userRef = userDoc.ref;
 
-  // 3️⃣ Lecture de l'historique actuel
-  const data = userDoc.data();
+  const data = userDoc.data() || {};
   const gamesHistory = Array.isArray(data.games_history)
-    ? data.games_history
+    ? data.games_history.slice()
     : [];
 
-  // 4️⃣ Mise à jour du compteur
-  const idx = gamesHistory.findIndex((e) => e.name === playing.name);
+  // timestamp serveur Firestore (précision seconde) ; sinon new Date() marche aussi
+  const now = admin.firestore.Timestamp.now();
+
+  // cherche le jeu par name (exact, sensible à la casse — adapte si besoin)
+  const idx = gamesHistory.findIndex((e) => e && e.name === playing.name);
+
   if (idx >= 0) {
-    // jeu déjà dans l'historique → on incrémente
-    gamesHistory[idx].count += 1;
+    // jeu existant -> incrémente et écrase la date
+    const current = gamesHistory[idx];
+    gamesHistory[idx] = {
+      ...current,
+      name: playing.name,
+      count: (Number(current.count) || 0) + 1,
+      lastPlayedAt: now,
+    };
   } else {
-    // nouveau jeu → on ajoute
-    gamesHistory.push({ name: playing.name, count: 1 });
+    // nouveau jeu -> crée l'entrée avec date initiale
+    gamesHistory.push({
+      name: playing.name,
+      count: 1,
+      lastPlayedAt: now,
+    });
   }
 
-  // 5️⃣ Écriture dans Firestore
-  await userRef.update({
-    games_history: gamesHistory,
-  });
+  await userRef.update({ games_history: gamesHistory });
 
+  const count = gamesHistory[idx >= 0 ? idx : gamesHistory.length - 1].count;
   console.log(
-    `✅ [Présence] ${newPresence.user.tag} → ${playing.name} (` +
-      `count=${gamesHistory[idx >= 0 ? idx : gamesHistory.length - 1].count})`
+    `✅ [Presence] ${newPresence.user?.tag || discordId} → ${
+      playing.name
+    } (count=${count})`
   );
 }
 
