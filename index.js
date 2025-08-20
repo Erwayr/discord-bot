@@ -93,6 +93,83 @@ mountTwitchAuth(app, db, {
 });
 
 const TWITCH_SECRET = process.env.WEBHOOK_SECRET;
+
+const seenDeliveries = new Map(); // messageId -> ts (TTL court)
+const SUB_DEBOUNCE_MS = 3500; // attente d’un éventuel "subscription.message"
+const SUB_COOLDOWN_MS = 10_000; // évite de spammer pour le même user
+const subTimers = new Map(); // login -> { timer, startedAt }
+const lastSubNotified = new Map(); // login -> ts
+
+function cleanupSeenDeliveries() {
+  const now = Date.now();
+  for (const [k, ts] of seenDeliveries) {
+    if (now - ts > 5 * 60_000) seenDeliveries.delete(k); // TTL 5 min
+  }
+}
+
+function isDuplicateDelivery(req) {
+  const id = req.header("Twitch-Eventsub-Message-Id");
+  if (!id) return false;
+  if (seenDeliveries.has(id)) return true;
+  seenDeliveries.set(id, Date.now());
+  if (seenDeliveries.size > 2000) cleanupSeenDeliveries();
+  return false;
+}
+
+async function postDiscord(channelId, text) {
+  const ch = await client.channels.fetch(channelId);
+  if (ch?.isTextBased() && text) await ch.send(text);
+}
+
+function shouldSuppressNow(login) {
+  const now = Date.now();
+  const last = lastSubNotified.get(login) || 0;
+  if (now - last < SUB_COOLDOWN_MS) return true;
+  lastSubNotified.set(login, now);
+  return false;
+}
+
+// Programme l’envoi d’un message "subscribe" avec debounce.
+// buildText est une fonction async qui renvoie le texte final.
+function scheduleSubscribeNotice(login, buildText) {
+  // si un timer existe déjà, on repart à zéro (dernier événement gagne)
+  if (subTimers.has(login)) clearTimeout(subTimers.get(login).timer);
+
+  const timer = setTimeout(async () => {
+    subTimers.delete(login);
+    if (shouldSuppressNow(login)) return; // déjà un msg récent → on n'envoie pas
+    try {
+      const text = await buildText();
+      await postDiscord(GENERAL_CHANNEL_ID, text);
+      lastSubNotified.set(login, Date.now());
+    } catch (e) {
+      console.warn("subscribe notice failed:", e.message);
+    }
+  }, SUB_DEBOUNCE_MS);
+
+  subTimers.set(login, { timer, startedAt: Date.now() });
+}
+
+// Envoie immédiatement le message "resub" et annule un éventuel "subscribe" programmé.
+async function sendResubNow(login, buildText) {
+  const t = subTimers.get(login);
+  if (t) {
+    clearTimeout(t.timer);
+    subTimers.delete(login);
+  }
+  if (shouldSuppressNow(login)) return;
+  const text = await buildText();
+  await postDiscord(GENERAL_CHANNEL_ID, text);
+  lastSubNotified.set(login, Date.now());
+}
+
+// Helpers de login/affichage
+function getLoginFromEvent(e) {
+  return (e?.user_login || e?.user?.login || "").toLowerCase();
+}
+function getDisplayFromEvent(e, fallbackLogin) {
+  return e?.user_name || e?.user?.name || fallbackLogin;
+}
 // le "secret" que tu donnes à Twitch lors de la création de la webhook
 
 // Fonction utilitaire pour vérifier la signature Twitch
@@ -115,6 +192,8 @@ app.post("/twitch-callback", async (req, res) => {
   if (req.body.challenge) return res.status(200).send(req.body.challenge);
   if (!verifyTwitchSignature(req))
     return res.status(403).send("Invalid signature");
+  // ⛔️ Twitch peut renvoyer la même livraison: on ignore si déjà vue
+  if (isDuplicateDelivery(req)) return res.sendStatus(200);
   const { subscription, event } = req.body;
   console.log("🔔 Événement Twitch reçu:", subscription.type);
   if (
@@ -187,37 +266,22 @@ app.post("/twitch-callback", async (req, res) => {
     }
     console.log(`⚡ Nouveau follow détecté : ${login}`);
   }
-  if (
-    subscription.type === "channel.subscribe" ||
-    subscription.type === "channel.subscription.message"
-  ) {
+  if (subscription.type === "channel.subscribe") {
     try {
-      // 1) upsert participant (isSub=true)
+      // upserts idempotents en DB
       await upsertParticipantFromSubscription(db, event);
-
       await upsertFollowerMonthsFromSub(db, event);
 
-      // 2) message Discord
-      try {
-        const login = (
-          event.user_login ||
-          event.user?.login ||
-          ""
-        ).toLowerCase();
-        const display = event.user_name || event.user?.name || login;
-        const mention = await buildSubMention(db, login, display); // mentionne le discord si on l’a
-        const text = formatSubDiscordMessage(event, {
-          type: subscription.type,
+      // coalescing: message "subscribe" retardé, annulé si un "subscription.message" arrive
+      const login = getLoginFromEvent(event);
+      const display = getDisplayFromEvent(event, login);
+      scheduleSubscribeNotice(login, async () => {
+        const mention = await buildSubMention(db, login, display);
+        return formatSubDiscordMessage(event, {
+          type: "channel.subscribe",
           mention,
         });
-
-        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-        if (generalChannel?.isTextBased()) {
-          await generalChannel.send(text);
-        }
-      } catch (e) {
-        console.warn("Discord notify (sub) failed:", e.message);
-      }
+      });
 
       console.log(
         `⭐ Sub enregistré pour ${event.user_login || event.user?.login}`
@@ -227,7 +291,30 @@ app.post("/twitch-callback", async (req, res) => {
     }
     return res.sendStatus(200);
   }
+  if (subscription.type === "channel.subscription.message") {
+    try {
+      // upserts idempotents en DB (mêmes fonctions, ça ne double pas les données)
+      await upsertParticipantFromSubscription(db, event);
+      await upsertFollowerMonthsFromSub(db, event);
 
+      const login = getLoginFromEvent(event);
+      const display = getDisplayFromEvent(event, login);
+      await sendResubNow(login, async () => {
+        const mention = await buildSubMention(db, login, display);
+        return formatSubDiscordMessage(event, {
+          type: "channel.subscription.message",
+          mention,
+        });
+      });
+
+      console.log(
+        `🔁 Resub enregistré pour ${event.user_login || event.user?.login}`
+      );
+    } catch (e) {
+      console.error("Resub upsert error:", e.response?.data || e.message);
+    }
+    return res.sendStatus(200);
+  }
   // 3) Toujours répondre 2xx pour acknowledge
   res.sendStatus(200);
 });
@@ -606,16 +693,6 @@ async function subscribeToSubs() {
   await ensure("channel.subscription.message"); // resub / share sub
 }
 
-function tierLabelFromEvent(e) {
-  const map = {
-    1000: "Tier 1",
-    2000: "Tier 2",
-    3000: "Tier 3",
-    Prime: "Prime",
-  };
-  return map[e?.tier] || (e?.is_prime ? "Prime" : "Tier ?");
-}
-
 async function buildSubMention(db, login, display) {
   try {
     const snap = await db.collection("participants").doc(login).get();
@@ -627,27 +704,22 @@ async function buildSubMention(db, login, display) {
 }
 
 function formatSubDiscordMessage(e, { type, mention }) {
-  const tier = tierLabelFromEvent(e);
   const isGift = !!e?.is_gift;
   const gifter = e?.gifter_user_name || e?.gifter_user_login;
 
   if (type === "channel.subscription.message") {
     const months =
       e?.cumulative_months ?? e?.duration_months ?? e?.streak_months;
-    const msg = e?.message?.text?.trim();
     let line =
       isGift && gifter
-        ? `🎁 ${mention} a reçu un sub ${tier} offert par **${gifter}** — merci !`
-        : `⭐ ${mention} s'est réabonné (${tier}${
-            months ? ` • ${months} mois` : ""
-          })`;
-    if (msg) line += `\n💬 “${msg.slice(0, 180)}”`;
+        ? `🎁 ${mention} a reçu un sub offert par **${gifter}** — merci !`
+        : `⭐ ${mention} s'est réabonné (${months ? ` • ${months} mois` : ""})`;
     return line;
   }
 
   // channel.subscribe
   if (isGift && gifter) {
-    return `🎁 ${mention} a reçu un sub ${tier} offert par **${gifter}** — bienvenue !`;
+    return `🎁 ${mention} a reçu un sub  offert par **${gifter}** — bienvenue !`;
   }
-  return `⭐ ${mention} s'est abonné (${tier}) — bienvenue !`;
+  return `⭐ ${mention} s'est abonné — bienvenue !`;
 }
