@@ -721,5 +721,5 @@ function formatSubDiscordMessage(e, { type, mention }) {
   if (isGift && gifter) {
     return `🎁 ${mention} a reçu un sub  offert par **${gifter}** — bienvenue !`;
   }
-  return `⭐ ${mention} s'est abonné — bienvenue !`;
+  return `⭐ Merci pour le nouvel abonnement mon ${mention} !`;
 }
