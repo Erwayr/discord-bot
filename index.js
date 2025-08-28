@@ -719,7 +719,7 @@ function formatSubDiscordMessage(e, { type, mention }) {
 
   // channel.subscribe
   if (isGift && gifter) {
-    return `🎁 ${mention} a reçu un sub  offert par **${gifter}** — bienvenue !`;
+    return `🎁 ${mention} a reçu un sub  offert par **${gifter}**`;
   }
   return `⭐ Merci pour le nouvel abonnement mon ${mention} !`;
 }
