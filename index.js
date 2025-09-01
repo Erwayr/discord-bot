@@ -61,7 +61,6 @@ const tokenManager = createTokenManager(db, {
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
 const GENERAL_CHANNEL_ID = "797077170974490645";
-//const GENERAL_CHANNEL_ID = "1377870229153120257";
 
 const client = new Client({
   intents: [
@@ -119,6 +118,41 @@ function isDuplicateDelivery(req) {
 async function postDiscord(channelId, text) {
   const ch = await client.channels.fetch(channelId);
   if (ch?.isTextBased() && text) await ch.send(text);
+}
+
+async function sendDMOrFallback(discordId, text) {
+  let user = null;
+  try {
+    user = await client.users.fetch(discordId);
+    await user.send(text);
+    return true;
+  } catch (err) {
+    const reason =
+      err?.code === 50007
+        ? "DMs fermés par l’utilisateur (Discord 50007)"
+        : `${err?.name || "Erreur"}${err?.code ? ` [${err.code}]` : ""}`;
+    console.warn(`⚠️ DM vers ${discordId} impossible : ${reason}`);
+
+    try {
+      const logCh = await client.channels.fetch(LOG_CHANNEL_ID);
+      if (logCh?.isTextBased()) {
+        await logCh.send({
+          content:
+            `🛑 **Fallback DM**\n` +
+            `• **Destinataire :** ${
+              user ? `${user.tag} (${discordId})` : `ID ${discordId}`
+            }\n` +
+            `• **Raison :** ${reason}\n` +
+            `• **Message d’origine :**\n${text}`,
+          // évite toute mention accidentelle dans le salon de logs
+          allowedMentions: { parse: [] },
+        });
+      }
+    } catch (e) {
+      console.warn("⚠️ Fallback log-channel impossible :", e.message);
+    }
+    return false;
+  }
 }
 
 function shouldSuppressNow(login) {
@@ -373,18 +407,14 @@ client.once(Events.ClientReady, async () => {
           const prev = processingQueues.get(titleKey) || Promise.resolve();
 
           const next = prev.then(async () => {
-            const generalChannel = await client.channels.fetch(
-              GENERAL_CHANNEL_ID
-            );
-            const collectionLink = `[collection](https://erwayr.github.io/ErwayrWebSite/index.html)`;
-
-            const mention = `<@${data.discord_id}>`;
+            const collectionUrl =
+              "https://erwayr.github.io/ErwayrWebSite/index.html";
             const baseMsg = card.title
-              ? `🎉 ${mention} vient de gagner la carte **${card.title}** !`
-              : `🎉 ${mention} vient de gagner une nouvelle carte !`;
-            await generalChannel.send(
-              `${baseMsg}\n👉 Check ta ${collectionLink}`
-            );
+              ? `🎉 Tu viens de gagner la carte **${card.title}** !`
+              : `🎉 Tu viens de gagner une nouvelle carte !`;
+            const dmMsg = `${baseMsg}\n👉 Ta collection : ${collectionUrl}`;
+
+            await sendDMOrFallback(data.discord_id, dmMsg);
 
             // marque en base
             card.notifiedAt = new Date().toISOString();
