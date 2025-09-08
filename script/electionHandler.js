@@ -1,7 +1,7 @@
 // script/electionHandler.js
 const { EmbedBuilder, PermissionsBitField } = require("discord.js");
 const fetch = require("node-fetch"); // npm install node-fetch@2
-const { FieldValue } = require("firebase-admin").firestore;   // ← ajout
+const { FieldValue } = require("firebase-admin").firestore; // ← ajout
 
 // Durée avant clôture automatique (en millisecondes) : 4 jours
 const AUTO_CLOSE_DELAY = 2 * 24 * 60 * 60 * 1000;
@@ -28,7 +28,7 @@ module.exports = async function electionHandler(message, db, channelId) {
   const channel = await guild.channels.fetch(channelId);
 
   async function finishElection(explicitWinnerId, isAuto = false) {
- const snap = await electionDoc.get();
+    const snap = await electionDoc.get();
     if (snap.data().endedAt) return;
 
     const voterIds = snap.data().voters || [];
@@ -40,8 +40,7 @@ module.exports = async function electionHandler(message, db, channelId) {
 
     // Choix du gagnant (paramètre ou tirage aléatoire)
     const winnerId =
-      explicitWinnerId ||
-      voterIds[Math.floor(Math.random() * voterIds.length)];
+      explicitWinnerId || voterIds[Math.floor(Math.random() * voterIds.length)];
 
     // 1. Récupérer en parallèle la carte de base et les infos de l’utilisateur
     const [followersSnap, cardDoc] = await Promise.all([
@@ -52,7 +51,6 @@ module.exports = async function electionHandler(message, db, channelId) {
         .get(),
       db.collection("cards_collections").doc("guardian").get(),
     ]);
-    
 
     if (followersSnap.empty) {
       console.warn(`Aucun follower trouvé pour ${winnerId}`);
@@ -98,7 +96,12 @@ module.exports = async function electionHandler(message, db, channelId) {
       endedAt,
       winnerInfo: userInfo,
     });
-    batch.update(userDoc.ref, { cards_generated: newCards });
+    batch.update(userDoc.ref, {
+      cards_generated: newCards,
+      guardianWins: FieldValue.increment(1),
+      guardianWonMonths: FieldValue.arrayUnion(monthId),
+      guardianLastWonAt: endedAt,
+    });
 
     // 3. Exécuter batch + opérations Discord + envoi de message en parallèle
     const memberPromise = guild.members.fetch(winnerId);
@@ -123,11 +126,11 @@ module.exports = async function electionHandler(message, db, channelId) {
     });
 
     // Attendre que tout soit terminé
-    await Promise.all([batchCommit, rolePromise, sendMessage,sendMessageRole]);
+    await Promise.all([batchCommit, rolePromise, sendMessage, sendMessageRole]);
   }
 
   // ─── Démarrer l'élection ───
- if (sub === "start") {
+  if (sub === "start") {
     const snap = await electionDoc.get();
     if (snap.exists && !snap.data().endedAt) {
       return message.reply("Une élection est déjà en cours ce mois-ci !");
@@ -159,9 +162,14 @@ module.exports = async function electionHandler(message, db, channelId) {
       if (!doc.exists || doc.data().endedAt) return;
       const votes = doc.data().voters || [];
       if (votes.length > 0) {
-        await finishElection(votes[Math.floor(Math.random() * votes.length)], true);
+        await finishElection(
+          votes[Math.floor(Math.random() * votes.length)],
+          true
+        );
       } else {
-        await channel.send("Aucun participant, élection annulée automatiquement.");
+        await channel.send(
+          "Aucun participant, élection annulée automatiquement."
+        );
         await electionDoc.update({ endedAt: new Date() });
       }
     }, AUTO_CLOSE_DELAY);
@@ -181,7 +189,10 @@ module.exports = async function electionHandler(message, db, channelId) {
       await electionDoc.update({ endedAt: new Date() });
       return;
     }
-    await finishElection(voterIds[Math.floor(Math.random() * voterIds.length)], false);
+    await finishElection(
+      voterIds[Math.floor(Math.random() * voterIds.length)],
+      false
+    );
     return;
   }
   return message.reply(
