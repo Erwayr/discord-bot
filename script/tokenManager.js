@@ -2,88 +2,154 @@
 const axios = require("axios");
 const { FieldValue } = require("firebase-admin/firestore");
 
-/** Gestion centralisée de l'access_token + refresh (rotatif).
- *  - Stocke { access_token, refresh_token, access_token_expires_at }
- *  - Sérialise le refresh pour éviter les courses
- *  - Utilise le flow officiel Twitch (POST form-urlencoded)  */
+/**
+ * Gestion centralisée de l'access_token (user) + refresh (rotatif) pour Twitch.
+ * - Stocke { access_token, refresh_token, access_token_expires_at, rotated_at, scopes, issuer_client_id }
+ * - Sérialise le refresh pour éviter les courses (inFlight)
+ * - Traite le cas "Invalid refresh token" (400) : purge + erreur typée -> reconsent
+ */
 function createTokenManager(
   db,
   {
     docPath = "settings/twitch_moderator",
     clientId = process.env.TWITCH_CLIENT_ID,
     clientSecret = process.env.TWITCH_CLIENT_SECRET,
+    // marge de sécurité avant l’expiration (ms)
+    expirySkewMs = 60_000,
   } = {}
 ) {
   const ref = db.doc(docPath);
-  let inFlight = null;
+  let inFlight = null; // Promise en cours (mutex soft)
 
-  async function getAccessToken() {
+  function asTypedError(message, code, extra) {
+    const err = new Error(message);
+    err.code = code;
+    if (extra) err.extra = extra;
+    return err;
+  }
+
+  async function readDoc() {
     const snap = await ref.get();
-    const data = snap.data() || {};
-    const now = Date.now();
+    return snap.exists ? snap.data() : {};
+  }
 
-    if (
-      data.access_token &&
-      data.access_token_expires_at &&
-      now < data.access_token_expires_at - 60_000
-    ) {
-      return data.access_token;
-    }
-    if (inFlight) return inFlight;
+  async function writeDoc(patch) {
+    await ref.set(patch, { merge: true });
+  }
 
-    inFlight = (async () => {
-      const freshSnap = await ref.get();
-      const fresh = freshSnap.data() || {};
-      const oldRefresh = fresh.refresh_token;
-      if (!oldRefresh)
-        throw new Error(
-          "Aucun refresh_token en base (settings/twitch_moderator.refresh_token)"
-        );
+  async function doRefresh(refreshToken) {
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    });
 
-      // Twitch recommande de rafraîchir REACTIVEMENT (sur 401), mais ce call est OK si besoin ponctuellement. :contentReference[oaicite:1]{index=1}
-      const body = new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: "refresh_token",
-        refresh_token: oldRefresh, // IMPORTANT: encodé via URLSearchParams. :contentReference[oaicite:2]{index=2}
+    try {
+      const res = await axios.post("https://id.twitch.tv/oauth2/token", body, {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
-
-      const res = await axios
-        .post("https://id.twitch.tv/oauth2/token", body, {
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        })
-        .catch((e) => {
-          const msg = e.response?.data || e.message;
-          throw new Error("Refresh failed: " + JSON.stringify(msg));
-        });
 
       const {
         access_token,
         refresh_token: newRefresh,
         expires_in,
         scope,
+        token_type,
       } = res.data;
 
-      await ref.set(
-        {
-          access_token,
-          refresh_token: newRefresh, // rotation
-          access_token_expires_at: Date.now() + expires_in * 1000,
-          rotated_at: FieldValue.serverTimestamp(),
-          scopes: scope, // tableau de scopes retournés
-          issuer_client_id: clientId,
-        },
-        { merge: true }
-      );
+      const access_token_expires_at =
+        Date.now() + Math.max(1, (expires_in ?? 3600) * 1000 - expirySkewMs);
+
+      await writeDoc({
+        access_token,
+        refresh_token: newRefresh, // rotation
+        access_token_expires_at,
+        rotated_at: FieldValue.serverTimestamp(),
+        scopes: scope,
+        token_type,
+        issuer_client_id: clientId,
+        oauth_error: null, // reset éventuelle d’une erreur précédente
+      });
 
       return access_token;
-    })();
+    } catch (e) {
+      const status = e?.response?.data?.status || e?.response?.status;
+      const message =
+        e?.response?.data?.message ||
+        e?.response?.data?.error_description ||
+        e?.message ||
+        "Refresh failed";
 
-    try {
-      return await inFlight;
-    } finally {
-      inFlight = null;
+      // Cas classique : token de refresh invalide/consommé/révoqué
+      if (status === 400 && /invalid refresh token/i.test(message)) {
+        await writeDoc({
+          access_token: null,
+          refresh_token: null,
+          access_token_expires_at: 0,
+          oauth_error: {
+            at: Date.now(),
+            status,
+            message,
+          },
+        });
+        throw asTypedError(
+          "Invalid refresh token — reconsent required.",
+          "INVALID_REFRESH_TOKEN",
+          { status, message }
+        );
+      }
+
+      // Autres erreurs réseau/API
+      throw asTypedError(
+        `Refresh failed: ${message}`,
+        "REFRESH_FAILED",
+        e?.response?.data || { message }
+      );
     }
+  }
+
+  async function getAccessToken() {
+    const initial = await readDoc();
+    const now = Date.now();
+
+    // 1) Token présent et encore valable ?
+    if (
+      initial.access_token &&
+      initial.access_token_expires_at &&
+      now < initial.access_token_expires_at - expirySkewMs
+    ) {
+      return initial.access_token;
+    }
+
+    // 2) Pas de refresh_token : nécessite re-consentement
+    if (!initial.refresh_token) {
+      throw asTypedError(
+        "No refresh_token stored — run OAuth consent.",
+        "NO_REFRESH_TOKEN"
+      );
+    }
+
+    // 3) Sérialiser le refresh pour éviter les courses
+    if (!inFlight) {
+      inFlight = (async () => {
+        // Re-lire au dernier moment pour prendre en compte une éventuelle mise à jour
+        const fresh = await readDoc();
+        const r = fresh.refresh_token;
+        if (!r) {
+          throw asTypedError(
+            "No refresh_token stored — run OAuth consent.",
+            "NO_REFRESH_TOKEN"
+          );
+        }
+        return await doRefresh(r);
+      })().finally(() => {
+        // libérer le mutex quoi qu'il arrive
+        inFlight = null;
+      });
+    }
+
+    return await inFlight;
   }
 
   return { getAccessToken };
