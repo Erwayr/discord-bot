@@ -221,6 +221,18 @@ function verifyTwitchSignature(req) {
   );
 }
 
+app.get("/internal/twitch/access-token", async (req, res) => {
+  if (req.header("x-api-key") !== process.env.INTERNAL_API_KEY) {
+    return res.status(403).send("Forbidden");
+  }
+  try {
+    const accessToken = await tokenManager.getAccessToken();
+    res.json({ access_token: accessToken });
+  } catch (e) {
+    res.status(500).json({ error: e.code || "ERROR", message: e.message });
+  }
+});
+
 // Route de callback pour Twitch EventSub
 app.post("/twitch-callback", async (req, res) => {
   if (req.body.challenge) return res.status(200).send(req.body.challenge);
