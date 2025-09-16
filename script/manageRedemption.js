@@ -175,6 +175,7 @@ async function upsertFollowerMonthsFromSub(db, e) {
       subTier: tierLabel,
       lastSubAt: new Date().toISOString(),
       lastSubIsGift: !!e.is_gift,
+      isStillSub: true
     };
 
     // Backfill léger s'il manque le pseudo/twitchId (optionnel)
