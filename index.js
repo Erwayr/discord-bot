@@ -58,6 +58,14 @@ const tokenManager = createTokenManager(db, {
   docPath: "settings/twitch_moderator",
 });
 
+cron.schedule("*/15 * * * *", async () => {
+  try {
+    await tokenManager.getAccessToken();
+  } catch (e) {
+    console.warn("⚠️ token keep-alive a échoué :", e.message || e);
+  }
+});
+
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
 const GENERAL_CHANNEL_ID = "797077170974490645";
@@ -373,6 +381,11 @@ app.listen(PORT, () => {
 
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
+  try {
+    await tokenManager.getAccessToken();
+  } catch (e) {
+    console.warn("⚠️ Pré-chauffe token a échoué :", e.message || e);
+  }
   await subscribeToFollows().catch(console.error);
   await subscribeToRedemptions().catch(console.error);
   await subscribeToSubs().catch(console.error);
