@@ -3,8 +3,6 @@ const axios = require("axios");
 const crypto = require("crypto");
 const { FieldValue } = require("firebase-admin/firestore");
 
-// https://discord-bot-production-95c5.up.railway.app/auth/twitch/start?set=core A lancer sur railway
-
 // Scopes minimaux pour ton use-case: FULFILL + lecture rédemptions + subscriptions + chat
 const CORE_SCOPES = [
   "channel:manage:redemptions",
@@ -32,8 +30,7 @@ const CORE_SCOPES = [
   "user:read:subscriptions",
 ];
 
-// Scopes "très large" (BROAD) — la plupart des opérations de chaîne/modération
-// ⚠️ Twitch dit de NE DEMANDER que ce dont tu as besoin. :contentReference[oaicite:3]{index=3}
+// Scopes larges — ne demander que ce dont tu as besoin.
 const BROAD_SCOPES = [
   // Analytics/Bits/Ads
   "analytics:read:extensions",
@@ -57,7 +54,7 @@ const BROAD_SCOPES = [
   "channel:manage:guest_star",
   "channel:read:hype_train",
 
-  // Moderators & moderation (modération large)
+  // Moderators & moderation
   "channel:manage:moderators",
   "moderation:read",
   "moderator:manage:announcements",
@@ -105,10 +102,10 @@ const BROAD_SCOPES = [
 
   // Chat (IRC & API Chat)
   "chat:read",
-  "chat:edit", // IRC
+  "chat:edit",
   "user:read:chat",
   "user:write:chat",
-  "user:manage:chat_color", // API Chat
+  "user:manage:chat_color",
 
   // User/email/follows/subs info
   "user:read:email",
@@ -125,8 +122,15 @@ const BROAD_SCOPES = [
   "user:manage:whispers",
 ];
 
-// NB: La liste BROAD est basée sur la doc “Twitch Access Token Scopes” et couvre
-// la majorité des scopes API/EventSub/IRC/Chat pertinents. :contentReference[oaicite:4]{index=4}
+function normalizeScopes(scope) {
+  if (Array.isArray(scope)) return scope;
+  if (typeof scope === "string") return scope.split(/\s+/).filter(Boolean);
+  return [];
+}
+
+function sha256(str) {
+  return crypto.createHash("sha256").update(String(str)).digest("hex");
+}
 
 function mountTwitchAuth(
   app,
@@ -140,10 +144,11 @@ function mountTwitchAuth(
 ) {
   const statesRef = db.collection("oauth_states");
 
-  // 1) /auth/twitch/start?set=core|broad  (default=broad)
+  // 1) /auth/twitch/start?set=core|broad&force=0|1  (default=broad, force=1)
   app.get("/auth/twitch/start", async (req, res) => {
     const set = (req.query.set || "broad").toLowerCase();
     const scopes = set === "core" ? CORE_SCOPES : BROAD_SCOPES;
+    const force = String(req.query.force ?? "1") === "1" ? "true" : "false";
 
     const state = crypto.randomBytes(16).toString("hex");
     await statesRef.doc(state).set(
@@ -159,9 +164,9 @@ function mountTwitchAuth(
       client_id: clientId,
       redirect_uri: redirectUri,
       response_type: "code",
-      scope: scopes.join(" "), // espace → URL encodé par URLSearchParams côté navigateur
+      scope: scopes.join(" "),
       state,
-      force_verify: "true", // force le consentement visuel si déjà accordé :contentReference[oaicite:5]{index=5}
+      force_verify: force, // par défaut "true", désactivable via ?force=0
     });
 
     const url = `https://id.twitch.tv/oauth2/authorize?${params.toString()}`;
@@ -170,6 +175,7 @@ function mountTwitchAuth(
 
   // 2) /auth/twitch/callback?code=...&state=...
   app.get("/auth/twitch/callback", async (req, res) => {
+    const settingsRef = db.doc(docPath);
     try {
       const { code, state } = req.query;
       if (!code || !state) return res.status(400).send("Missing code or state");
@@ -177,7 +183,7 @@ function mountTwitchAuth(
       const stateSnap = await statesRef.doc(state).get();
       if (!stateSnap.exists) return res.status(400).send("Invalid state");
 
-      // Échange code ↔ token (body x-www-form-urlencoded) :contentReference[oaicite:6]{index=6}
+      // Échange code ↔ token (x-www-form-urlencoded)
       const tokenBody = new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,
@@ -191,51 +197,92 @@ function mountTwitchAuth(
         tokenBody,
         {
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          timeout: 10000,
         }
       );
 
-      const { access_token, refresh_token, expires_in, scope } = tokenResp.data;
-
-      // Validation → récup user_id, login, client_id, scopes :contentReference[oaicite:7]{index=7}
-      const validate = await axios.get("https://id.twitch.tv/oauth2/validate", {
-        headers: { Authorization: `OAuth ${access_token}` },
-      });
-
       const {
-        user_id,
-        login,
-        client_id: validatedClient,
-        expires_in: atTtl,
-      } = validate.data || {};
+        access_token,
+        refresh_token,
+        expires_in, // TTL théorique (souvent 3600)
+        scope,
+        token_type,
+      } = tokenResp.data;
 
-      // Sauvegarde en base
-      await db.doc(docPath).set(
+      // Validation pour obtenir un expires_in "réel" et les métadonnées
+      let validated = null;
+      try {
+        const validate = await axios.get(
+          "https://id.twitch.tv/oauth2/validate",
+          {
+            headers: { Authorization: `OAuth ${access_token}` },
+            timeout: 10000,
+          }
+        );
+        validated = validate.data || null;
+      } catch (_) {
+        // si 401/timeout, on garde expires_in de la réponse précédente
+      }
+
+      const atTtl = validated?.expires_in ?? expires_in ?? 3600;
+      const atExpAt = Date.now() + atTtl * 1000;
+
+      // Récupère l'ancien doc pour l'audit (hash du refresh précédent, compteur)
+      const prevSnap = await settingsRef.get();
+      const prev = prevSnap.exists ? prevSnap.data() : {};
+      const prevRefresh = prev?.refresh_token || null;
+      const prevHash = prevRefresh ? sha256(prevRefresh) : null;
+      const prevCount =
+        typeof prev?.refresh_rotation_count === "number"
+          ? prev.refresh_rotation_count
+          : 0;
+
+      // Sauvegarde en base (normalisation scopes + métadonnées)
+      await settingsRef.set(
         {
           access_token,
+          token_type: token_type || "bearer",
           refresh_token, // 🔁 très important: on stocke le NOUVEAU
-          access_token_expires_at: Date.now() + expires_in * 1000,
-          scopes: scope,
-          validated: {
-            user_id,
-            login,
-            validatedClient,
-            atTtl,
-          },
+          refresh_token_sha256: sha256(refresh_token),
+          prev_refresh_token_sha256: prevHash,
+          refresh_rotation_count: prevCount + 1,
+          access_token_expires_at: atExpAt,
+          access_token_obtained_at: FieldValue.serverTimestamp(),
+          refresh_token_obtained_at: FieldValue.serverTimestamp(),
+          scopes: normalizeScopes(scope),
+          validated: validated
+            ? {
+                user_id: validated.user_id,
+                login: validated.login,
+                validatedClient: validated.client_id,
+                atTtl: validated.expires_in,
+              }
+            : null,
+          token_source: "authorization_code",
           updatedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
 
+      // On invalide le state pour éviter toute réutilisation
+      try {
+        await statesRef.doc(state).delete();
+      } catch (_) {}
+
+      const login = validated?.login || validated?.user_id || "inconnu";
+      const scopesTxt = normalizeScopes(scope).join(", ");
+
       return res.status(200).send(
         `<html><body style="font-family:sans-serif">
-             <h2>✅ Twitch lié</h2>
-             <p>Utilisateur: <b>${login || user_id}</b></p>
-             <p>Scopes: ${Array.isArray(scope) ? scope.join(", ") : scope}</p>
-             <p>Tu peux fermer cette page.</p>
-           </body></html>`
+           <h2>✅ Twitch lié</h2>
+           <p>Utilisateur: <b>${login}</b></p>
+           <p>Scopes: ${scopesTxt || "(aucun)"}</p>
+           <p>Tu peux fermer cette page.</p>
+         </body></html>`
       );
     } catch (e) {
-      const msg = e.response?.data || e.message;
+      const msg = e?.response?.data || e.message;
+      // On n'efface le state qu'en cas de succès; en cas d'erreur on le garde pour debug.
       return res.status(500).send("Auth error: " + JSON.stringify(msg));
     }
   });
