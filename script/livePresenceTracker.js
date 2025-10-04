@@ -4,6 +4,9 @@
 const axios = require("axios");
 const admin = require("firebase-admin");
 
+const { createQuestStorage } = require("./questStorage"); // chemin relatif si même dossier
+const questStore = createQuestStorage(db);
+
 /**
  * Fabrique un "tick" d’incrément de présence live (1x par stream / par user).
  * Tout l’état est encapsulé dans la closure du ticker (pas d’état global).
@@ -30,6 +33,7 @@ function createLivePresenceTicker({
 
   // État interne (réinitialisé à chaque nouveau stream)
   let CURRENT_STREAM_ID = null;
+  let CURRENT_STARTED_AT = null;
   const COUNTED_LOGINS_THIS_STREAM = new Set();
 
   // Clé mois "YYYY-MM" (UTC pour la stabilité entre serveurs)
@@ -129,6 +133,7 @@ function createLivePresenceTicker({
           console.log("📴 Stream terminé — reset du cache local de présence.");
         }
         CURRENT_STREAM_ID = null;
+        CURRENT_STARTED_AT = null;
         COUNTED_LOGINS_THIS_STREAM.clear();
         return;
       }
@@ -136,9 +141,25 @@ function createLivePresenceTicker({
       // Nouveau stream détecté → reset
       if (stream.id !== CURRENT_STREAM_ID) {
         CURRENT_STREAM_ID = stream.id;
+        CURRENT_STARTED_AT = stream.started_at
+          ? new Date(stream.started_at)
+          : null;
         COUNTED_LOGINS_THIS_STREAM.clear();
         console.log(
           `🔴 Nouveau stream (id=${CURRENT_STREAM_ID}) — compteur local réinitialisé.`
+        );
+        // Exemple au moment où tu détectes un nouveau stream (dans livePresenceTracker.js)
+        // après avoir rafraîchi title/game/lang/chat …
+        await Promise.all(
+          chatters.map((login) =>
+            questStore.updateStreamContext(login, CURRENT_STREAM_ID, {
+              title,
+              game_id,
+              game_name,
+              lang,
+              chat: { slow_mode, followers_only, sub_only, emote_only },
+            })
+          )
         );
       }
 
@@ -159,6 +180,10 @@ function createLivePresenceTicker({
           slice.map(async (login) => {
             try {
               await incrementMonthlyPresenceIfNeeded(login, CURRENT_STREAM_ID);
+              await questStore.notePresence(login, CURRENT_STREAM_ID, {
+                startedAt: CURRENT_STARTED_AT,
+                context: null, // tu peux y passer titre/jeu si tu veux (voir updateStreamContext)
+              });
               COUNTED_LOGINS_THIS_STREAM.add(login);
             } catch (e) {
               console.warn(
@@ -182,6 +207,11 @@ function createLivePresenceTicker({
       );
     }
   }
+
+  runTick.getLiveStreamState = () => ({
+    streamId: CURRENT_STREAM_ID,
+    startedAt: CURRENT_STARTED_AT,
+  });
 
   return runTick;
 }

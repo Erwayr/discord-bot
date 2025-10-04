@@ -21,6 +21,8 @@ const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
+const { createQuestStorage } = require("./script/questStorage");
+const questStore = createQuestStorage(db);
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const {
   updateRedemptionStatus,
@@ -67,7 +69,10 @@ const livePresenceTick = createLivePresenceTicker({
   moderatorId: process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID,
 });
 
+const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
 cron.schedule("*/2 * * * *", livePresenceTick);
+
+cron.schedule("*/5 * * * *", pollClipsTick);
 
 cron.schedule("*/15 * * * *", async () => {
   try {
@@ -380,6 +385,68 @@ app.post("/twitch-callback", async (req, res) => {
     }
     return res.sendStatus(200);
   }
+  if (subscription.type === "channel.raid") {
+    try {
+      const { streamId } = livePresenceTick.getLiveStreamState();
+      if (!streamId) return res.sendStatus(200);
+
+      // récupère les chatters actuels
+      const accessToken = await tokenManager.getAccessToken();
+      const headers = {
+        "Client-ID": process.env.TWITCH_CLIENT_ID,
+        Authorization: `Bearer ${accessToken}`,
+      };
+
+      const logins = [];
+      let after = null,
+        guard = 0;
+      do {
+        const { data } = await axios.get(
+          "https://api.twitch.tv/helix/chat/chatters",
+          {
+            headers,
+            params: after
+              ? {
+                  broadcaster_id: process.env.TWITCH_CHANNEL_ID,
+                  moderator_id:
+                    process.env.TWITCH_MODERATOR_ID ||
+                    process.env.TWITCH_CHANNEL_ID,
+                  first: 1000,
+                  after,
+                }
+              : {
+                  broadcaster_id: process.env.TWITCH_CHANNEL_ID,
+                  moderator_id:
+                    process.env.TWITCH_MODERATOR_ID ||
+                    process.env.TWITCH_CHANNEL_ID,
+                  first: 1000,
+                },
+          }
+        );
+        (data?.data || []).forEach(
+          (c) => c?.user_login && logins.push(c.user_login.toLowerCase())
+        );
+        after = data?.pagination?.cursor || null;
+      } while (after && ++guard < 5);
+
+      await Promise.all(
+        logins.map((login) => questStore.noteRaidParticipation(login, streamId))
+      );
+    } catch (e) {
+      console.warn("raid handler failed:", e?.response?.data || e.message);
+    }
+    return res.sendStatus(200);
+  }
+
+  try {
+    const login = (r.user_login || r.user_name || "").toLowerCase();
+    const { streamId } = livePresenceTick.getLiveStreamState();
+    if (login && streamId) {
+      await questStore.noteChannelPoints(login, streamId, 1);
+    }
+  } catch (e) {
+    console.warn("noteChannelPoints failed:", e?.message || e);
+  }
   // 3) Toujours répondre 2xx pour acknowledge
   res.sendStatus(200);
 });
@@ -400,6 +467,7 @@ client.once(Events.ClientReady, async () => {
   await subscribeToFollows().catch(console.error);
   await subscribeToRedemptions().catch(console.error);
   await subscribeToSubs().catch(console.error);
+  await subscribeToRaids().catch(console.error);
 
   // ─── Pré-chargement des membres pour que presenceUpdate soit bien émis ───
   for (const guild of client.guilds.cache.values()) {
@@ -466,6 +534,110 @@ client.once(Events.ClientReady, async () => {
     (err) => console.error("Listener Firestore error:", err)
   );
 });
+
+const tmi = require("tmi.js");
+
+// Récupère tes emotes de chaîne (id → Set)
+let CHANNEL_EMOTE_IDS = new Set();
+
+async function refreshChannelEmotes() {
+  try {
+    const accessToken = await tokenManager.getAccessToken();
+    const { data } = await axios.get(
+      "https://api.twitch.tv/helix/chat/emotes",
+      {
+        headers: {
+          "Client-ID": process.env.TWITCH_CLIENT_ID,
+          Authorization: `Bearer ${accessToken}`,
+        },
+        params: { broadcaster_id: process.env.TWITCH_CHANNEL_ID },
+      }
+    );
+    CHANNEL_EMOTE_IDS = new Set((data?.data || []).map((e) => e.id));
+    console.log(`🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size}`);
+  } catch (e) {
+    console.warn("⚠️ refreshChannelEmotes:", e?.response?.data || e.message);
+  }
+}
+
+// TMI en anonyme (lecture seule)
+const tmiClient = new tmi.Client({
+  options: { debug: false },
+  connection: { reconnect: true, secure: true },
+  channels: [process.env.TWITCH_CHANNEL_LOGIN], // ex: "erwayr"
+});
+tmiClient.connect().catch(console.error);
+
+tmiClient.on("connected", async () => {
+  await refreshChannelEmotes();
+});
+
+tmiClient.on("message", async (channel, tags, msg, self) => {
+  if (self) return;
+  const login = (tags.username || "").toLowerCase();
+  if (!login) return;
+
+  const { streamId } = livePresenceTick.getLiveStreamState();
+  if (!streamId) return; // pas en live → ignore
+
+  // tmi fournit les emotes utilisées (ids)
+  const emoteIdsInMsg = Object.keys(tags.emotes || {});
+  const used = emoteIdsInMsg.some((id) => CHANNEL_EMOTE_IDS.has(id));
+  if (!used) return;
+
+  // nb d’emotes de TA chaîne dans ce message
+  const inc = emoteIdsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(id)).length;
+
+  try {
+    await questStore.noteEmoteUsage(login, streamId, inc);
+  } catch (e) {
+    console.warn("noteEmoteUsage failed:", e?.message || e);
+  }
+});
+
+async function subscribeToRaids() {
+  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+  const { data: appData } = await axios.post(
+    "https://id.twitch.tv/oauth2/token",
+    null,
+    {
+      params: {
+        client_id: process.env.TWITCH_CLIENT_ID,
+        client_secret: process.env.TWITCH_CLIENT_SECRET,
+        grant_type: "client_credentials",
+      },
+    }
+  );
+  const headers = {
+    "Client-ID": process.env.TWITCH_CLIENT_ID,
+    Authorization: `Bearer ${appData.access_token}`,
+    "Content-Type": "application/json",
+  };
+
+  const list = await axios.get(endpoint, { headers });
+  const exists = list.data.data.find(
+    (s) =>
+      s.type === "channel.raid" &&
+      s.condition?.from_broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+  );
+  if (exists) return;
+
+  await axios.post(
+    endpoint,
+    {
+      type: "channel.raid",
+      version: "1",
+      condition: { from_broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
+      transport: {
+        method: "webhook",
+        callback:
+          "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+        secret: process.env.WEBHOOK_SECRET,
+      },
+    },
+    { headers }
+  );
+}
 
 // Log des DM bruts comme avant
 client.on("raw", async (packet) => {
