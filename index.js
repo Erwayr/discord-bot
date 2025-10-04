@@ -22,7 +22,7 @@ const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
-const { pollClipsTick } = require("./script/clipPoller");
+const { createClipPoller } = require("./script/clipPoller");
 const {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
@@ -73,6 +73,14 @@ const { createQuestStorage } = require("./script/questStorage");
 const questStore = createQuestStorage(db);
 
 cron.schedule("*/2 * * * *", livePresenceTick);
+
+const pollClipsTick = createClipPoller({
+  tokenManager,
+  questStore,
+  livePresenceTick,
+  clientId: process.env.TWITCH_CLIENT_ID,
+  broadcasterId: process.env.TWITCH_CHANNEL_ID,
+});
 
 cron.schedule("*/5 * * * *", pollClipsTick);
 
