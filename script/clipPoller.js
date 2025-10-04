@@ -84,3 +84,4 @@ async function pollClipsTick() {
     console.warn("pollClipsTick error:", e?.response?.data || e.message);
   }
 }
+module.exports = { pollClipsTick };

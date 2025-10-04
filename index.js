@@ -21,9 +21,8 @@ const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
-const { createQuestStorage } = require("./script/questStorage");
-const questStore = createQuestStorage(db);
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
+const { pollClipsTick } = require("./script/clipPoller");
 const {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
@@ -69,7 +68,9 @@ const livePresenceTick = createLivePresenceTicker({
   moderatorId: process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID,
 });
 
-const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
+const { createQuestStorage } = require("./script/questStorage");
+const questStore = createQuestStorage(db);
+
 cron.schedule("*/2 * * * *", livePresenceTick);
 
 cron.schedule("*/5 * * * *", pollClipsTick);
@@ -311,7 +312,15 @@ app.post("/twitch-callback", async (req, res) => {
       );
       // on renvoie 200 pour éviter un spam de retries si tu préfères (sinon 4xx)
     }
-
+    try {
+      const login = (r.user_login || r.user_name || "").toLowerCase();
+      const { streamId } = livePresenceTick.getLiveStreamState();
+      if (login && streamId) {
+        await questStore.noteChannelPoints(login, streamId, 1);
+      }
+    } catch (e) {
+      console.warn("noteChannelPoints failed:", e?.message || e);
+    }
     return res.sendStatus(200);
   }
   if (subscription.type === "channel.follow") {
@@ -438,15 +447,6 @@ app.post("/twitch-callback", async (req, res) => {
     return res.sendStatus(200);
   }
 
-  try {
-    const login = (r.user_login || r.user_name || "").toLowerCase();
-    const { streamId } = livePresenceTick.getLiveStreamState();
-    if (login && streamId) {
-      await questStore.noteChannelPoints(login, streamId, 1);
-    }
-  } catch (e) {
-    console.warn("noteChannelPoints failed:", e?.message || e);
-  }
   // 3) Toujours répondre 2xx pour acknowledge
   res.sendStatus(200);
 });
