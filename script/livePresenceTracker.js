@@ -4,9 +4,6 @@
 const axios = require("axios");
 const admin = require("firebase-admin");
 
-const { createQuestStorage } = require("./questStorage"); // chemin relatif si même dossier
-const questStore = createQuestStorage(db);
-
 /**
  * Fabrique un "tick" d’incrément de présence live (1x par stream / par user).
  * Tout l’état est encapsulé dans la closure du ticker (pas d’état global).
@@ -26,10 +23,12 @@ function createLivePresenceTicker({
   moderatorId,
 }) {
   if (!db || !tokenManager || !clientId || !broadcasterId || !moderatorId) {
-    throw new Error(
-      "createLivePresenceTicker: paramètres manquants (db/tokenManager/clientId/broadcasterId/moderatorId)"
-    );
+    throw new Error("createLivePresenceTicker: paramètres manquants");
   }
+
+  // crée un store local si on ne l’a pas injecté
+  const { createQuestStorage } = require("./questStorage");
+  const store = questStore || createQuestStorage(db);
 
   // État interne (réinitialisé à chaque nouveau stream)
   let CURRENT_STREAM_ID = null;
@@ -152,7 +151,7 @@ function createLivePresenceTicker({
         // après avoir rafraîchi title/game/lang/chat …
         await Promise.all(
           chatters.map((login) =>
-            questStore.updateStreamContext(login, CURRENT_STREAM_ID, {
+            store.updateStreamContext(login, CURRENT_STREAM_ID, {
               title,
               game_id,
               game_name,
@@ -180,7 +179,7 @@ function createLivePresenceTicker({
           slice.map(async (login) => {
             try {
               await incrementMonthlyPresenceIfNeeded(login, CURRENT_STREAM_ID);
-              await questStore.notePresence(login, CURRENT_STREAM_ID, {
+              await store.notePresence(login, CURRENT_STREAM_ID, {
                 startedAt: CURRENT_STARTED_AT,
                 context: null, // tu peux y passer titre/jeu si tu veux (voir updateStreamContext)
               });
