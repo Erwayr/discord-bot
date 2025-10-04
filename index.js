@@ -21,6 +21,7 @@ const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
+const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
@@ -57,6 +58,16 @@ db.settings({ ignoreUndefinedProperties: true });
 const tokenManager = createTokenManager(db, {
   docPath: "settings/twitch_moderator",
 });
+
+const livePresenceTick = createLivePresenceTicker({
+  db,
+  tokenManager,
+  clientId: process.env.TWITCH_CLIENT_ID,
+  broadcasterId: process.env.TWITCH_CHANNEL_ID,
+  moderatorId: process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID,
+});
+
+cron.schedule("*/2 * * * *", livePresenceTick);
 
 cron.schedule("*/15 * * * *", async () => {
   try {
