@@ -21,6 +21,7 @@ function createLivePresenceTicker({
   clientId,
   broadcasterId,
   moderatorId,
+  questStore,
 }) {
   if (!db || !tokenManager || !clientId || !broadcasterId || !moderatorId) {
     throw new Error("createLivePresenceTicker: paramètres manquants");

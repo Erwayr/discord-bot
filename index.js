@@ -66,6 +66,7 @@ const livePresenceTick = createLivePresenceTicker({
   clientId: process.env.TWITCH_CLIENT_ID,
   broadcasterId: process.env.TWITCH_CHANNEL_ID,
   moderatorId: process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID,
+  questStore,
 });
 
 const { createQuestStorage } = require("./script/questStorage");
