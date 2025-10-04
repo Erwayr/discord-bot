@@ -15,23 +15,29 @@ const axios = require("axios");
 const express = require("express");
 const bodyParser = require("body-parser");
 const crypto = require("crypto");
+
+// --- tes handlers ---
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
 const messageCountHandler = require("./script/messageCountHandler");
 const presenceHandler = require("./script/presenceHandler");
 const electionHandler = require("./script/electionHandler");
 const handleVoteChange = require("./script/handleVoteChange");
+
+// --- factories ---
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const { createClipPoller } = require("./script/clipPoller");
+const { mountTwitchAuth } = require("./script/authTwitch");
+const { createTokenManager } = require("./script/tokenManager");
+const cron = require("node-cron");
+
+// (optionnel) autres helpers
 const {
   updateRedemptionStatus,
   upsertParticipantFromRedemption,
   upsertParticipantFromSubscription,
   upsertFollowerMonthsFromSub,
 } = require("./script/manageRedemption");
-const { mountTwitchAuth } = require("./script/authTwitch");
-const { createTokenManager } = require("./script/tokenManager");
-const cron = require("node-cron");
 
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
@@ -49,31 +55,31 @@ try {
   console.error("❌ Erreur de parsing FIREBASE_KEY_JSON :", e);
 }
 
-admin.initializeApp({
-  credential: admin.credential.cert(key),
-});
+admin.initializeApp({ credential: admin.credential.cert(key) });
 
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 
+// ---- instancie d'abord questStore (APRES db) ----
+const { createQuestStorage } = require("./script/questStorage");
+const questStore = createQuestStorage(db);
+
+// ---- puis le token manager ----
 const tokenManager = createTokenManager(db, {
   docPath: "settings/twitch_moderator",
 });
 
+// ---- ensuite seulement le livePresenceTicker (on lui passe questStore) ----
 const livePresenceTick = createLivePresenceTicker({
   db,
   tokenManager,
   clientId: process.env.TWITCH_CLIENT_ID,
   broadcasterId: process.env.TWITCH_CHANNEL_ID,
   moderatorId: process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID,
-  questStore,
+  questStore, // ✅ maintenant défini
 });
 
-const { createQuestStorage } = require("./script/questStorage");
-const questStore = createQuestStorage(db);
-
-cron.schedule("*/2 * * * *", livePresenceTick);
-
+// ---- puis le clip poller qui dépend de questStore ET du ticker ----
 const pollClipsTick = createClipPoller({
   tokenManager,
   questStore,

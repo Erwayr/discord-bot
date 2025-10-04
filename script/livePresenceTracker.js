@@ -27,9 +27,7 @@ function createLivePresenceTicker({
     throw new Error("createLivePresenceTicker: paramètres manquants");
   }
 
-  // crée un store local si on ne l’a pas injecté
-  const { createQuestStorage } = require("./questStorage");
-  const store = questStore || createQuestStorage(db);
+  const store = questStore;
 
   // État interne (réinitialisé à chaque nouveau stream)
   let CURRENT_STREAM_ID = null;
