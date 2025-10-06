@@ -98,6 +98,24 @@ cron.schedule("*/15 * * * *", async () => {
   }
 });
 
+cron.schedule("*/2 * * * *", async () => {
+  console.log("⏱️ [CRON] livePresenceTick → start");
+  try {
+    await livePresenceTick();
+  } catch (e) {
+    console.warn(
+      "⚠️ [CRON] livePresenceTick failed:",
+      e?.response?.data || e.message || e
+    );
+  }
+  const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
+  console.log(
+    `⏱️ [CRON] livePresenceTick → end (streamId=${
+      streamId || "offline"
+    }, startedAt=${startedAt ? startedAt.toISOString() : "-"})`
+  );
+});
+
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
 const GENERAL_CHANNEL_ID = "797077170974490645";

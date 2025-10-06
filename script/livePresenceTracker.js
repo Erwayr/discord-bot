@@ -1,19 +1,16 @@
-// script/livePresenceTracker.js
 "use strict";
 
 const axios = require("axios");
 const admin = require("firebase-admin");
 
 /**
- * Fabrique un "tick" d’incrément de présence live (1x par stream / par user).
- * Tout l’état est encapsulé dans la closure du ticker (pas d’état global).
- *
  * @param {Object} deps
  * @param {import('firebase-admin').firestore.Firestore} deps.db
  * @param {{ getAccessToken: () => Promise<string> }} deps.tokenManager
- * @param {string} deps.clientId - Twitch Client ID
- * @param {string} deps.broadcasterId - ID numérique de la chaîne
- * @param {string} deps.moderatorId - ID numérique d’un mod (peut = broadcaster)
+ * @param {string} deps.clientId
+ * @param {string} deps.broadcasterId
+ * @param {string} deps.moderatorId
+ * @param {Object} [deps.questStore]
  */
 function createLivePresenceTicker({
   db,
@@ -27,21 +24,19 @@ function createLivePresenceTicker({
     throw new Error("createLivePresenceTicker: paramètres manquants");
   }
 
-  const store = questStore;
+  const store = questStore; // déjà injecté depuis index.js
 
-  // État interne (réinitialisé à chaque nouveau stream)
+  // État interne
   let CURRENT_STREAM_ID = null;
   let CURRENT_STARTED_AT = null;
   const COUNTED_LOGINS_THIS_STREAM = new Set();
 
-  // Clé mois "YYYY-MM" (UTC pour la stabilité entre serveurs)
   function monthKeyFrom(date = new Date()) {
     const y = date.getUTCFullYear();
     const m = String(date.getUTCMonth() + 1).padStart(2, "0");
     return `${y}-${m}`;
   }
 
-  // Stream en cours (null si offline)
   async function getCurrentStreamInfo() {
     const accessToken = await tokenManager.getAccessToken();
     const { data } = await axios.get("https://api.twitch.tv/helix/streams", {
@@ -56,7 +51,6 @@ function createLivePresenceTicker({
     return { id: s.id, started_at: s.started_at, title: s.title };
   }
 
-  // Tous les chatters (pagination)
   async function fetchAllChatters() {
     const accessToken = await tokenManager.getAccessToken();
     const headers = {
@@ -71,8 +65,8 @@ function createLivePresenceTicker({
     };
 
     const logins = [];
-    let cursor = null;
-    let guard = 0;
+    let cursor = null,
+      guard = 0;
 
     do {
       const { data } = await axios.get(base, {
@@ -80,9 +74,9 @@ function createLivePresenceTicker({
         params: cursor ? { ...params, after: cursor } : params,
       });
       const arr = data?.data || [];
-      for (const c of arr) {
-        if (c?.user_login) logins.push(c.user_login.toLowerCase());
-      }
+      arr.forEach(
+        (c) => c?.user_login && logins.push(c.user_login.toLowerCase())
+      );
       cursor = data?.pagination?.cursor || null;
       guard++;
     } while (cursor && guard < 20);
@@ -90,13 +84,11 @@ function createLivePresenceTicker({
     return logins;
   }
 
-  // Incrémente pour un login s’il a pas encore été compté sur ce stream
   async function incrementMonthlyPresenceIfNeeded(login, streamId) {
     const ref = db.collection("followers_all_time").doc(login);
-
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists) return; // on ne compte que les users présents en BD
+      if (!snap.exists) return;
 
       const data = snap.data() || {};
       const monthKey = monthKeyFrom();
@@ -108,7 +100,6 @@ function createLivePresenceTicker({
         ...(presence[monthKey] || {}),
       };
 
-      // déjà compté pour ce stream → stop
       if (node.last_stream_id === streamId) return;
 
       node.count = (node.count || 0) + 1;
@@ -120,15 +111,17 @@ function createLivePresenceTicker({
     });
   }
 
-  // Fonction rendue (appelée par le cron)
   async function runTick() {
     try {
+      console.log("▶️ [ticker] polling stream…"); // ✅ LOG
+
       const stream = await getCurrentStreamInfo();
 
-      // Pas en live → reset local + exit
       if (!stream) {
         if (CURRENT_STREAM_ID) {
-          console.log("📴 Stream terminé — reset du cache local de présence.");
+          console.log("📴 [ticker] stream ended — reset local cache");
+        } else {
+          console.log("📴 [ticker] offline");
         }
         CURRENT_STREAM_ID = null;
         CURRENT_STARTED_AT = null;
@@ -136,7 +129,6 @@ function createLivePresenceTicker({
         return;
       }
 
-      // Nouveau stream détecté → reset
       if (stream.id !== CURRENT_STREAM_ID) {
         CURRENT_STREAM_ID = stream.id;
         CURRENT_STARTED_AT = stream.started_at
@@ -144,34 +136,28 @@ function createLivePresenceTicker({
           : null;
         COUNTED_LOGINS_THIS_STREAM.clear();
         console.log(
-          `🔴 Nouveau stream (id=${CURRENT_STREAM_ID}) — compteur local réinitialisé.`
-        );
-        // Exemple au moment où tu détectes un nouveau stream (dans livePresenceTracker.js)
-        // après avoir rafraîchi title/game/lang/chat …
-        await Promise.all(
-          chatters.map((login) =>
-            store.updateStreamContext(login, CURRENT_STREAM_ID, {
-              title,
-              game_id,
-              game_name,
-              lang,
-              chat: { slow_mode, followers_only, sub_only, emote_only },
-            })
-          )
+          `🔴 [ticker] new stream detected id=${CURRENT_STREAM_ID} started_at=${
+            CURRENT_STARTED_AT?.toISOString() || "?"
+          }`
         );
       }
 
-      // Récupère les chatters
       const chatters = await fetchAllChatters();
+      console.log(`👥 [ticker] chatters fetched: ${chatters.length}`);
+
       if (!chatters.length) return;
 
-      // On évite de retraiter ceux déjà comptés localement
       const toProcess = chatters.filter(
         (l) => !COUNTED_LOGINS_THIS_STREAM.has(l)
       );
+      if (!toProcess.length) {
+        console.log("ℹ️ [ticker] no new chatters to process this tick");
+        return;
+      }
 
-      // Traite par paquets
       const CHUNK = 50;
+      let processed = 0;
+
       for (let i = 0; i < toProcess.length; i += CHUNK) {
         const slice = toProcess.slice(i, i + CHUNK);
         await Promise.all(
@@ -180,12 +166,13 @@ function createLivePresenceTicker({
               await incrementMonthlyPresenceIfNeeded(login, CURRENT_STREAM_ID);
               await store.notePresence(login, CURRENT_STREAM_ID, {
                 startedAt: CURRENT_STARTED_AT,
-                context: null, // tu peux y passer titre/jeu si tu veux (voir updateStreamContext)
+                context: null,
               });
               COUNTED_LOGINS_THIS_STREAM.add(login);
+              processed++;
             } catch (e) {
               console.warn(
-                `presence+1 échouée pour ${login}:`,
+                `[ticker] presence+1 failed for ${login}:`,
                 e?.message || e
               );
             }
@@ -193,16 +180,11 @@ function createLivePresenceTicker({
         );
       }
 
-      if (toProcess.length > 0) {
-        console.log(
-          `✅ Live presence tick: ${toProcess.length} logins traités (stream ${CURRENT_STREAM_ID}).`
-        );
-      }
-    } catch (e) {
-      console.warn(
-        "⚠️ runTick (live presence) error:",
-        e?.response?.data || e.message || e
+      console.log(
+        `✅ [ticker] processed ${processed} new logins (stream ${CURRENT_STREAM_ID})`
       );
+    } catch (e) {
+      console.warn("⚠️ [ticker] error:", e?.response?.data || e.message || e);
     }
   }
 
