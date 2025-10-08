@@ -1,25 +1,23 @@
 // ./script/tokenManager.js
 const axios = require("axios");
 const { FieldValue } = require("firebase-admin/firestore");
+const crypto = require("crypto");
 
-/**
- * Gestion centralisée de l'access_token (user) + refresh (rotatif) pour Twitch.
- * - Stocke { access_token, refresh_token, access_token_expires_at, rotated_at, scopes, issuer_client_id }
- * - Sérialise le refresh pour éviter les courses (inFlight)
- * - Traite le cas "Invalid refresh token" (400) : purge + erreur typée -> reconsent
- */
+function sha256(str) {
+  return crypto.createHash("sha256").update(String(str)).digest("hex");
+}
+
 function createTokenManager(
   db,
   {
     docPath = "settings/twitch_moderator",
     clientId = process.env.TWITCH_CLIENT_ID,
     clientSecret = process.env.TWITCH_CLIENT_SECRET,
-    // marge de sécurité avant l’expiration (ms)
     expirySkewMs = 60_000,
   } = {}
 ) {
   const ref = db.doc(docPath);
-  let inFlight = null; // Promise en cours (mutex soft)
+  let inFlight = null;
 
   function asTypedError(message, code, extra) {
     const err = new Error(message);
@@ -38,6 +36,7 @@ function createTokenManager(
   }
 
   async function doRefresh(refreshToken) {
+    const expectedSha = sha256(refreshToken);
     const body = new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
@@ -63,13 +62,19 @@ function createTokenManager(
 
       await writeDoc({
         access_token,
-        refresh_token: newRefresh, // rotation
         access_token_expires_at,
-        rotated_at: FieldValue.serverTimestamp(),
-        scopes: scope,
         token_type,
         issuer_client_id: clientId,
-        oauth_error: null, // reset éventuelle d’une erreur précédente
+
+        // ✅ rotation propre + audit minimal
+        refresh_token: newRefresh,
+        refresh_token_sha256: sha256(newRefresh),
+        prev_refresh_token_sha256: expectedSha,
+        refresh_rotation_count: FieldValue.increment(1),
+
+        scopes: scope,
+        rotated_at: FieldValue.serverTimestamp(),
+        oauth_error: null,
       });
 
       return access_token;
@@ -81,17 +86,25 @@ function createTokenManager(
         e?.message ||
         "Refresh failed";
 
-      // Cas classique : token de refresh invalide/consommé/révoqué
+      // 🔁 Cas classique: un autre process a déjà rotaté
       if (status === 400 && /invalid refresh token/i.test(message)) {
+        // Re-lecture du doc: a-t-on un nouveau refresh enregistré entre-temps ?
+        const latest = await readDoc();
+        if (
+          latest.refresh_token &&
+          latest.refresh_token_sha256 &&
+          latest.refresh_token_sha256 !== expectedSha
+        ) {
+          // Un autre worker a gagné la course → on réessaie avec le NOUVEAU token
+          return await doRefresh(latest.refresh_token);
+        }
+
+        // Sinon, vrai invalid → on purge et on demande re-consent
         await writeDoc({
           access_token: null,
           refresh_token: null,
           access_token_expires_at: 0,
-          oauth_error: {
-            at: Date.now(),
-            status,
-            message,
-          },
+          oauth_error: { at: Date.now(), status, message },
         });
         throw asTypedError(
           "Invalid refresh token — reconsent required.",
@@ -100,7 +113,6 @@ function createTokenManager(
         );
       }
 
-      // Autres erreurs réseau/API
       throw asTypedError(
         `Refresh failed: ${message}`,
         "REFRESH_FAILED",
@@ -113,7 +125,6 @@ function createTokenManager(
     const initial = await readDoc();
     const now = Date.now();
 
-    // 1) Token présent et encore valable ?
     if (
       initial.access_token &&
       initial.access_token_expires_at &&
@@ -122,7 +133,6 @@ function createTokenManager(
       return initial.access_token;
     }
 
-    // 2) Pas de refresh_token : nécessite re-consentement
     if (!initial.refresh_token) {
       throw asTypedError(
         "No refresh_token stored — run OAuth consent.",
@@ -130,10 +140,9 @@ function createTokenManager(
       );
     }
 
-    // 3) Sérialiser le refresh pour éviter les courses
     if (!inFlight) {
       inFlight = (async () => {
-        // Re-lire au dernier moment pour prendre en compte une éventuelle mise à jour
+        // Re-lire au dernier moment (pour capter une rotation toute fraîche)
         const fresh = await readDoc();
         const r = fresh.refresh_token;
         if (!r) {
@@ -144,11 +153,9 @@ function createTokenManager(
         }
         return await doRefresh(r);
       })().finally(() => {
-        // libérer le mutex quoi qu'il arrive
         inFlight = null;
       });
     }
-
     return await inFlight;
   }
 

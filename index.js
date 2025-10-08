@@ -92,9 +92,18 @@ cron.schedule("*/5 * * * *", pollClipsTick);
 
 cron.schedule("*/15 * * * *", async () => {
   try {
+    const snap = await db.doc("settings/twitch_moderator").get();
+    if (!snap.exists || !snap.data()?.refresh_token) {
+      console.log("⏭️ [keepalive] skipped: no refresh_token yet");
+      return;
+    }
     await tokenManager.getAccessToken();
   } catch (e) {
-    console.warn("⚠️ token keep-alive a échoué :", e.message || e);
+    if (e.code === "NO_REFRESH_TOKEN") {
+      console.log("⏭️ [keepalive] no refresh_token yet");
+    } else {
+      console.warn("⚠️ token keep-alive:", e?.response?.data || e.message || e);
+    }
   }
 });
 
@@ -600,7 +609,7 @@ const tmiClient = new tmi.Client({
   channels: [process.env.TWITCH_CHANNEL_LOGIN], // ex: "erwayr"
 });
 tmiClient.connect().catch(console.error);
-
+//
 tmiClient.on("connected", async () => {
   await refreshChannelEmotes();
 });
