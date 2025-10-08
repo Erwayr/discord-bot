@@ -1,8 +1,7 @@
 "use strict";
 
-const axios = require("axios");
 const admin = require("firebase-admin");
-
+const { makeHelix } = require("../helper/helix");
 /**
  * @param {Object} deps
  * @param {import('firebase-admin').firestore.Firestore} deps.db
@@ -23,7 +22,7 @@ function createLivePresenceTicker({
   if (!db || !tokenManager || !clientId || !broadcasterId || !moderatorId) {
     throw new Error("createLivePresenceTicker: paramètres manquants");
   }
-
+  const helix = makeHelix({ tokenManager, clientId });
   const store = questStore; // déjà injecté depuis index.js
 
   // État interne
@@ -38,12 +37,8 @@ function createLivePresenceTicker({
   }
 
   async function getCurrentStreamInfo() {
-    const accessToken = await tokenManager.getAccessToken();
-    const { data } = await axios.get("https://api.twitch.tv/helix/streams", {
-      headers: {
-        "Client-ID": clientId,
-        Authorization: `Bearer ${accessToken}`,
-      },
+    const { data } = await helix({
+      url: "https://api.twitch.tv/helix/streams",
       params: { user_id: broadcasterId, first: 1 },
     });
     const s = data?.data?.[0];
@@ -52,26 +47,19 @@ function createLivePresenceTicker({
   }
 
   async function fetchAllChatters() {
-    const accessToken = await tokenManager.getAccessToken();
-    const headers = {
-      "Client-ID": clientId,
-      Authorization: `Bearer ${accessToken}`,
-    };
-    const base = "https://api.twitch.tv/helix/chat/chatters";
-    const params = {
-      broadcaster_id: broadcasterId,
-      moderator_id: moderatorId,
-      first: 1000,
-    };
-
     const logins = [];
     let cursor = null,
       guard = 0;
 
     do {
-      const { data } = await axios.get(base, {
-        headers,
-        params: cursor ? { ...params, after: cursor } : params,
+      const { data } = await helix({
+        url: "https://api.twitch.tv/helix/chat/chatters",
+        params: {
+          broadcaster_id: broadcasterId,
+          moderator_id: moderatorId,
+          first: 1000,
+          after: cursor || undefined,
+        },
       });
       const arr = data?.data || [];
       arr.forEach(

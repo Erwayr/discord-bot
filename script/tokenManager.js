@@ -161,5 +161,8 @@ function createTokenManager(
 
   return { getAccessToken };
 }
+async function invalidateAccessToken() {
+  await ref.set({ access_token_expires_at: 0 }, { merge: true });
+}
 
-module.exports = { createTokenManager };
+module.exports = { createTokenManager, invalidateAccessToken };

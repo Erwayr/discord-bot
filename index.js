@@ -15,7 +15,7 @@ const axios = require("axios");
 const express = require("express");
 const bodyParser = require("body-parser");
 const crypto = require("crypto");
-
+const { makeHelix } = require("./helper/helix");
 // --- tes handlers ---
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
@@ -68,6 +68,10 @@ const questStore = createQuestStorage(db);
 const tokenManager = createTokenManager(db, {
   docPath: "settings/twitch_moderator",
 });
+const helix = makeHelix({
+  tokenManager,
+  clientId: process.env.TWITCH_CLIENT_ID,
+});
 
 // ---- ensuite seulement le livePresenceTicker (on lui passe questStore) ----
 const livePresenceTick = createLivePresenceTicker({
@@ -93,11 +97,19 @@ cron.schedule("*/5 * * * *", pollClipsTick);
 cron.schedule("*/15 * * * *", async () => {
   try {
     const snap = await db.doc("settings/twitch_moderator").get();
-    if (!snap.exists || !snap.data()?.refresh_token) {
-      console.log("⏭️ [keepalive] skipped: no refresh_token yet");
-      return;
+    const s = snap.exists ? snap.data() : null;
+    if (
+      s?.issuer_client_id &&
+      s.issuer_client_id !== process.env.TWITCH_CLIENT_ID
+    ) {
+      console.error(
+        "❌ Client-ID mismatch: token lié à",
+        s.issuer_client_id,
+        "mais env TWITCH_CLIENT_ID =",
+        process.env.TWITCH_CLIENT_ID,
+        "→ refais /auth/twitch/start avec le bon client ou corrige l'env."
+      );
     }
-    await tokenManager.getAccessToken();
   } catch (e) {
     if (e.code === "NO_REFRESH_TOKEN") {
       console.log("⏭️ [keepalive] no refresh_token yet");
@@ -584,17 +596,11 @@ let CHANNEL_EMOTE_IDS = new Set();
 
 async function refreshChannelEmotes() {
   try {
-    const accessToken = await tokenManager.getAccessToken();
-    const { data } = await axios.get(
-      "https://api.twitch.tv/helix/chat/emotes",
-      {
-        headers: {
-          "Client-ID": process.env.TWITCH_CLIENT_ID,
-          Authorization: `Bearer ${accessToken}`,
-        },
-        params: { broadcaster_id: process.env.TWITCH_CHANNEL_ID },
-      }
-    );
+    const { data } = await helix({
+      url: "https://api.twitch.tv/helix/chat/emotes",
+      params: { broadcaster_id: process.env.TWITCH_CHANNEL_ID },
+    });
+
     CHANNEL_EMOTE_IDS = new Set((data?.data || []).map((e) => e.id));
     console.log(`🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size}`);
   } catch (e) {
