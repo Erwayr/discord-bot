@@ -92,7 +92,7 @@ function createLivePresenceTicker({
 
       node.count = (node.count || 0) + 1;
       node.last_stream_id = streamId;
-      node.last_increment_at = admin.firestore.FieldValue.serverTimestamp();
+      node.last_increment_at = admin.firestore.Timestamp.now();
       presence[monthKey] = node;
 
       tx.update(ref, { live_presence: presence });
