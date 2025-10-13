@@ -101,15 +101,15 @@ function createQuestStorage(db) {
       const wasSeen = !!entry.presence.seen;
       entry.presence.seen = true;
       if (!entry.presence.first_at)
-        entry.presence.first_at = admin.firestore.FieldValue.serverTimestamp();
-      entry.presence.last_at = admin.firestore.FieldValue.serverTimestamp();
+        entry.presence.first_at = Date.now();
+      entry.presence.last_at = Date.now();
 
       // compteur mensuel optionnel
       if (!wasSeen) {
         month.count = (month.count || 0) + 1;
       }
 
-      month.last_update_at = admin.firestore.FieldValue.serverTimestamp();
+      month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
@@ -130,9 +130,9 @@ function createQuestStorage(db) {
 
       entry.emote.used = true;
       entry.emote.count = (entry.emote.count || 0) + Math.max(1, inc);
-      entry.emote.last_at = admin.firestore.FieldValue.serverTimestamp();
+      entry.emote.last_at =  Date.now();
 
-      month.last_update_at = admin.firestore.FieldValue.serverTimestamp();
+      month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
@@ -153,9 +153,9 @@ function createQuestStorage(db) {
 
       entry.clips.count = (entry.clips.count || 0) + 1;
       if (clipId) entry.clips.last_id = clipId;
-      entry.clips.last_at = admin.firestore.FieldValue.serverTimestamp();
+      entry.clips.last_at =  Date.now();
 
-      month.last_update_at = admin.firestore.FieldValue.serverTimestamp();
+      month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
@@ -178,9 +178,9 @@ function createQuestStorage(db) {
       entry.channel_points.redemptions =
         (entry.channel_points.redemptions || 0) + Math.max(1, redemptionsInc);
       entry.channel_points.last_at =
-        admin.firestore.FieldValue.serverTimestamp();
+         Date.now();
 
-      month.last_update_at = admin.firestore.FieldValue.serverTimestamp();
+      month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
@@ -201,10 +201,10 @@ function createQuestStorage(db) {
 
       if (!entry.raid.participated) {
         entry.raid.participated = true;
-        entry.raid.at = admin.firestore.FieldValue.serverTimestamp();
+        entry.raid.at =  Date.now();
       }
 
-      month.last_update_at = admin.firestore.FieldValue.serverTimestamp();
+      month.last_update_at =  Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
@@ -227,7 +227,7 @@ function createQuestStorage(db) {
       const entry = month.streams[idx];
 
       entry.context = { ...(entry.context || {}), ...pickContext(ctx) };
-      month.last_update_at = admin.firestore.FieldValue.serverTimestamp();
+      month.last_update_at =  Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
