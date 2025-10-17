@@ -326,55 +326,65 @@ app.post("/twitch-callback", async (req, res) => {
   ) {
     const r = event;
 
-    // Filtrer le BON reward (ID conseillé). À défaut, fallback sur le titre.
+    // 1) Est-ce le ticket d’or ? (pour FULFILL + upsert participant)
     const WANTED_REWARD_ID = process.env.TICKET_REWARD_ID || null;
     const isTicket = WANTED_REWARD_ID
       ? r.reward?.id === WANTED_REWARD_ID
       : /ticket d'or/i.test(r.reward?.title || "");
 
-    if (!isTicket) return res.sendStatus(200);
+    // (log utile)
+    console.log(
+      `🎯 Redemption: user=${r.user_login} rewardId=${r.reward?.id} title="${r.reward?.title}" isTicket=${isTicket}`
+    );
 
-    try {
-      // 1) Fulfill immédiat
-      const accessToken = await tokenManager.getAccessToken(); // ✅
-      await updateRedemptionStatus({
-        broadcasterId: process.env.TWITCH_CHANNEL_ID,
-        rewardId: r.reward.id,
-        redemptionIds: [r.id],
-        status: "FULFILLED",
-        accessToken,
-      });
-
-      // 2) Upsert participant (sans stocker la rédemption)
-      await upsertParticipantFromRedemption(db, r);
-
-      // 3) Optionnel: message Discord live
+    // 2) Si c’est le ticket → on fait le fulfill + upserts
+    if (isTicket) {
       try {
-        const generalChannel = await client.channels.fetch(GENERAL_CHANNEL_ID);
-        if (generalChannel?.isTextBased()) {
-          await generalChannel.send(
-            `📜 Note prise : participation de ${r.user_name} confirmée — **${r.reward.title}** 🎟️`
+        const accessToken = await tokenManager.getAccessToken();
+        await updateRedemptionStatus({
+          broadcasterId: process.env.TWITCH_CHANNEL_ID,
+          rewardId: r.reward.id,
+          redemptionIds: [r.id],
+          status: "FULFILLED",
+          accessToken,
+        });
+        await upsertParticipantFromRedemption(db, r);
+        try {
+          const generalChannel = await client.channels.fetch(
+            GENERAL_CHANNEL_ID
           );
+          if (generalChannel?.isTextBased()) {
+            await generalChannel.send(
+              `📜 Note prise : participation de ${r.user_name} confirmée — **${r.reward.title}** 🎟️`
+            );
+          }
+        } catch (e) {
+          console.warn("Discord notify failed:", e.message);
         }
       } catch (e) {
-        console.warn("Discord notify failed:", e.message);
+        console.error(
+          "Fulfill+participant error:",
+          e.response?.data || e.message
+        );
       }
-    } catch (e) {
-      console.error(
-        "Fulfill+participant error:",
-        e.response?.data || e.message
-      );
-      // on renvoie 200 pour éviter un spam de retries si tu préfères (sinon 4xx)
     }
+
+    // 3) ⚠️ Toujours compter la rédemption pour la quête "points de chaîne"
     try {
       const login = (r.user_login || r.user_name || "").toLowerCase();
       const { streamId } = livePresenceTick.getLiveStreamState();
       if (login && streamId) {
         await questStore.noteChannelPoints(login, streamId, 1);
+        console.log(`✅ ChannelPoints +1 → ${login} (stream ${streamId})`);
+      } else {
+        console.log(
+          `⏭️ ChannelPoints ignoré (login=${login} streamId=${streamId || "-"})`
+        );
       }
     } catch (e) {
       console.warn("noteChannelPoints failed:", e?.message || e);
     }
+
     return res.sendStatus(200);
   }
   if (subscription.type === "channel.follow") {
@@ -628,13 +638,22 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   const { streamId } = livePresenceTick.getLiveStreamState();
   if (!streamId) return; // pas en live → ignore
 
-  // tmi fournit les emotes utilisées (ids)
-  const emoteIdsInMsg = Object.keys(tags.emotes || {});
-  const used = emoteIdsInMsg.some((id) => CHANNEL_EMOTE_IDS.has(id));
-  if (!used) return;
+  // emotes de ce message (objet { id: [ "start-end", ... ] })
+  const emotesObj = tags.emotes || null;
+  if (!emotesObj) return;
 
-  // nb d’emotes de TA chaîne dans ce message
-  const inc = emoteIdsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(id)).length;
+  const idsInMsg = Object.keys(emotesObj);
+  // ne garder que TES emotes de chaîne
+  const myIds = idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(id));
+
+  // somme des occurrences (tailles des tableaux positions)
+  const inc = myIds.reduce((sum, id) => sum + (emotesObj[id]?.length || 0), 0);
+  if (inc <= 0) return;
+
+  // logs de debug
+  console.log(
+    `[emotes] ${login} +${inc} (ids=${myIds.join(",")}) msg="${msg.slice(0, 80)}"`
+  );
 
   try {
     await questStore.noteEmoteUsage(login, streamId, inc);
@@ -909,14 +928,10 @@ async function subscribeToRedemptions() {
 
   // condition obligatoire
   const condition = { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID };
-  // si tu veux filtrer au niveau Twitch (optionnel) :
-  if (process.env.TICKET_REWARD_ID)
-    condition.reward_id = process.env.TICKET_REWARD_ID;
 
   const payload = {
     type: "channel.channel_points_custom_reward_redemption.add",
     version: "1",
-    condition,
     transport: {
       method: "webhook",
       callback:

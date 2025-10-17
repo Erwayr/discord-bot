@@ -100,8 +100,7 @@ function createQuestStorage(db) {
 
       const wasSeen = !!entry.presence.seen;
       entry.presence.seen = true;
-      if (!entry.presence.first_at)
-        entry.presence.first_at = Date.now();
+      if (!entry.presence.first_at) entry.presence.first_at = Date.now();
       entry.presence.last_at = Date.now();
 
       // compteur mensuel optionnel
@@ -115,12 +114,20 @@ function createQuestStorage(db) {
   }
 
   async function noteEmoteUsage(login, streamId, inc = 1) {
-    const ref = col.doc(login);
+    const ref = col.doc(login.toLowerCase());
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists) return;
 
-      const data = snap.data() || {};
+      // 🔧 crée le doc minimal si absent
+      if (!snap.exists) {
+        tx.set(
+          ref,
+          { pseudo: login.toLowerCase(), live_presence: {} },
+          { merge: true }
+        );
+      }
+
+      const data = snap.exists ? snap.data() : {};
       const lp = { ...(data.live_presence || {}) };
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
@@ -130,7 +137,7 @@ function createQuestStorage(db) {
 
       entry.emote.used = true;
       entry.emote.count = (entry.emote.count || 0) + Math.max(1, inc);
-      entry.emote.last_at =  Date.now();
+      entry.emote.last_at = Date.now();
 
       month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
@@ -153,7 +160,7 @@ function createQuestStorage(db) {
 
       entry.clips.count = (entry.clips.count || 0) + 1;
       if (clipId) entry.clips.last_id = clipId;
-      entry.clips.last_at =  Date.now();
+      entry.clips.last_at = Date.now();
 
       month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
@@ -161,12 +168,20 @@ function createQuestStorage(db) {
   }
 
   async function noteChannelPoints(login, streamId, redemptionsInc = 1) {
-    const ref = col.doc(login);
+    const ref = col.doc(login.toLowerCase());
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (!snap.exists) return;
 
-      const data = snap.data() || {};
+      // 🔧 crée le doc minimal si absent
+      if (!snap.exists) {
+        tx.set(
+          ref,
+          { pseudo: login.toLowerCase(), live_presence: {} },
+          { merge: true }
+        );
+      }
+
+      const data = snap.exists ? snap.data() : {};
       const lp = { ...(data.live_presence || {}) };
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
@@ -177,8 +192,7 @@ function createQuestStorage(db) {
       entry.channel_points.used = true;
       entry.channel_points.redemptions =
         (entry.channel_points.redemptions || 0) + Math.max(1, redemptionsInc);
-      entry.channel_points.last_at =
-         Date.now();
+      entry.channel_points.last_at = Date.now();
 
       month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
@@ -201,10 +215,10 @@ function createQuestStorage(db) {
 
       if (!entry.raid.participated) {
         entry.raid.participated = true;
-        entry.raid.at =  Date.now();
+        entry.raid.at = Date.now();
       }
 
-      month.last_update_at =  Date.now();
+      month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
@@ -227,7 +241,7 @@ function createQuestStorage(db) {
       const entry = month.streams[idx];
 
       entry.context = { ...(entry.context || {}), ...pickContext(ctx) };
-      month.last_update_at =  Date.now();
+      month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
   }
