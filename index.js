@@ -642,6 +642,10 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   const emotesObj = tags.emotes || null;
   if (!emotesObj) return;
 
+  if (CHANNEL_EMOTE_IDS.size === 0) {
+    console.log("⚠️ CHANNEL_EMOTE_IDS est vide — vérifie le token/endpoint Helix.");
+  }
+
   const idsInMsg = Object.keys(emotesObj);
   // ne garder que TES emotes de chaîne
   const myIds = idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(id));
