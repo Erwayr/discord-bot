@@ -601,8 +601,8 @@ client.once(Events.ClientReady, async () => {
 
 const tmi = require("tmi.js");
 
-// Récupère tes emotes de chaîne (id → Set)
 let CHANNEL_EMOTE_IDS = new Set();
+let CHANNEL_EMOTE_NAMES = new Set(); // 👈 nouveau
 
 async function refreshChannelEmotes() {
   try {
@@ -610,9 +610,12 @@ async function refreshChannelEmotes() {
       url: "https://api.twitch.tv/helix/chat/emotes",
       params: { broadcaster_id: process.env.TWITCH_CHANNEL_ID },
     });
-
-    CHANNEL_EMOTE_IDS = new Set((data?.data || []).map((e) => e.id));
-    console.log(`🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size}`);
+    const list = data?.data || [];
+    CHANNEL_EMOTE_IDS = new Set(list.map((e) => String(e.id)));
+    CHANNEL_EMOTE_NAMES = new Set(list.map((e) => e.name)); // 👈 nouveau
+    console.log(
+      `🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size} (names=${CHANNEL_EMOTE_NAMES.size})`
+    );
   } catch (e) {
     console.warn("⚠️ refreshChannelEmotes:", e?.response?.data || e.message);
   }
@@ -636,34 +639,58 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   if (!login) return;
 
   const { streamId } = livePresenceTick.getLiveStreamState();
-  if (!streamId) return; // pas en live → ignore
+  if (!streamId) return;
 
-  // emotes de ce message (objet { id: [ "start-end", ... ] })
   const emotesObj = tags.emotes || null;
-  if (!emotesObj) return;
-
-  if (CHANNEL_EMOTE_IDS.size === 0) {
-    console.log("⚠️ CHANNEL_EMOTE_IDS est vide — vérifie le token/endpoint Helix.");
+  if (!emotesObj) {
+    // Fallback par NOM si rien dans tags.emotes (ex: message ne contient pas d’emote Twitch détectée)
+    let incByName = 0;
+    if (CHANNEL_EMOTE_NAMES.size) {
+      for (const token of msg.split(/\s+/)) {
+        if (CHANNEL_EMOTE_NAMES.has(token)) incByName += 1;
+      }
+    }
+    if (incByName > 0) {
+      console.log(
+        `[emotes:fallback-name] ${login} +${incByName} msg="${msg.slice(
+          0,
+          80
+        )}"`
+      );
+      try {
+        await questStore.noteEmoteUsage(login, streamId, incByName);
+      } catch (e) {}
+    }
+    return;
   }
 
+  // --- comptage par ID (ton code) ---
   const idsInMsg = Object.keys(emotesObj);
-  // ne garder que TES emotes de chaîne
-  const myIds = idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(id));
+  const myIds = idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(String(id)));
+  let inc = myIds.reduce((sum, id) => sum + (emotesObj[id]?.length || 0), 0);
 
-  // somme des occurrences (tailles des tableaux positions)
-  const inc = myIds.reduce((sum, id) => sum + (emotesObj[id]?.length || 0), 0);
+  // 🔁 fallback si rien trouvé par ID
+  if (inc === 0 && CHANNEL_EMOTE_NAMES.size) {
+    for (const token of msg.split(/\s+/)) {
+      if (CHANNEL_EMOTE_NAMES.has(token)) inc += 1;
+    }
+    if (inc > 0) {
+      console.log(
+        `[emotes:fallback-name] ${login} +${inc} msg="${msg.slice(0, 80)}"`
+      );
+    }
+  }
+
   if (inc <= 0) return;
-
-  // logs de debug
   console.log(
-    `[emotes] ${login} +${inc} (ids=${myIds.join(",")}) msg="${msg.slice(0, 80)}"`
+    `[emotes] ${login} +${inc} (ids=${myIds.join(",")}) msg="${msg.slice(
+      0,
+      80
+    )}"`
   );
-
   try {
     await questStore.noteEmoteUsage(login, streamId, inc);
-  } catch (e) {
-    console.warn("noteEmoteUsage failed:", e?.message || e);
-  }
+  } catch (e) {}
 });
 
 async function subscribeToRaids() {
