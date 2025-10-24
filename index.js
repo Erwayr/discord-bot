@@ -612,15 +612,13 @@ async function refreshChannelEmotes() {
     });
     const list = data?.data || [];
     CHANNEL_EMOTE_IDS = new Set(list.map((e) => String(e.id)));
-    CHANNEL_EMOTE_NAMES = new Set(list.map((e) => e.name)); // 👈 nouveau
-    console.log(
-      `🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size} (names=${CHANNEL_EMOTE_NAMES.size})`
-    );
+    CHANNEL_EMOTE_NAMES = new Set(list.map((e) => e.name));
+    const sample = list.slice(0, 5).map((e) => e.name).join(", ");
+    console.log(`🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size} (sample: ${sample || "—"})`);
   } catch (e) {
     console.warn("⚠️ refreshChannelEmotes:", e?.response?.data || e.message);
   }
 }
-
 // TMI en anonyme (lecture seule)
 const tmiClient = new tmi.Client({
   options: { debug: false },
@@ -639,11 +637,44 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   if (!login) return;
 
   const { streamId } = livePresenceTick.getLiveStreamState();
-  if (!streamId) return;
+  if (!streamId) {
+    if (process.env.DEBUG_EMOTES) {
+      console.log(
+        `[emotes:skip] stream offline | from=${login} msg="${msg.slice(0, 80)}"`
+      );
+    }
+    return;
+  }
 
   const emotesObj = tags.emotes || null;
+
+  // Log brut utile pour savoir ce que TMI te donne réellement
+  if (process.env.DEBUG_EMOTES) {
+    console.log(
+      `[emotes:raw] from=${login} stream=${streamId} hasEmotes=${!!emotesObj} msg="${msg.slice(
+        0,
+        80
+      )}"`
+    );
+    if (emotesObj) {
+      const keys = Object.keys(emotesObj);
+      console.log(`  keys=${keys.join(",") || "(none)"}`);
+      keys.slice(0, 8).forEach((id) => {
+        const tag = CHANNEL_EMOTE_IDS.has(String(id)) ? "mine" : "other";
+        console.log(
+          `  └ id=${id} tag=${tag} count=${emotesObj[id]?.length || 0}`
+        );
+      });
+    }
+    if (CHANNEL_EMOTE_IDS.size === 0) {
+      console.log(
+        "⚠️ CHANNEL_EMOTE_IDS est vide — refreshChannelEmotes n'a peut-être pas marché."
+      );
+    }
+  }
+
+  // --- Cas 1: TMI n'a rien reconnu comme émote Twitch (souvent 7TV/BTTV/FFZ) ---
   if (!emotesObj) {
-    // Fallback par NOM si rien dans tags.emotes (ex: message ne contient pas d’emote Twitch détectée)
     let incByName = 0;
     if (CHANNEL_EMOTE_NAMES.size) {
       for (const token of msg.split(/\s+/)) {
@@ -659,17 +690,29 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
       );
       try {
         await questStore.noteEmoteUsage(login, streamId, incByName);
-      } catch (e) {}
+        console.log(
+          `[emotes→DB] OK fallback-name | ${login} +${incByName} stream=${streamId}`
+        );
+      } catch (e) {
+        console.error(
+          `[emotes→DB] FAIL fallback-name | ${login} +${incByName} stream=${streamId}`
+        );
+        console.error(e?.stack || e?.message || e);
+      }
+    } else if (process.env.DEBUG_EMOTES) {
+      console.log(
+        `[emotes:skip] no twitch emote & no fallback-name match | from=${login}`
+      );
     }
     return;
   }
 
-  // --- comptage par ID (ton code) ---
+  // --- Cas 2: TMI a reconnu des émotes Twitch ---
   const idsInMsg = Object.keys(emotesObj);
   const myIds = idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(String(id)));
   let inc = myIds.reduce((sum, id) => sum + (emotesObj[id]?.length || 0), 0);
 
-  // 🔁 fallback si rien trouvé par ID
+  // Fallback par NOM si inc==0
   if (inc === 0 && CHANNEL_EMOTE_NAMES.size) {
     for (const token of msg.split(/\s+/)) {
       if (CHANNEL_EMOTE_NAMES.has(token)) inc += 1;
@@ -681,7 +724,15 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     }
   }
 
-  if (inc <= 0) return;
+  if (inc <= 0) {
+    if (process.env.DEBUG_EMOTES) {
+      console.log(
+        `[emotes:skip] detected emotes but none are YOUR channel emotes | from=${login}`
+      );
+    }
+    return;
+  }
+
   console.log(
     `[emotes] ${login} +${inc} (ids=${myIds.join(",")}) msg="${msg.slice(
       0,
@@ -690,7 +741,11 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   );
   try {
     await questStore.noteEmoteUsage(login, streamId, inc);
-  } catch (e) {}
+    console.log(`[emotes→DB] OK | ${login} +${inc} stream=${streamId}`);
+  } catch (e) {
+    console.error(`[emotes→DB] FAIL | ${login} +${inc} stream=${streamId}`);
+    console.error(e?.stack || e?.message || e);
+  }
 });
 
 async function subscribeToRaids() {

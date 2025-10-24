@@ -114,34 +114,61 @@ function createQuestStorage(db) {
   }
 
   async function noteEmoteUsage(login, streamId, inc = 1) {
-    const ref = col.doc(login.toLowerCase());
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+    const docId = login.toLowerCase();
+    const ref = col.doc(docId);
+    const mk = monthKeyUTC();
 
-      // 🔧 crée le doc minimal si absent
-      if (!snap.exists) {
-        tx.set(
+    console.log(
+      `[EMOTE:TX] start login=${docId} stream=${streamId} +${inc} month=${mk}`
+    );
+
+    await db
+      .runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+
+        if (!snap.exists) {
+          console.log(`[EMOTE:TX] creating doc followers_all_time/${docId}`);
+          tx.set(ref, { pseudo: docId, live_presence: {} }, { merge: true });
+        }
+
+        const data = snap.exists ? snap.data() : {};
+        const lp = { ...(data?.live_presence || {}) };
+        const month = ensureMonthLayer(lp, mk);
+
+        const { idx, created } = await ensureStreamEntry(
+          tx,
           ref,
-          { pseudo: login.toLowerCase(), live_presence: {} },
-          { merge: true }
+          month,
+          streamId
         );
-      }
+        const entry = month.streams[idx];
+        const before = entry.emote?.count || 0;
 
-      const data = snap.exists ? snap.data() : {};
-      const lp = { ...(data.live_presence || {}) };
-      const mk = monthKeyUTC();
-      const month = ensureMonthLayer(lp, mk);
+        entry.emote.used = true;
+        entry.emote.count = (entry.emote.count || 0) + Math.max(1, inc);
+        entry.emote.last_at = Date.now();
 
-      const { idx } = await ensureStreamEntry(tx, ref, month, streamId);
-      const entry = month.streams[idx];
+        month.last_update_at = Date.now();
 
-      entry.emote.used = true;
-      entry.emote.count = (entry.emote.count || 0) + Math.max(1, inc);
-      entry.emote.last_at = Date.now();
+        tx.update(ref, { live_presence: lp });
 
-      month.last_update_at = Date.now();
-      tx.update(ref, { live_presence: lp });
-    });
+        console.log(
+          `[EMOTE:TX] doc=${docId} idx=${idx} ` +
+            `streamCreated=${!!created} before=${before} after=${
+              entry.emote.count
+            }`
+        );
+      })
+      .then(() => {
+        console.log(`[EMOTE:TX] commit OK login=${docId} stream=${streamId}`);
+      })
+      .catch((e) => {
+        console.error(
+          `[EMOTE:TX] commit FAIL login=${docId} stream=${streamId}`
+        );
+        console.error(e?.stack || e?.message || e);
+        throw e; // laisse remonter pour le log dans l'appelant
+      });
   }
 
   async function noteClipCreated(login, streamId, clipId = null) {
