@@ -632,13 +632,8 @@ tmiClient.on("connected", async () => {
 });
 
 tmiClient.on("message", async (channel, tags, msg, self) => {
-  console.log('message CHat',msg)
   if (self) return;
-    console.log(' Self')
-
   const login = (tags.username || "").toLowerCase();
-    console.log('lohin', login)
-
   if (!login) return;
 
   const { streamId } = livePresenceTick.getLiveStreamState();
@@ -650,7 +645,6 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     }
     return;
   }
-
   const emotesObj = tags.emotes || null;
 
   // Log brut utile pour savoir ce que TMI te donne réellement
