@@ -623,7 +623,7 @@ async function refreshChannelEmotes() {
 const tmiClient = new tmi.Client({
   options: { debug: false },
   connection: { reconnect: true, secure: true },
-  channels: [process.env.TWITCH_CHANNEL_LOGIN], // ex: "erwayr"
+  channels: ['erwayr'], // ex: "erwayr"
 });
 tmiClient.connect().catch(console.error);
 //
@@ -632,7 +632,7 @@ tmiClient.on("connected", async () => {
 });
 
 tmiClient.on("message", async (channel, tags, msg, self) => {
-  console.log('message CHat')
+  console.log('message CHat',msg)
   if (self) return;
     console.log(' Self')
 
@@ -641,15 +641,15 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
 
   if (!login) return;
 
-  // const { streamId } = livePresenceTick.getLiveStreamState();
-  // if (!streamId) {
-  //   if (process.env.DEBUG_EMOTES) {
-  //     console.log(
-  //       `[emotes:skip] stream offline | from=${login} msg="${msg.slice(0, 80)}"`
-  //     );
-  //   }
-  //   return;
-  // }
+  const { streamId } = livePresenceTick.getLiveStreamState();
+  if (!streamId) {
+    if (process.env.DEBUG_EMOTES) {
+      console.log(
+        `[emotes:skip] stream offline | from=${login} msg="${msg.slice(0, 80)}"`
+      );
+    }
+    return;
+  }
 
   const emotesObj = tags.emotes || null;
 
