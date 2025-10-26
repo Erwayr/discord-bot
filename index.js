@@ -632,19 +632,24 @@ tmiClient.on("connected", async () => {
 });
 
 tmiClient.on("message", async (channel, tags, msg, self) => {
+  console.log('message CHat')
   if (self) return;
+    console.log(' Self')
+
   const login = (tags.username || "").toLowerCase();
+    console.log('lohin', login)
+
   if (!login) return;
 
-  const { streamId } = livePresenceTick.getLiveStreamState();
-  if (!streamId) {
-    if (process.env.DEBUG_EMOTES) {
-      console.log(
-        `[emotes:skip] stream offline | from=${login} msg="${msg.slice(0, 80)}"`
-      );
-    }
-    return;
-  }
+  // const { streamId } = livePresenceTick.getLiveStreamState();
+  // if (!streamId) {
+  //   if (process.env.DEBUG_EMOTES) {
+  //     console.log(
+  //       `[emotes:skip] stream offline | from=${login} msg="${msg.slice(0, 80)}"`
+  //     );
+  //   }
+  //   return;
+  // }
 
   const emotesObj = tags.emotes || null;
 
