@@ -41,7 +41,7 @@ Bienvenue à bord du vaisseau **Erwayr** ! Prépare-toi à vivre une aventure co
           new EmbedBuilder()
             .setTitle("🎉 Bienvenue dans la communauté Erwayr !")
             .setDescription(
-              `🚀 Tu peux commencer l'exploration par notre hub :\n🌐 [**Accéder au site communautaire**](https://erwayr.github.io/ErwayrWebSite/)\n\n🔧 Besoin d'aide ? N'hésite pas à crier \`!aide\` (ou demander gentiment à un modo 😇)`
+              `🚀 Tu peux commencer l'exploration par notre hub :\n🌐 [**Accéder au site communautaire**](https://erwayr.online/)\n\n🔧 Besoin d'aide ? N'hésite pas à crier \`!aide\` (ou demander gentiment à un modo 😇)`
             )
             .setColor(0xff69b4)
             .setThumbnail(avatar)

@@ -576,7 +576,7 @@ client.once(Events.ClientReady, async () => {
 
           const next = prev.then(async () => {
             const collectionUrl =
-              "https://erwayr.github.io/ErwayrWebSite/index.html";
+              "https://erwayr.online";
             const baseMsg = card.title
               ? `🎉 Tu viens de gagner la carte **${card.title}** !`
               : `🎉 Tu viens de gagner une nouvelle carte !`;
