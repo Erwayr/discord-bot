@@ -577,7 +577,7 @@ client.once(Events.ClientReady, async () => {
 
           const next = prev.then(async () => {
             const collectionUrl =
-              "https://erwayr.github.io/ErwayrWebSite/index.html";
+              "https://erwayr.online";
             const baseMsg = card.title
               ? `🎉 Tu viens de gagner la carte **${card.title}** !`
               : `🎉 Tu viens de gagner une nouvelle carte !`;
@@ -624,7 +624,7 @@ async function refreshChannelEmotes() {
 const tmiClient = new tmi.Client({
   options: { debug: false },
   connection: { reconnect: true, secure: true },
-  channels: [process.env.TWITCH_CHANNEL_LOGIN], // ex: "erwayr"
+  channels: ['erwayr'], // ex: "erwayr"
 });
 tmiClient.connect().catch(console.error);
 //
@@ -646,7 +646,6 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     }
     return;
   }
-
   const emotesObj = tags.emotes || null;
 
   // Log brut utile pour savoir ce que TMI te donne réellement
