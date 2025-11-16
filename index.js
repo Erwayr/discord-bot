@@ -140,6 +140,7 @@ cron.schedule("*/2 * * * *", async () => {
 // ID du salon de logs
 const LOG_CHANNEL_ID = "1377870229153120257";
 const GENERAL_CHANNEL_ID = "797077170974490645";
+const BOOTY_CHANNEL_ID = "948504568969449513";
 
 const client = new Client({
   intents: [
@@ -253,7 +254,7 @@ function scheduleSubscribeNotice(login, buildText) {
     if (shouldSuppressNow(login)) return; // déjà un msg récent → on n'envoie pas
     try {
       const text = await buildText();
-      await postDiscord(GENERAL_CHANNEL_ID, text);
+      await postDiscord(BOOTY_CHANNEL_ID, text);
       lastSubNotified.set(login, Date.now());
     } catch (e) {
       console.warn("subscribe notice failed:", e.message);
@@ -272,7 +273,7 @@ async function sendResubNow(login, buildText) {
   }
   if (shouldSuppressNow(login)) return;
   const text = await buildText();
-  await postDiscord(GENERAL_CHANNEL_ID, text);
+  await postDiscord(BOOTY_CHANNEL_ID, text);
   lastSubNotified.set(login, Date.now());
 }
 
@@ -351,7 +352,7 @@ app.post("/twitch-callback", async (req, res) => {
         await upsertParticipantFromRedemption(db, r);
         try {
           const generalChannel = await client.channels.fetch(
-            GENERAL_CHANNEL_ID
+            BOOTY_CHANNEL_ID
           );
           if (generalChannel?.isTextBased()) {
             await generalChannel.send(
