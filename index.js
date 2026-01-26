@@ -73,6 +73,9 @@ const helix = makeHelix({
   clientId: process.env.TWITCH_CLIENT_ID,
 });
 
+const TIMEZONE = "Europe/Warsaw";
+const BIRTHDAY_FIELD = "birthday"; // même champ que ton overlay
+
 // ---- ensuite seulement le livePresenceTicker (on lui passe questStore) ----
 const livePresenceTick = createLivePresenceTicker({
   db,
@@ -565,8 +568,15 @@ client.once(Events.ClientReady, async () => {
 
   // ─── Pré-chargement des membres pour que presenceUpdate soit bien émis ───
   for (const guild of client.guilds.cache.values()) {
-    await guild.members.fetch();
-    console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
+    try {
+      await guild.members.fetch({ withPresences: false, time: 300_000 });
+      console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
+    } catch (e) {
+      console.warn(
+        `⚠️ guild.members.fetch timeout pour ${guild.name}:`,
+        e?.code || e?.message || e
+      );
+    }
   }
 
   await assignOldMemberCards(db).catch(console.error);
@@ -666,7 +676,9 @@ const tmiClient = new tmi.Client({
 });
 tmiClient.connect().catch(console.error);
 refreshTodayBirthdays().catch(console.error);
-cron.schedule("*/30 * * * *", () => refreshTodayBirthdays().catch(console.error));
+cron.schedule("*/30 * * * *", () =>
+  refreshTodayBirthdays().catch(console.error)
+);
 //
 tmiClient.on("connected", async () => {
   await refreshChannelEmotes();
@@ -675,9 +687,6 @@ tmiClient.on("connected", async () => {
 /* =======================
    Birthday → Twitch Chat
 ======================= */
-
-const TIMEZONE = "Europe/Warsaw";
-const BIRTHDAY_FIELD = "birthday"; // même champ que ton overlay
 
 let birthdayToday = new Map(); // login -> displayName
 let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
@@ -844,15 +853,14 @@ async function maybeSendBirthdayCongrats(login) {
   birthdayCongratulated.add(key);
 }
 
-
 tmiClient.on("message", async (channel, tags, msg, self) => {
   if (self) return;
   const login = (tags.username || "").toLowerCase();
   if (!login) return;
 
   maybeSendBirthdayCongrats(login).catch((e) =>
-  console.warn("birthday congrats failed:", e?.message || e)
-);
+    console.warn("birthday congrats failed:", e?.message || e)
+  );
 
   const { streamId } = livePresenceTick.getLiveStreamState();
   if (!streamId) {
@@ -1091,10 +1099,24 @@ async function assignOldMemberCards(db) {
   const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
   const eligibleIds = [];
   for (const guild of client.guilds.cache.values()) {
-    const members = await guild.members.fetch();
+    let members;
+    try {
+      members = await guild.members.fetch({
+        withPresences: false,
+        time: 300_000,
+      });
+    } catch (e) {
+      console.warn(
+        `⚠️ members.fetch (assignOldMemberCards) a échoué, fallback cache:`,
+        e?.code || e?.message || e
+      );
+      members = guild.members.cache;
+    }
+
     members.forEach((m) => {
-      if (!m.user.bot && m.joinedTimestamp && m.joinedTimestamp < oneYearAgo)
+      if (!m.user.bot && m.joinedTimestamp && m.joinedTimestamp < oneYearAgo) {
         eligibleIds.push(m.id);
+      }
     });
   }
   if (eligibleIds.length === 0) return;
