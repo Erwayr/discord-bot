@@ -119,22 +119,53 @@ cron.schedule("*/15 * * * *", async () => {
   }
 });
 
+let announcedStreamId = null;
+let announcedStartedAt = null;
+let offlineStreak = 0;
+const OFFLINE_CONFIRM_TICKS = 2;
+
 cron.schedule("*/2 * * * *", async () => {
-  console.log("⏱️ [CRON] livePresenceTick → start");
   try {
     await livePresenceTick();
   } catch (e) {
     console.warn(
-      "⚠️ [CRON] livePresenceTick failed:",
+      "⚠️ [livePresenceTick] failed:",
       e?.response?.data || e.message || e
     );
+    return;
   }
+
   const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
-  console.log(
-    `⏱️ [CRON] livePresenceTick → end (streamId=${
-      streamId || "offline"
-    }, startedAt=${startedAt ? startedAt.toISOString() : "-"})`
-  );
+  const currentId = streamId || null;
+
+  if (currentId) {
+    offlineStreak = 0;
+
+    if (announcedStreamId !== currentId) {
+      // 1er tick live OU nouveau streamId
+      announcedStreamId = currentId;
+      announcedStartedAt = startedAt || null;
+
+      console.log(
+        `🟢 [LIVE] start (streamId=${announcedStreamId}, startedAt=${
+          announcedStartedAt ? announcedStartedAt.toISOString() : "-"
+        })`
+      );
+    }
+    return;
+  }
+
+  // offline
+  offlineStreak += 1;
+  if (announcedStreamId && offlineStreak === OFFLINE_CONFIRM_TICKS) {
+    console.log(
+      `🔴 [LIVE] end (streamId=${announcedStreamId}, startedAt=${
+        announcedStartedAt ? announcedStartedAt.toISOString() : "-"
+      })`
+    );
+    announcedStreamId = null;
+    announcedStartedAt = null;
+  }
 });
 
 // ID du salon de logs
@@ -351,9 +382,7 @@ app.post("/twitch-callback", async (req, res) => {
         });
         await upsertParticipantFromRedemption(db, r);
         try {
-          const generalChannel = await client.channels.fetch(
-            BOOTY_CHANNEL_ID
-          );
+          const generalChannel = await client.channels.fetch(BOOTY_CHANNEL_ID);
           if (generalChannel?.isTextBased()) {
             await generalChannel.send(
               `📜 Note prise : participation de ${r.user_name} confirmée — **${r.reward.title}** 🎟️`
@@ -576,12 +605,14 @@ client.once(Events.ClientReady, async () => {
           const prev = processingQueues.get(titleKey) || Promise.resolve();
 
           const next = prev.then(async () => {
-            const collectionUrl =
-              "https://erwayr.online";
+            const collectionUrl = "https://erwayr.online";
             const baseMsg = card.title
               ? `🎉 Tu viens de gagner la carte **${card.title}** !`
               : `🎉 Tu viens de gagner une nouvelle carte !`;
             const dmMsg = `${baseMsg}\n👉 Ta collection : ${collectionUrl}`;
+            console.log(
+              `🃏 [Card] ${data.pseudo} won "${card.title || "unknown"}"`
+            );
 
             await sendDMOrFallback(data.discord_id, dmMsg);
 
@@ -614,8 +645,15 @@ async function refreshChannelEmotes() {
     const list = data?.data || [];
     CHANNEL_EMOTE_IDS = new Set(list.map((e) => String(e.id)));
     CHANNEL_EMOTE_NAMES = new Set(list.map((e) => e.name));
-    const sample = list.slice(0, 5).map((e) => e.name).join(", ");
-    console.log(`🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size} (sample: ${sample || "—"})`);
+    const sample = list
+      .slice(0, 5)
+      .map((e) => e.name)
+      .join(", ");
+    console.log(
+      `🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size} (sample: ${
+        sample || "—"
+      })`
+    );
   } catch (e) {
     console.warn("⚠️ refreshChannelEmotes:", e?.response?.data || e.message);
   }
@@ -624,7 +662,7 @@ async function refreshChannelEmotes() {
 const tmiClient = new tmi.Client({
   options: { debug: false },
   connection: { reconnect: true, secure: true },
-  channels: ['erwayr'], // ex: "erwayr"
+  channels: ["erwayr"], // ex: "erwayr"
 });
 tmiClient.connect().catch(console.error);
 //
