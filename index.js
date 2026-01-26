@@ -31,6 +31,49 @@ const { mountTwitchAuth } = require("./script/authTwitch");
 const { createTokenManager } = require("./script/tokenManager");
 const cron = require("node-cron");
 
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || "1377870229153120257";
+const GENERAL_CHANNEL_ID =
+  process.env.GENERAL_CHANNEL_ID || "797077170974490645";
+const BOOTY_CHANNEL_ID = process.env.BOOTY_CHANNEL_ID || "948504568969449513";
+
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
+const TWITCH_CHANNEL_ID = process.env.TWITCH_CHANNEL_ID;
+const TWITCH_MODERATOR_ID = process.env.TWITCH_MODERATOR_ID || TWITCH_CHANNEL_ID;
+const TWITCH_CHANNEL_LOGIN = process.env.TWITCH_CHANNEL_LOGIN || "erwayr";
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+
+const TWITCH_TOKEN_DOC_PATH = "settings/twitch_moderator";
+const TWITCH_EVENTSUB_CALLBACK =
+  process.env.TWITCH_EVENTSUB_CALLBACK ||
+  "https://discord-bot-production-95c5.up.railway.app/twitch-callback";
+const TWITCH_OAUTH_REDIRECT =
+  process.env.TWITCH_OAUTH_REDIRECT ||
+  "https://discord-bot-production-95c5.up.railway.app/auth/twitch/callback";
+const COLLECTION_URL = process.env.COLLECTION_URL || "https://erwayr.online";
+
+const TIMEZONE = process.env.TIMEZONE || "Europe/Warsaw";
+const BIRTHDAY_FIELD = process.env.BIRTHDAY_FIELD || "birthday";
+
+const EVENTSUB_ENDPOINT = "https://api.twitch.tv/helix/eventsub/subscriptions";
+const OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token";
+const HELIX_CHATTERS_URL = "https://api.twitch.tv/helix/chat/chatters";
+const HELIX_CHAT_MESSAGES_URL = "https://api.twitch.tv/helix/chat/messages";
+const HELIX_EMOTES_URL = "https://api.twitch.tv/helix/chat/emotes";
+
+const CRON_POLL_CLIPS = "*/5 * * * *";
+const CRON_TOKEN_KEEPALIVE = "*/15 * * * *";
+const CRON_LIVE_PRESENCE = "*/2 * * * *";
+const CRON_BIRTHDAY_REFRESH = "*/30 * * * *";
+const CRON_ASSIGN_OLD_MEMBER_CARDS = "0 0 * * *";
+
+const SUB_DEBOUNCE_MS = 3500;
+const SUB_COOLDOWN_MS = 10_000;
+const OFFLINE_CONFIRM_TICKS = 2;
+const BATCH_SIZE = 10;
+
 // (optionnel) autres helpers
 const {
   updateRedemptionStatus,
@@ -66,23 +109,21 @@ const questStore = createQuestStorage(db);
 
 // ---- puis le token manager ----
 const tokenManager = createTokenManager(db, {
-  docPath: "settings/twitch_moderator",
+  docPath: TWITCH_TOKEN_DOC_PATH,
 });
 const helix = makeHelix({
   tokenManager,
-  clientId: process.env.TWITCH_CLIENT_ID,
+  clientId: TWITCH_CLIENT_ID,
 });
 
-const TIMEZONE = "Europe/Warsaw";
-const BIRTHDAY_FIELD = "birthday"; // même champ que ton overlay
 
 // ---- ensuite seulement le livePresenceTicker (on lui passe questStore) ----
 const livePresenceTick = createLivePresenceTicker({
   db,
   tokenManager,
-  clientId: process.env.TWITCH_CLIENT_ID,
-  broadcasterId: process.env.TWITCH_CHANNEL_ID,
-  moderatorId: process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID,
+  clientId: TWITCH_CLIENT_ID,
+  broadcasterId: TWITCH_CHANNEL_ID,
+  moderatorId: TWITCH_MODERATOR_ID,
   questStore, // ✅ maintenant défini
 });
 
@@ -91,25 +132,25 @@ const pollClipsTick = createClipPoller({
   tokenManager,
   questStore,
   livePresenceTick,
-  clientId: process.env.TWITCH_CLIENT_ID,
-  broadcasterId: process.env.TWITCH_CHANNEL_ID,
+  clientId: TWITCH_CLIENT_ID,
+  broadcasterId: TWITCH_CHANNEL_ID,
 });
 
-cron.schedule("*/5 * * * *", pollClipsTick);
+cron.schedule(CRON_POLL_CLIPS, pollClipsTick);
 
-cron.schedule("*/15 * * * *", async () => {
+cron.schedule(CRON_TOKEN_KEEPALIVE, async () => {
   try {
     const snap = await db.doc("settings/twitch_moderator").get();
     const s = snap.exists ? snap.data() : null;
     if (
       s?.issuer_client_id &&
-      s.issuer_client_id !== process.env.TWITCH_CLIENT_ID
+      s.issuer_client_id !== TWITCH_CLIENT_ID
     ) {
       console.error(
         "❌ Client-ID mismatch: token lié à",
         s.issuer_client_id,
         "mais env TWITCH_CLIENT_ID =",
-        process.env.TWITCH_CLIENT_ID,
+        TWITCH_CLIENT_ID,
         "→ refais /auth/twitch/start avec le bon client ou corrige l'env."
       );
     }
@@ -125,9 +166,8 @@ cron.schedule("*/15 * * * *", async () => {
 let announcedStreamId = null;
 let announcedStartedAt = null;
 let offlineStreak = 0;
-const OFFLINE_CONFIRM_TICKS = 2;
 
-cron.schedule("*/2 * * * *", async () => {
+cron.schedule(CRON_LIVE_PRESENCE, async () => {
   try {
     await livePresenceTick();
   } catch (e) {
@@ -172,9 +212,6 @@ cron.schedule("*/2 * * * *", async () => {
 });
 
 // ID du salon de logs
-const LOG_CHANNEL_ID = "1377870229153120257";
-const GENERAL_CHANNEL_ID = "797077170974490645";
-const BOOTY_CHANNEL_ID = "948504568969449513";
 
 const client = new Client({
   intents: [
@@ -198,18 +235,15 @@ app.use(bodyParser.json()); // pour parser les JSON Twitch
 
 // Monte les routes d'auth
 mountTwitchAuth(app, db, {
-  docPath: "settings/twitch_moderator",
-  clientId: process.env.TWITCH_CLIENT_ID,
-  clientSecret: process.env.TWITCH_CLIENT_SECRET,
-  redirectUri:
-    "https://discord-bot-production-95c5.up.railway.app/auth/twitch/callback",
+  docPath: TWITCH_TOKEN_DOC_PATH,
+  clientId: TWITCH_CLIENT_ID,
+  clientSecret: TWITCH_CLIENT_SECRET,
+  redirectUri: TWITCH_OAUTH_REDIRECT,
 });
 
-const TWITCH_SECRET = process.env.WEBHOOK_SECRET;
+const TWITCH_SECRET = WEBHOOK_SECRET;
 
 const seenDeliveries = new Map(); // messageId -> ts (TTL court)
-const SUB_DEBOUNCE_MS = 3500; // attente d’un éventuel "subscription.message"
-const SUB_COOLDOWN_MS = 10_000; // évite de spammer pour le même user
 const subTimers = new Map(); // login -> { timer, startedAt }
 const lastSubNotified = new Map(); // login -> ts
 
@@ -335,8 +369,32 @@ function verifyTwitchSignature(req) {
   );
 }
 
+async function fetchAppAccessToken() {
+  const { data } = await axios.post(
+    OAUTH_TOKEN_URL,
+    null,
+    {
+      params: {
+        client_id: TWITCH_CLIENT_ID,
+        client_secret: TWITCH_CLIENT_SECRET,
+        grant_type: "client_credentials",
+      },
+    }
+  );
+  return data.access_token;
+}
+
+function buildTwitchHeaders(accessToken, { includeContentType = true } = {}) {
+  const headers = {
+    "Client-ID": TWITCH_CLIENT_ID,
+    Authorization: `Bearer ${accessToken}`,
+  };
+  if (includeContentType) headers["Content-Type"] = "application/json";
+  return headers;
+}
+
 app.get("/internal/twitch/access-token", async (req, res) => {
-  if (req.header("x-api-key") !== process.env.INTERNAL_API_KEY) {
+  if (req.header("x-api-key") !== INTERNAL_API_KEY) {
     return res.status(403).send("Forbidden");
   }
   try {
@@ -377,7 +435,7 @@ app.post("/twitch-callback", async (req, res) => {
       try {
         const accessToken = await tokenManager.getAccessToken();
         await updateRedemptionStatus({
-          broadcasterId: process.env.TWITCH_CHANNEL_ID,
+          broadcasterId: TWITCH_CHANNEL_ID,
           rewardId: r.reward.id,
           redemptionIds: [r.id],
           status: "FULFILLED",
@@ -498,33 +556,26 @@ app.post("/twitch-callback", async (req, res) => {
 
       // récupère les chatters actuels
       const accessToken = await tokenManager.getAccessToken();
-      const headers = {
-        "Client-ID": process.env.TWITCH_CLIENT_ID,
-        Authorization: `Bearer ${accessToken}`,
-      };
+      const headers = buildTwitchHeaders(accessToken, { includeContentType: false });
 
       const logins = [];
       let after = null,
         guard = 0;
       do {
         const { data } = await axios.get(
-          "https://api.twitch.tv/helix/chat/chatters",
+          HELIX_CHATTERS_URL,
           {
             headers,
             params: after
               ? {
-                  broadcaster_id: process.env.TWITCH_CHANNEL_ID,
-                  moderator_id:
-                    process.env.TWITCH_MODERATOR_ID ||
-                    process.env.TWITCH_CHANNEL_ID,
+                  broadcaster_id: TWITCH_CHANNEL_ID,
+                  moderator_id: TWITCH_MODERATOR_ID,
                   first: 1000,
                   after,
                 }
               : {
-                  broadcaster_id: process.env.TWITCH_CHANNEL_ID,
-                  moderator_id:
-                    process.env.TWITCH_MODERATOR_ID ||
-                    process.env.TWITCH_CHANNEL_ID,
+                  broadcaster_id: TWITCH_CHANNEL_ID,
+                  moderator_id: TWITCH_MODERATOR_ID,
                   first: 1000,
                 },
           }
@@ -582,7 +633,7 @@ client.once(Events.ClientReady, async () => {
   await assignOldMemberCards(db).catch(console.error);
 
   // Planification quotidienne à minuit
-  cron.schedule("0 0 * * *", () =>
+  cron.schedule(CRON_ASSIGN_OLD_MEMBER_CARDS, () =>
     assignOldMemberCards(db).catch(console.error)
   );
 
@@ -615,7 +666,7 @@ client.once(Events.ClientReady, async () => {
           const prev = processingQueues.get(titleKey) || Promise.resolve();
 
           const next = prev.then(async () => {
-            const collectionUrl = "https://erwayr.online";
+            const collectionUrl = COLLECTION_URL;
             const baseMsg = card.title
               ? `🎉 Tu viens de gagner la carte **${card.title}** !`
               : `🎉 Tu viens de gagner une nouvelle carte !`;
@@ -649,8 +700,8 @@ let CHANNEL_EMOTE_NAMES = new Set(); // 👈 nouveau
 async function refreshChannelEmotes() {
   try {
     const { data } = await helix({
-      url: "https://api.twitch.tv/helix/chat/emotes",
-      params: { broadcaster_id: process.env.TWITCH_CHANNEL_ID },
+      url: HELIX_EMOTES_URL,
+      params: { broadcaster_id: TWITCH_CHANNEL_ID },
     });
     const list = data?.data || [];
     CHANNEL_EMOTE_IDS = new Set(list.map((e) => String(e.id)));
@@ -672,14 +723,14 @@ async function refreshChannelEmotes() {
 const tmiClient = new tmi.Client({
   options: { debug: false },
   connection: { reconnect: true, secure: true },
-  channels: ["erwayr"], // ex: "erwayr"
+  channels: [TWITCH_CHANNEL_LOGIN], // ex: "erwayr"
 });
 let birthdayToday = new Map(); // login -> displayName
 let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
 let birthdayDateKey = "";
 tmiClient.connect().catch(console.error);
 refreshTodayBirthdays().catch(console.error);
-cron.schedule("*/30 * * * *", () =>
+cron.schedule(CRON_BIRTHDAY_REFRESH, () =>
   refreshTodayBirthdays().catch(console.error)
 );
 //
@@ -774,23 +825,19 @@ function pickDisplayNameFromDoc(docId, data) {
 async function sendTwitchChatMessage(message) {
   const accessToken = await tokenManager.getAccessToken();
 
-  const broadcasterId = process.env.TWITCH_CHANNEL_ID;
+  const broadcasterId = TWITCH_CHANNEL_ID;
   const senderId =
-    process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID; // doit matcher le user du token
+    TWITCH_MODERATOR_ID; // doit matcher le user du token
 
   const { data } = await axios.post(
-    "https://api.twitch.tv/helix/chat/messages",
+    HELIX_CHAT_MESSAGES_URL,
     {
       broadcaster_id: broadcasterId,
       sender_id: senderId,
       message,
     },
     {
-      headers: {
-        "Client-ID": process.env.TWITCH_CLIENT_ID,
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: buildTwitchHeaders(accessToken),
     }
   );
 
@@ -973,29 +1020,15 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
 });
 
 async function subscribeToRaids() {
-  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
-  const { data: appData } = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
-    null,
-    {
-      params: {
-        client_id: process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type: "client_credentials",
-      },
-    }
-  );
-  const headers = {
-    "Client-ID": process.env.TWITCH_CLIENT_ID,
-    Authorization: `Bearer ${appData.access_token}`,
-    "Content-Type": "application/json",
-  };
+  const endpoint = EVENTSUB_ENDPOINT;
+  const appToken = await fetchAppAccessToken();
+  const headers = buildTwitchHeaders(appToken);
 
   const list = await axios.get(endpoint, { headers });
   const exists = list.data.data.find(
     (s) =>
       s.type === "channel.raid" &&
-      s.condition?.from_broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+      s.condition?.from_broadcaster_user_id === TWITCH_CHANNEL_ID
   );
   if (exists) return;
 
@@ -1004,12 +1037,11 @@ async function subscribeToRaids() {
     {
       type: "channel.raid",
       version: "1",
-      condition: { from_broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
+      condition: { from_broadcaster_user_id: TWITCH_CHANNEL_ID },
       transport: {
         method: "webhook",
-        callback:
-          "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
-        secret: process.env.WEBHOOK_SECRET,
+        callback: TWITCH_EVENTSUB_CALLBACK,
+        secret: WEBHOOK_SECRET,
       },
     },
     { headers }
@@ -1078,9 +1110,8 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
   if (!playing) return;
 });
 
-client.login(process.env.DISCORD_BOT_TOKEN);
+client.login(DISCORD_BOT_TOKEN);
 
-const BATCH_SIZE = 10;
 
 async function assignOldMemberCards(db) {
   // 1️⃣ Récupérer la carte
@@ -1156,145 +1187,84 @@ async function assignOldMemberCards(db) {
 }
 
 async function subscribeToFollows() {
-  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+  const endpoint = EVENTSUB_ENDPOINT;
 
-  // 1️⃣ Récupère l’App Access Token (client_credentials)
-  const { data: appData } = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
-    null,
-    {
-      params: {
-        client_id: process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type: "client_credentials",
-      },
-    }
-  );
-  const appToken = appData.access_token;
+  const appToken = await fetchAppAccessToken();
+  const headers = buildTwitchHeaders(appToken);
 
-  const headers = {
-    "Client-ID": process.env.TWITCH_CLIENT_ID,
-    Authorization: `Bearer ${appToken}`,
-    "Content-Type": "application/json",
-  };
-
-  // 2️⃣ Liste les souscriptions existantes pour éviter le duplicate
   const listRes = await axios.get(endpoint, { headers });
   const existing = listRes.data.data.find(
     (sub) =>
       sub.type === "channel.follow" &&
       sub.version === "2" &&
-      sub.condition.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID &&
-      sub.condition.moderator_user_id === process.env.TWITCH_CHANNEL_ID
+      sub.condition.broadcaster_user_id === TWITCH_CHANNEL_ID &&
+      sub.condition.moderator_user_id === TWITCH_CHANNEL_ID
   );
   if (existing) {
     return;
   }
 
-  // 4️⃣ Monte le payload en version 2
-  let payload = {
+  const payload = {
     type: "channel.follow",
     version: "2",
     condition: {
-      broadcaster_user_id: process.env.TWITCH_CHANNEL_ID,
-      moderator_user_id: process.env.TWITCH_CHANNEL_ID,
+      broadcaster_user_id: TWITCH_CHANNEL_ID,
+      moderator_user_id: TWITCH_CHANNEL_ID,
     },
     transport: {
-      callback:
-        "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
+      callback: TWITCH_EVENTSUB_CALLBACK,
       method: "webhook",
-      secret: process.env.WEBHOOK_SECRET,
+      secret: WEBHOOK_SECRET,
     },
   };
 
-  // 5️⃣ Envoi la création
-  try {
-    const createRes = await axios.post(endpoint, payload, { headers });
-  } catch (err) {
-    throw err;
-  }
+  await axios.post(endpoint, payload, { headers });
 }
 
 async function subscribeToRedemptions() {
-  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
+  const endpoint = EVENTSUB_ENDPOINT;
 
-  // App Access Token (client_credentials) — pas besoin de scopes user ici
-  const { data: appData } = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
-    null,
-    {
-      params: {
-        client_id: process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type: "client_credentials",
-      },
-    }
-  );
-  const appToken = appData.access_token;
+  const appToken = await fetchAppAccessToken();
+  const headers = buildTwitchHeaders(appToken);
 
-  const headers = {
-    "Client-ID": process.env.TWITCH_CLIENT_ID,
-    Authorization: `Bearer ${appToken}`,
-    "Content-Type": "application/json",
-  };
-
-  // (debug) lister ce qui existe déjà
+  // (debug) lister ce qui existe deja
   const list = await axios.get(endpoint, { headers });
   const exists = list.data.data.find(
     (s) =>
       s.type === "channel.channel_points_custom_reward_redemption.add" &&
-      s.condition?.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+      s.condition?.broadcaster_user_id === TWITCH_CHANNEL_ID
   );
   if (exists) {
-    console.log("✅ EventSub redemption.add déjà présent:", exists.id);
+    console.log("? EventSub redemption.add d?j? pr?sent:", exists.id);
     return;
   }
-
-  // condition obligatoire
-  const condition = { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID };
 
   const payload = {
     type: "channel.channel_points_custom_reward_redemption.add",
     version: "1",
     transport: {
       method: "webhook",
-      callback:
-        "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
-      secret: process.env.WEBHOOK_SECRET,
+      callback: TWITCH_EVENTSUB_CALLBACK,
+      secret: WEBHOOK_SECRET,
     },
   };
 
   const created = await axios.post(endpoint, payload, { headers });
-  console.log("✅ EventSub redemption.add créé:", created.data.data?.[0]?.id);
+  console.log("? EventSub redemption.add cr??:", created.data.data?.[0]?.id);
 }
 
 // AJOUTE ça dans index.js (à côté des autres subscribeTo*)
 async function subscribeToSubs() {
-  const endpoint = "https://api.twitch.tv/helix/eventsub/subscriptions";
-  const { data: appData } = await axios.post(
-    "https://id.twitch.tv/oauth2/token",
-    null,
-    {
-      params: {
-        client_id: process.env.TWITCH_CLIENT_ID,
-        client_secret: process.env.TWITCH_CLIENT_SECRET,
-        grant_type: "client_credentials",
-      },
-    }
-  );
-  const appToken = appData.access_token;
-  const headers = {
-    "Client-ID": process.env.TWITCH_CLIENT_ID,
-    Authorization: `Bearer ${appToken}`,
-    "Content-Type": "application/json",
-  };
+  const endpoint = EVENTSUB_ENDPOINT;
+  const appToken = await fetchAppAccessToken();
+  const headers = buildTwitchHeaders(appToken);
 
   const list = await axios.get(endpoint, { headers });
   const ensure = async (type) => {
     const exists = list.data.data.find(
       (s) =>
         s.type === type &&
-        s.condition?.broadcaster_user_id === process.env.TWITCH_CHANNEL_ID
+        s.condition?.broadcaster_user_id === TWITCH_CHANNEL_ID
     );
     if (exists) return;
     await axios.post(
@@ -1302,20 +1272,19 @@ async function subscribeToSubs() {
       {
         type,
         version: "1",
-        condition: { broadcaster_user_id: process.env.TWITCH_CHANNEL_ID },
+        condition: { broadcaster_user_id: TWITCH_CHANNEL_ID },
         transport: {
           method: "webhook",
-          callback:
-            "https://discord-bot-production-95c5.up.railway.app/twitch-callback",
-          secret: process.env.WEBHOOK_SECRET,
+          callback: TWITCH_EVENTSUB_CALLBACK,
+          secret: WEBHOOK_SECRET,
         },
       },
       { headers }
     );
   };
 
-  await ensure("channel.subscribe"); // nouveaux abonnements (incl. gifts destinataire)
-  await ensure("channel.subscription.message"); // resub / share sub
+  await ensure("channel.subscribe");
+  await ensure("channel.subscription.message");
 }
 
 async function buildSubMention(db, login, display) {
