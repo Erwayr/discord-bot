@@ -674,6 +674,9 @@ const tmiClient = new tmi.Client({
   connection: { reconnect: true, secure: true },
   channels: ["erwayr"], // ex: "erwayr"
 });
+let birthdayToday = new Map(); // login -> displayName
+let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
+let birthdayDateKey = "";
 tmiClient.connect().catch(console.error);
 refreshTodayBirthdays().catch(console.error);
 cron.schedule("*/30 * * * *", () =>
@@ -687,10 +690,6 @@ tmiClient.on("connected", async () => {
 /* =======================
    Birthday → Twitch Chat
 ======================= */
-
-let birthdayToday = new Map(); // login -> displayName
-let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
-let birthdayDateKey = "";
 
 // Date (Warsaw) -> YYYY-MM-DD
 function getWarsawParts(date) {
