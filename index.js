@@ -68,6 +68,11 @@ const CRON_TOKEN_KEEPALIVE = "*/15 * * * *";
 const CRON_LIVE_PRESENCE = "*/2 * * * *";
 const CRON_BIRTHDAY_REFRESH = "*/30 * * * *";
 const CRON_ASSIGN_OLD_MEMBER_CARDS = "0 0 * * *";
+const CRON_EMOTE_REFRESH = "0 */6 * * *";
+
+const EMOTE_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const LIVE_STATE_REFRESH_MIN_INTERVAL_MS = 60_000;
+const LIVE_STATE_CACHE_MS = 2 * 60 * 1000;
 
 const SUB_DEBOUNCE_MS = 3500;
 const SUB_COOLDOWN_MS = 10_000;
@@ -695,7 +700,10 @@ client.once(Events.ClientReady, async () => {
 const tmi = require("tmi.js");
 
 let CHANNEL_EMOTE_IDS = new Set();
-let CHANNEL_EMOTE_NAMES = new Set(); // 👈 nouveau
+let CHANNEL_EMOTE_NAMES = new Set();
+let lastEmoteRefreshAt = 0;
+let lastLiveStateFetchAt = 0;
+let liveStreamStateCache = { streamId: null, startedAt: null, cachedAt: 0 }; // 👈 nouveau
 
 async function refreshChannelEmotes() {
   try {
@@ -719,6 +727,14 @@ async function refreshChannelEmotes() {
     console.warn("⚠️ refreshChannelEmotes:", e?.response?.data || e.message);
   }
 }
+
+async function refreshChannelEmotesThrottled() {
+  const now = Date.now();
+  if (now - lastEmoteRefreshAt < EMOTE_REFRESH_MIN_INTERVAL_MS) return;
+  lastEmoteRefreshAt = now;
+  await refreshChannelEmotes();
+}
+
 // TMI en anonyme (lecture seule)
 const tmiClient = new tmi.Client({
   options: { debug: false },
@@ -735,8 +751,74 @@ cron.schedule(CRON_BIRTHDAY_REFRESH, () =>
 );
 //
 tmiClient.on("connected", async () => {
-  await refreshChannelEmotes();
+  await refreshChannelEmotesThrottled();
 });
+
+cron.schedule(CRON_EMOTE_REFRESH, () =>
+  refreshChannelEmotesThrottled().catch(console.error)
+);
+
+async function fetchLiveStreamState() {
+  const { data } = await helix({
+    url: "https://api.twitch.tv/helix/streams",
+    params: { user_id: TWITCH_CHANNEL_ID, first: 1 },
+  });
+  const s = data?.data?.[0];
+  const now = Date.now();
+
+  if (!s) {
+    liveStreamStateCache = { streamId: null, startedAt: null, cachedAt: now };
+    return null;
+  }
+
+  const startedAt = s.started_at ? new Date(s.started_at) : null;
+  liveStreamStateCache = { streamId: s.id, startedAt, cachedAt: now };
+  return { streamId: s.id, startedAt };
+}
+
+async function getLiveStreamStateForEmotes() {
+  const state = livePresenceTick.getLiveStreamState();
+  if (state.streamId) {
+    liveStreamStateCache = {
+      streamId: state.streamId,
+      startedAt: state.startedAt || null,
+      cachedAt: Date.now(),
+    };
+    return state;
+  }
+
+  const now = Date.now();
+  if (
+    liveStreamStateCache.streamId &&
+    now - liveStreamStateCache.cachedAt < LIVE_STATE_CACHE_MS
+  ) {
+    return {
+      streamId: liveStreamStateCache.streamId,
+      startedAt: liveStreamStateCache.startedAt,
+    };
+  }
+
+  if (now - lastLiveStateFetchAt < LIVE_STATE_REFRESH_MIN_INTERVAL_MS) {
+    return { streamId: null, startedAt: null };
+  }
+
+  lastLiveStateFetchAt = now;
+
+  try {
+    return (await fetchLiveStreamState()) || {
+      streamId: null,
+      startedAt: null,
+    };
+  } catch (e) {
+    if (process.env.DEBUG_EMOTES) {
+      console.warn(
+        "[emotes] live stream fetch failed:",
+        e?.response?.data || e?.message || e
+      );
+    }
+    return { streamId: null, startedAt: null };
+  }
+}
 
 /* =======================
    Birthday → Twitch Chat
@@ -908,11 +990,16 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     console.warn("birthday congrats failed:", e?.message || e)
   );
 
-  const { streamId } = livePresenceTick.getLiveStreamState();
+  if (!CHANNEL_EMOTE_IDS.size && !CHANNEL_EMOTE_NAMES.size) {
+    await refreshChannelEmotesThrottled();
+  }
+
+  const liveState = await getLiveStreamStateForEmotes();
+  const streamId = liveState.streamId;
   if (!streamId) {
     if (process.env.DEBUG_EMOTES) {
       console.log(
-        `[emotes:skip] stream offline | from=${login} msg="${msg.slice(0, 80)}"`
+        `[emotes:skip] no live streamId | from=${login} msg="${msg.slice(0, 80)}"`
       );
     }
     return;
@@ -980,8 +1067,20 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
 
   // --- Cas 2: TMI a reconnu des émotes Twitch ---
   const idsInMsg = Object.keys(emotesObj);
-  const myIds = idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(String(id)));
-  let inc = myIds.reduce((sum, id) => sum + (emotesObj[id]?.length || 0), 0);
+  const hasChannelList = CHANNEL_EMOTE_IDS.size > 0;
+  const matchedIds = hasChannelList
+    ? idsInMsg.filter((id) => CHANNEL_EMOTE_IDS.has(String(id)))
+    : idsInMsg;
+  let inc = matchedIds.reduce(
+    (sum, id) => sum + (emotesObj[id]?.length || 0),
+    0
+  );
+
+  if (!hasChannelList && inc > 0 && process.env.DEBUG_EMOTES) {
+    console.log(
+      `[emotes:unfiltered] ${login} +${inc} ids=${matchedIds.join(",")}`
+    );
+  }
 
   // Fallback par NOM si inc==0
   if (inc === 0 && CHANNEL_EMOTE_NAMES.size) {
@@ -1004,8 +1103,9 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     return;
   }
 
+  const idsLabel = matchedIds.join(",") || (hasChannelList ? "-" : "unfiltered");
   console.log(
-    `[emotes] ${login} +${inc} (ids=${myIds.join(",")}) msg="${msg.slice(
+    `[emotes] ${login} +${inc} (ids=${idsLabel}) msg="${msg.slice(
       0,
       80
     )}"`
