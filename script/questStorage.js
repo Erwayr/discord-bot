@@ -9,6 +9,49 @@ function monthKeyUTC(d = new Date()) {
   return `${y}-${m}`;
 }
 
+function dayKeyUTC(d = new Date()) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function toDateMaybe(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "number") {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value === "string") {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value === "object" && typeof value.toDate === "function") {
+    const d = value.toDate();
+    return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+  }
+  return null;
+}
+
+function dayKeyFromValue(value) {
+  const d = toDateMaybe(value);
+  return d ? dayKeyUTC(d) : null;
+}
+
+function streamDayKey(entry) {
+  if (!entry) return null;
+  return (
+    entry.day_key ||
+    dayKeyFromValue(entry.started_at) ||
+    dayKeyFromValue(entry?.presence?.first_at) ||
+    dayKeyFromValue(entry?.presence?.last_at) ||
+    null
+  );
+}
+
 function ensureMonthLayer(livePresence, monthKey) {
   const month = { ...(livePresence[monthKey] || {}) };
   month.streams = Array.isArray(month.streams) ? [...month.streams] : [];
@@ -38,6 +81,10 @@ function findStreamIndex(streams, streamId) {
   return streams.findIndex((s) => s && s.stream_id === streamId);
 }
 
+function findStreamIndexByDay(streams, dayKey) {
+  return streams.findIndex((s) => streamDayKey(s) === dayKey);
+}
+
 /**
  * Helpers pour journaliser les quêtes par STREAM (tableau).
  * @param {import('firebase-admin').firestore.Firestore} db
@@ -60,11 +107,29 @@ function createQuestStorage(db) {
     const idx = findStreamIndex(month.streams, streamId);
     if (idx >= 0) return { idx, created: false };
 
+    const startedDate = toDateMaybe(startedAt);
+    const anchorDate = startedDate || new Date();
+    const dayKey = dayKeyUTC(anchorDate);
+    const dayIdx = findStreamIndexByDay(month.streams, dayKey);
+    if (dayIdx >= 0) {
+      const entry = month.streams[dayIdx];
+      const streamChanged = streamId && entry.stream_id !== streamId;
+      if (streamChanged) {
+        entry.stream_id = streamId;
+      }
+      if (!entry.day_key) entry.day_key = dayKey;
+      if (startedDate && (!entry.started_at || streamChanged)) {
+        entry.started_at = admin.firestore.Timestamp.fromDate(startedDate);
+      }
+      return { idx: dayIdx, created: false };
+    }
+
     const entry = {
       stream_id: streamId,
-      started_at: startedAt
-        ? admin.firestore.Timestamp.fromDate(new Date(startedAt))
+      started_at: startedDate
+        ? admin.firestore.Timestamp.fromDate(startedDate)
         : null,
+      day_key: dayKey,
       presence: { seen: false, first_at: null, last_at: null },
       emote: { used: false, count: 0, last_at: null },
       clips: { count: 0, last_id: null, last_at: null },
