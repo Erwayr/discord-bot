@@ -665,15 +665,194 @@ const tmiClient = new tmi.Client({
   channels: ["erwayr"], // ex: "erwayr"
 });
 tmiClient.connect().catch(console.error);
+refreshTodayBirthdays().catch(console.error);
+cron.schedule("*/30 * * * *", () => refreshTodayBirthdays().catch(console.error));
 //
 tmiClient.on("connected", async () => {
   await refreshChannelEmotes();
 });
 
+/* =======================
+   Birthday → Twitch Chat
+======================= */
+
+const TIMEZONE = "Europe/Warsaw";
+const BIRTHDAY_FIELD = "birthday"; // même champ que ton overlay
+
+let birthdayToday = new Map(); // login -> displayName
+let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
+let birthdayDateKey = "";
+
+// Date (Warsaw) -> YYYY-MM-DD
+function getWarsawParts(date) {
+  const fmt = new Intl.DateTimeFormat("fr-FR", {
+    timeZone: TIMEZONE,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+  });
+  const parts = fmt.formatToParts(date);
+  const out = { year: 0, month: 0, day: 0 };
+  for (const p of parts) {
+    if (p.type === "year") out.year = parseInt(p.value, 10);
+    if (p.type === "month") out.month = parseInt(p.value, 10);
+    if (p.type === "day") out.day = parseInt(p.value, 10);
+  }
+  return out;
+}
+
+function warsawDateKey(date = new Date()) {
+  const p = getWarsawParts(date);
+  const mm = String(p.month).padStart(2, "0");
+  const dd = String(p.day).padStart(2, "0");
+  return `${p.year}-${mm}-${dd}`;
+}
+
+function parseBirthday(value) {
+  if (!value) return null;
+
+  // Firestore Timestamp (admin) => toDate()
+  if (typeof value === "object" && typeof value.toDate === "function") {
+    const d = value.toDate();
+    if (d instanceof Date && !Number.isNaN(d.getTime())) {
+      const p = getWarsawParts(d);
+      return { month: p.month, day: p.day };
+    }
+  }
+
+  // Date
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const p = getWarsawParts(value);
+    return { month: p.month, day: p.day };
+  }
+
+  // string YYYY-MM-DD / DD-MM-YYYY / DD-MM (comme ton overlay)
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return null;
+
+    let m = s.match(/^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})$/);
+    if (m) return { month: parseInt(m[2], 10), day: parseInt(m[3], 10) };
+
+    m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+    if (m) return { month: parseInt(m[2], 10), day: parseInt(m[1], 10) };
+
+    m = s.match(/^(\d{1,2})[\/.-](\d{1,2})$/);
+    if (m) return { month: parseInt(m[2], 10), day: parseInt(m[1], 10) };
+
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      const p = getWarsawParts(d);
+      return { month: p.month, day: p.day };
+    }
+  }
+
+  return null;
+}
+
+function pickDisplayNameFromDoc(docId, data) {
+  return (
+    data?.display_name ||
+    data?.displayName ||
+    data?.pseudo ||
+    data?.login ||
+    data?.username ||
+    data?.name ||
+    docId
+  );
+}
+
+// Envoi message Twitch via Helix
+async function sendTwitchChatMessage(message) {
+  const accessToken = await tokenManager.getAccessToken();
+
+  const broadcasterId = process.env.TWITCH_CHANNEL_ID;
+  const senderId =
+    process.env.TWITCH_MODERATOR_ID || process.env.TWITCH_CHANNEL_ID; // doit matcher le user du token
+
+  const { data } = await axios.post(
+    "https://api.twitch.tv/helix/chat/messages",
+    {
+      broadcaster_id: broadcasterId,
+      sender_id: senderId,
+      message,
+    },
+    {
+      headers: {
+        "Client-ID": process.env.TWITCH_CLIENT_ID,
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  const r = data?.data?.[0];
+  if (!r?.is_sent) {
+    console.warn("⚠️ Chat message dropped:", r?.drop_reason || r);
+  }
+}
+
+// Recharge la liste “anniversaire aujourd’hui” (Warsaw)
+async function refreshTodayBirthdays() {
+  const now = new Date();
+  const dk = warsawDateKey(now);
+  const { month, day } = getWarsawParts(now);
+
+  birthdayDateKey = dk;
+  birthdayToday = new Map();
+
+  const snap = await db.collection("followers_all_time").get();
+
+  snap.forEach((doc) => {
+    const data = doc.data() || {};
+    const bd = parseBirthday(data[BIRTHDAY_FIELD]);
+    if (!bd) return;
+    if (bd.month !== month || bd.day !== day) return;
+
+    const login = String(doc.id || "").toLowerCase(); // chez toi doc.id = login
+    if (!login) return;
+
+    const display = String(pickDisplayNameFromDoc(doc.id, data) || login);
+    birthdayToday.set(login, display);
+  });
+
+  console.log(`🎂 Birthdays today (${dk}) = ${birthdayToday.size}`);
+}
+
+function buildBirthdayMessage(login, display) {
+  // Personnalise ici
+  return `🎂 Joyeux anniversaire @${login} ! Profite à fond de ta journée ✨`;
+}
+
+async function maybeSendBirthdayCongrats(login) {
+  const dk = warsawDateKey(new Date());
+  if (dk !== birthdayDateKey) {
+    await refreshTodayBirthdays().catch((e) =>
+      console.warn("refreshTodayBirthdays failed:", e?.message || e)
+    );
+  }
+
+  if (!birthdayToday.has(login)) return;
+
+  const key = `${dk}|${login}`;
+  if (birthdayCongratulated.has(key)) return;
+
+  const display = birthdayToday.get(login) || login;
+  const msg = buildBirthdayMessage(login, display);
+
+  await sendTwitchChatMessage(msg);
+  birthdayCongratulated.add(key);
+}
+
+
 tmiClient.on("message", async (channel, tags, msg, self) => {
   if (self) return;
   const login = (tags.username || "").toLowerCase();
   if (!login) return;
+
+  maybeSendBirthdayCongrats(login).catch((e) =>
+  console.warn("birthday congrats failed:", e?.message || e)
+);
 
   const { streamId } = livePresenceTick.getLiveStreamState();
   if (!streamId) {
