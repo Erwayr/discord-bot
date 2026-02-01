@@ -56,23 +56,71 @@ module.exports = async function electionHandler(message, db, channelId) {
     return null;
   }
 
-  async function finishElection(explicitWinnerId, isAuto = false) {
-    const snap = await electionDoc.get();
+  async function getActiveElectionDoc() {
+    const currentSnap = await electionDoc.get();
+    if (currentSnap.exists && !currentSnap.data()?.endedAt) {
+      return {
+        docRef: electionDoc,
+        docId: electionDoc.id,
+        data: currentSnap.data(),
+      };
+    }
+
+    const activeSnap = await db
+      .collection("elections")
+      .where("endedAt", "==", null)
+      .get();
+    if (activeSnap.empty) return null;
+
+    let bestDoc = activeSnap.docs[0];
+    let bestTs = 0;
+
+    const toMillis = (value) => {
+      if (!value) return 0;
+      if (typeof value.toMillis === "function") return value.toMillis();
+      if (value instanceof Date) return value.getTime();
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    };
+
+    bestTs = toMillis(bestDoc.data()?.startedAt);
+    for (const doc of activeSnap.docs.slice(1)) {
+      const ts = toMillis(doc.data()?.startedAt);
+      if (ts > bestTs) {
+        bestDoc = doc;
+        bestTs = ts;
+      }
+    }
+
+    return { docRef: bestDoc.ref, docId: bestDoc.id, data: bestDoc.data() };
+  }
+
+
+
+  async function finishElection(electionCtx, explicitWinnerId, isAuto = false) {
+    if (!electionCtx || !electionCtx.docRef) return;
+    const { docRef, docId } = electionCtx;
+
+    const snap = await docRef.get();
+    if (!snap.exists) return;
     const electionData = snap.data() || {};
     if (electionData.endedAt) return;
 
     const voterIds = electionData.voters || [];
     if (voterIds.length === 0) {
       // Pas de votant
-      await electionDoc.update({ endedAt: new Date() });
-      return channel.send("Aucun participant, élection annulée.");
+      await docRef.update({ endedAt: new Date() });
+      return channel.send(
+        isAuto
+          ? "Aucun participant, ?lection annul?e automatiquement."
+          : "Aucun participant, ?lection annul?e."
+      );
     }
 
-    // Choix du gagnant (paramètre ou tirage aléatoire)
     const winnerPick = await pickEligibleWinner(voterIds, explicitWinnerId);
     if (!winnerPick) {
       console.warn("Aucun participant eligible (profil follower manquant).");
-      await electionDoc.update({ endedAt: new Date(), winnerId: null });
+      await docRef.update({ endedAt: new Date(), winnerId: null });
       return channel.send(
         "Aucun participant eligible (profil follower manquant) - election annulee."
       );
@@ -94,7 +142,7 @@ module.exports = async function electionHandler(message, db, channelId) {
     const { cards_generated = [], ...rest } = userData;
     const userInfo = { ...rest };
 
-    // Préparer la nouvelle carte
+    // Pr?parer la nouvelle carte
     const endedAt = new Date();
     const pseudo =
       userData.pseudo || (await guild.members.fetch(winnerId)).user.username;
@@ -102,11 +150,11 @@ module.exports = async function electionHandler(message, db, channelId) {
     const guardianCard = {
       ...baseCard,
       pseudo,
-      month: monthId,
+      month: docId,
       sentAt: endedAt.toISOString(),
     };
 
-    // Mettre à jour ou ajouter la carte dans cards_generated
+    // Mettre ? jour ou ajouter la carte dans cards_generated
     const newCards = [...cards_generated];
     const idx = newCards.findIndex(
       (c) =>
@@ -115,9 +163,9 @@ module.exports = async function electionHandler(message, db, channelId) {
     if (idx === -1) newCards.push(guardianCard);
     else newCards[idx] = { ...newCards[idx], ...guardianCard };
 
-    // 2. Créer un batch pour les écritures Firestore
+    // 2. Cr?er un batch pour les ?critures Firestore
     const batch = db.batch();
-    batch.update(electionDoc, {
+    batch.update(docRef, {
       winnerId,
       endedAt,
       winnerInfo: userInfo,
@@ -125,44 +173,47 @@ module.exports = async function electionHandler(message, db, channelId) {
     batch.update(userDoc.ref, {
       cards_generated: newCards,
       guardianWins: FieldValue.increment(1),
-      guardianWonMonths: FieldValue.arrayUnion(monthId),
+      guardianWonMonths: FieldValue.arrayUnion(docId),
       guardianLastWonAt: endedAt,
     });
 
-    // 3. Exécuter batch + opérations Discord + envoi de message en parallèle
+    // 3. Ex?cuter batch + op?rations Discord + envoi de message en parall?le
     const memberPromise = guild.members.fetch(winnerId);
     const batchCommit = batch.commit();
     const sendMessage = channel.send(
-      `🏆 ${
-        isAuto ? "(clôture automatique) " : ""
-      } @${pseudo} est le nouveau Gardien du Stream pour ${monthId} !`
+      `?? ${
+        isAuto ? "(cl?ture automatique) " : ""
+      } @${pseudo} est le nouveau Gardien du Stream pour ${docId} !`
     );
     const sendMessageRole = channel.send(
-      `Tu as été élu Gardien du Stream ! Tu peux maintenant profiter de ton rôle spécial.`
+      `Tu as ?t? ?lu Gardien du Stream ! Tu peux maintenant profiter de ton r?le sp?cial.`
     );
 
-    // Attribution du rôle
+    // Attribution du r?le
     const rolePromise = memberPromise.then((member) => {
-      const role = guild.roles.cache.find((r) => r.name === "🛡️ Gardien");
+      const role = guild.roles.cache.find((r) => r.name === "??? Gardien");
       if (role)
         return member.roles.add(
           role,
-          "Gagnant de l’élection Gardien du Stream"
+          "Gagnant de l'?lection Gardien du Stream"
         );
     });
 
-    // Attendre que tout soit terminé
+    // Attendre que tout soit termin?
     await Promise.all([batchCommit, rolePromise, sendMessage, sendMessageRole]);
   }
 
+
   // ─── Démarrer l'élection ───
   if (sub === "start") {
-    const snap = await electionDoc.get();
-    if (snap.exists && !snap.data().endedAt) {
-      return message.reply("Une élection est déjà en cours ce mois-ci !");
+    const activeElection = await getActiveElectionDoc();
+    if (activeElection) {
+      return message.reply(
+        `Une ?lection est d?j? en cours (${activeElection.docId}).`
+      );
     }
 
-    // Initialise l’élection avec tableau vide
+    // Initialise l'?lection avec tableau vide
     await electionDoc.set({
       startedAt: new Date(),
       winnerId: null,
@@ -172,55 +223,38 @@ module.exports = async function electionHandler(message, db, channelId) {
     });
 
     const embed = new EmbedBuilder()
-      .setTitle(`📊 Élection du Gardien du Stream – ${monthId}`)
+      .setTitle(`?? ?lection du Gardien du Stream ? ${monthId}`)
       .setDescription(
-        "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !"
+        "R?agis avec ?? pour participer et tenter de devenir le prochain Gardien du Stream !"
       )
       .setFooter({ text: "Fin des votes dans 2 jours" });
 
     const poll = await channel.send({ embeds: [embed] });
-    await poll.react("👍");
+    await poll.react("??");
     await electionDoc.update({ pollMessageId: poll.id });
 
-    // Auto‐close après 4 jours
+    // Auto-close apres 2 jours
+    const electionCtx = { docRef: electionDoc, docId: monthId };
     setTimeout(async () => {
-      const doc = await electionDoc.get();
+      const doc = await electionCtx.docRef.get();
       if (!doc.exists || doc.data().endedAt) return;
-      const votes = doc.data().voters || [];
-      if (votes.length > 0) {
-        await finishElection(
-          votes[Math.floor(Math.random() * votes.length)],
-          true
-        );
-      } else {
-        await channel.send(
-          "Aucun participant, élection annulée automatiquement."
-        );
-        await electionDoc.update({ endedAt: new Date() });
-      }
+      await finishElection(electionCtx, null, true);
     }, AUTO_CLOSE_DELAY);
 
-    return channel.send("✅ Élection lancée : réaction 👍 pour participer !");
+    return channel.send("? ?lection lanc?e : r?action ?? pour participer !");
   }
+
 
   // ─── End ───
   if (sub === "end") {
-    const snap = await electionDoc.get();
-    if (!snap.exists || snap.data().endedAt) {
-      return message.reply("Pas d’élection en cours à terminer.");
+    const activeElection = await getActiveElectionDoc();
+    if (!activeElection) {
+      return message.reply("Pas d'election en cours a terminer.");
     }
-    const voterIds = snap.data().voters || [];
-    if (voterIds.length === 0) {
-      await channel.send("Aucun participant, élection annulée.");
-      await electionDoc.update({ endedAt: new Date() });
-      return;
-    }
-    await finishElection(
-      voterIds[Math.floor(Math.random() * voterIds.length)],
-      false
-    );
+    await finishElection(activeElection, null, false);
     return;
   }
+
   return message.reply(
     "Usage : `!election start` pour lancer ou `!election end` pour terminer."
   );
