@@ -3,11 +3,11 @@ const { EmbedBuilder, PermissionsBitField } = require("discord.js");
 const fetch = require("node-fetch"); // npm install node-fetch@2
 const { FieldValue } = require("firebase-admin").firestore; // ← ajout
 
-// Durée avant clôture automatique (en millisecondes) : 4 jours
+// Durée avant clôture automatique (en millisecondes) : 2 jours
 const AUTO_CLOSE_DELAY = 2 * 24 * 60 * 60 * 1000;
 
 /**
- * Handle election commands and auto-close after 4 days
+ * Handle election commands and auto-close after 2 days
  * @param {Message} message
  * @param {FirebaseFirestore.Firestore} db
  */
@@ -27,11 +27,41 @@ module.exports = async function electionHandler(message, db, channelId) {
   const guild = message.guild;
   const channel = await guild.channels.fetch(channelId);
 
+  function shuffleArray(input) {
+    const arr = [...input];
+    for (let i = arr.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  async function pickEligibleWinner(voterIds, preferredId) {
+    const unique = Array.from(new Set(voterIds)).filter(Boolean);
+    if (unique.length === 0) return null;
+
+    const rest = preferredId ? unique.filter((id) => id !== preferredId) : unique;
+    const candidates = preferredId
+      ? [preferredId, ...shuffleArray(rest)]
+      : shuffleArray(rest);
+
+    for (const id of candidates) {
+      const snap = await db
+        .collection("followers_all_time")
+        .where("discord_id", "==", id)
+        .limit(1)
+        .get();
+      if (!snap.empty) return { winnerId: id, userDoc: snap.docs[0] };
+    }
+    return null;
+  }
+
   async function finishElection(explicitWinnerId, isAuto = false) {
     const snap = await electionDoc.get();
-    if (snap.data().endedAt) return;
+    const electionData = snap.data() || {};
+    if (electionData.endedAt) return;
 
-    const voterIds = snap.data().voters || [];
+    const voterIds = electionData.voters || [];
     if (voterIds.length === 0) {
       // Pas de votant
       await electionDoc.update({ endedAt: new Date() });
@@ -39,29 +69,25 @@ module.exports = async function electionHandler(message, db, channelId) {
     }
 
     // Choix du gagnant (paramètre ou tirage aléatoire)
-    const winnerId =
-      explicitWinnerId || voterIds[Math.floor(Math.random() * voterIds.length)];
-
-    // 1. Récupérer en parallèle la carte de base et les infos de l’utilisateur
-    const [followersSnap, cardDoc] = await Promise.all([
-      db
-        .collection("followers_all_time")
-        .where("discord_id", "==", winnerId)
-        .limit(1)
-        .get(),
-      db.collection("cards_collections").doc("guardian").get(),
-    ]);
-
-    if (followersSnap.empty) {
-      console.warn(`Aucun follower trouvé pour ${winnerId}`);
-      return;
+    const winnerPick = await pickEligibleWinner(voterIds, explicitWinnerId);
+    if (!winnerPick) {
+      console.warn("Aucun participant eligible (profil follower manquant).");
+      await electionDoc.update({ endedAt: new Date(), winnerId: null });
+      return channel.send(
+        "Aucun participant eligible (profil follower manquant) - election annulee."
+      );
     }
 
+    const { winnerId, userDoc } = winnerPick;
+
+    const cardDoc = await db
+      .collection("cards_collections")
+      .doc("guardian")
+      .get();
     if (!cardDoc.exists) {
       throw new Error("cards_collections/guardian missing!");
     }
 
-    const userDoc = followersSnap.docs[0];
     const userData = userDoc.data();
 
     // Construire userInfo sans champs sensibles
