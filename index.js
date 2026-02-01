@@ -39,7 +39,8 @@ const BOOTY_CHANNEL_ID = process.env.BOOTY_CHANNEL_ID || "948504568969449513";
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
 const TWITCH_CHANNEL_ID = process.env.TWITCH_CHANNEL_ID;
-const TWITCH_MODERATOR_ID = process.env.TWITCH_MODERATOR_ID || TWITCH_CHANNEL_ID;
+const TWITCH_MODERATOR_ID =
+  process.env.TWITCH_MODERATOR_ID || TWITCH_CHANNEL_ID;
 const TWITCH_CHANNEL_LOGIN = process.env.TWITCH_CHANNEL_LOGIN || "erwayr";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY;
@@ -66,7 +67,7 @@ const HELIX_EMOTES_URL = "https://api.twitch.tv/helix/chat/emotes";
 const CRON_POLL_CLIPS = "*/5 * * * *";
 const CRON_TOKEN_KEEPALIVE = "*/15 * * * *";
 const CRON_LIVE_PRESENCE = "*/2 * * * *";
-const CRON_BIRTHDAY_REFRESH = "*/30 * * * *";
+const CRON_BIRTHDAY_REFRESH = "0 0 * * *";
 const CRON_ASSIGN_OLD_MEMBER_CARDS = "0 0 * * *";
 const CRON_EMOTE_REFRESH = "0 */6 * * *";
 
@@ -121,7 +122,6 @@ const helix = makeHelix({
   clientId: TWITCH_CLIENT_ID,
 });
 
-
 // ---- ensuite seulement le livePresenceTicker (on lui passe questStore) ----
 const livePresenceTick = createLivePresenceTicker({
   db,
@@ -147,16 +147,13 @@ cron.schedule(CRON_TOKEN_KEEPALIVE, async () => {
   try {
     const snap = await db.doc("settings/twitch_moderator").get();
     const s = snap.exists ? snap.data() : null;
-    if (
-      s?.issuer_client_id &&
-      s.issuer_client_id !== TWITCH_CLIENT_ID
-    ) {
+    if (s?.issuer_client_id && s.issuer_client_id !== TWITCH_CLIENT_ID) {
       console.error(
         "❌ Client-ID mismatch: token lié à",
         s.issuer_client_id,
         "mais env TWITCH_CLIENT_ID =",
         TWITCH_CLIENT_ID,
-        "→ refais /auth/twitch/start avec le bon client ou corrige l'env."
+        "→ refais /auth/twitch/start avec le bon client ou corrige l'env.",
       );
     }
   } catch (e) {
@@ -178,7 +175,7 @@ cron.schedule(CRON_LIVE_PRESENCE, async () => {
   } catch (e) {
     console.warn(
       "⚠️ [livePresenceTick] failed:",
-      e?.response?.data || e.message || e
+      e?.response?.data || e.message || e,
     );
     return;
   }
@@ -197,7 +194,7 @@ cron.schedule(CRON_LIVE_PRESENCE, async () => {
       console.log(
         `🟢 [LIVE] start (streamId=${announcedStreamId}, startedAt=${
           announcedStartedAt ? announcedStartedAt.toISOString() : "-"
-        })`
+        })`,
       );
     }
     return;
@@ -209,7 +206,7 @@ cron.schedule(CRON_LIVE_PRESENCE, async () => {
     console.log(
       `🔴 [LIVE] end (streamId=${announcedStreamId}, startedAt=${
         announcedStartedAt ? announcedStartedAt.toISOString() : "-"
-      })`
+      })`,
     );
     announcedStreamId = null;
     announcedStartedAt = null;
@@ -370,22 +367,18 @@ function verifyTwitchSignature(req) {
   const expectedSig = `sha256=${hmac.digest("hex")}`;
   return crypto.timingSafeEqual(
     Buffer.from(expectedSig),
-    Buffer.from(signature)
+    Buffer.from(signature),
   );
 }
 
 async function fetchAppAccessToken() {
-  const { data } = await axios.post(
-    OAUTH_TOKEN_URL,
-    null,
-    {
-      params: {
-        client_id: TWITCH_CLIENT_ID,
-        client_secret: TWITCH_CLIENT_SECRET,
-        grant_type: "client_credentials",
-      },
-    }
-  );
+  const { data } = await axios.post(OAUTH_TOKEN_URL, null, {
+    params: {
+      client_id: TWITCH_CLIENT_ID,
+      client_secret: TWITCH_CLIENT_SECRET,
+      grant_type: "client_credentials",
+    },
+  });
   return data.access_token;
 }
 
@@ -432,7 +425,7 @@ app.post("/twitch-callback", async (req, res) => {
 
     // (log utile)
     console.log(
-      `🎯 Redemption: user=${r.user_login} rewardId=${r.reward?.id} title="${r.reward?.title}" isTicket=${isTicket}`
+      `🎯 Redemption: user=${r.user_login} rewardId=${r.reward?.id} title="${r.reward?.title}" isTicket=${isTicket}`,
     );
 
     // 2) Si c’est le ticket → on fait le fulfill + upserts
@@ -451,7 +444,7 @@ app.post("/twitch-callback", async (req, res) => {
           const generalChannel = await client.channels.fetch(BOOTY_CHANNEL_ID);
           if (generalChannel?.isTextBased()) {
             await generalChannel.send(
-              `📜 Note prise : participation de ${r.user_name} confirmée — **${r.reward.title}** 🎟️`
+              `📜 Note prise : participation de ${r.user_name} confirmée — **${r.reward.title}** 🎟️`,
             );
           }
         } catch (e) {
@@ -460,7 +453,7 @@ app.post("/twitch-callback", async (req, res) => {
       } catch (e) {
         console.error(
           "Fulfill+participant error:",
-          e.response?.data || e.message
+          e.response?.data || e.message,
         );
       }
     }
@@ -474,7 +467,7 @@ app.post("/twitch-callback", async (req, res) => {
         console.log(`✅ ChannelPoints +1 → ${login} (stream ${streamId})`);
       } else {
         console.log(
-          `⏭️ ChannelPoints ignoré (login=${login} streamId=${streamId || "-"})`
+          `⏭️ ChannelPoints ignoré (login=${login} streamId=${streamId || "-"})`,
         );
       }
     } catch (e) {
@@ -523,7 +516,7 @@ app.post("/twitch-callback", async (req, res) => {
       });
 
       console.log(
-        `⭐ Sub enregistré pour ${event.user_login || event.user?.login}`
+        `⭐ Sub enregistré pour ${event.user_login || event.user?.login}`,
       );
     } catch (e) {
       console.error("Sub upsert error:", e.response?.data || e.message);
@@ -547,7 +540,7 @@ app.post("/twitch-callback", async (req, res) => {
       });
 
       console.log(
-        `🔁 Resub enregistré pour ${event.user_login || event.user?.login}`
+        `🔁 Resub enregistré pour ${event.user_login || event.user?.login}`,
       );
     } catch (e) {
       console.error("Resub upsert error:", e.response?.data || e.message);
@@ -561,38 +554,39 @@ app.post("/twitch-callback", async (req, res) => {
 
       // récupère les chatters actuels
       const accessToken = await tokenManager.getAccessToken();
-      const headers = buildTwitchHeaders(accessToken, { includeContentType: false });
+      const headers = buildTwitchHeaders(accessToken, {
+        includeContentType: false,
+      });
 
       const logins = [];
       let after = null,
         guard = 0;
       do {
-        const { data } = await axios.get(
-          HELIX_CHATTERS_URL,
-          {
-            headers,
-            params: after
-              ? {
-                  broadcaster_id: TWITCH_CHANNEL_ID,
-                  moderator_id: TWITCH_MODERATOR_ID,
-                  first: 1000,
-                  after,
-                }
-              : {
-                  broadcaster_id: TWITCH_CHANNEL_ID,
-                  moderator_id: TWITCH_MODERATOR_ID,
-                  first: 1000,
-                },
-          }
-        );
+        const { data } = await axios.get(HELIX_CHATTERS_URL, {
+          headers,
+          params: after
+            ? {
+                broadcaster_id: TWITCH_CHANNEL_ID,
+                moderator_id: TWITCH_MODERATOR_ID,
+                first: 1000,
+                after,
+              }
+            : {
+                broadcaster_id: TWITCH_CHANNEL_ID,
+                moderator_id: TWITCH_MODERATOR_ID,
+                first: 1000,
+              },
+        });
         (data?.data || []).forEach(
-          (c) => c?.user_login && logins.push(c.user_login.toLowerCase())
+          (c) => c?.user_login && logins.push(c.user_login.toLowerCase()),
         );
         after = data?.pagination?.cursor || null;
       } while (after && ++guard < 5);
 
       await Promise.all(
-        logins.map((login) => questStore.noteRaidParticipation(login, streamId))
+        logins.map((login) =>
+          questStore.noteRaidParticipation(login, streamId),
+        ),
       );
     } catch (e) {
       console.warn("raid handler failed:", e?.response?.data || e.message);
@@ -630,7 +624,7 @@ client.once(Events.ClientReady, async () => {
     } catch (e) {
       console.warn(
         `⚠️ guild.members.fetch timeout pour ${guild.name}:`,
-        e?.code || e?.message || e
+        e?.code || e?.message || e,
       );
     }
   }
@@ -639,7 +633,7 @@ client.once(Events.ClientReady, async () => {
 
   // Planification quotidienne à minuit
   cron.schedule(CRON_ASSIGN_OLD_MEMBER_CARDS, () =>
-    assignOldMemberCards(db).catch(console.error)
+    assignOldMemberCards(db).catch(console.error),
   );
 
   const processingQueues = new Map();
@@ -677,7 +671,7 @@ client.once(Events.ClientReady, async () => {
               : `🎉 Tu viens de gagner une nouvelle carte !`;
             const dmMsg = `${baseMsg}\n👉 Ta collection : ${collectionUrl}`;
             console.log(
-              `🃏 [Card] ${data.pseudo} won "${card.title || "unknown"}"`
+              `🃏 [Card] ${data.pseudo} won "${card.title || "unknown"}"`,
             );
 
             await sendDMOrFallback(data.discord_id, dmMsg);
@@ -693,7 +687,7 @@ client.once(Events.ClientReady, async () => {
         }
       });
     },
-    (err) => console.error("Listener Firestore error:", err)
+    (err) => console.error("Listener Firestore error:", err),
   );
 });
 
@@ -721,7 +715,7 @@ async function refreshChannelEmotes() {
     console.log(
       `🎭 Emotes de chaîne chargées: ${CHANNEL_EMOTE_IDS.size} (sample: ${
         sample || "—"
-      })`
+      })`,
     );
   } catch (e) {
     console.warn("⚠️ refreshChannelEmotes:", e?.response?.data || e.message);
@@ -747,7 +741,7 @@ let birthdayDateKey = "";
 tmiClient.connect().catch(console.error);
 refreshTodayBirthdays().catch(console.error);
 cron.schedule(CRON_BIRTHDAY_REFRESH, () =>
-  refreshTodayBirthdays().catch(console.error)
+  refreshTodayBirthdays().catch(console.error),
 );
 //
 tmiClient.on("connected", async () => {
@@ -755,7 +749,7 @@ tmiClient.on("connected", async () => {
 });
 
 cron.schedule(CRON_EMOTE_REFRESH, () =>
-  refreshChannelEmotesThrottled().catch(console.error)
+  refreshChannelEmotesThrottled().catch(console.error),
 );
 
 async function fetchLiveStreamState() {
@@ -805,15 +799,17 @@ async function getLiveStreamStateForEmotes() {
   lastLiveStateFetchAt = now;
 
   try {
-    return (await fetchLiveStreamState()) || {
-      streamId: null,
-      startedAt: null,
-    };
+    return (
+      (await fetchLiveStreamState()) || {
+        streamId: null,
+        startedAt: null,
+      }
+    );
   } catch (e) {
     if (process.env.DEBUG_EMOTES) {
       console.warn(
         "[emotes] live stream fetch failed:",
-        e?.response?.data || e?.message || e
+        e?.response?.data || e?.message || e,
       );
     }
     return { streamId: null, startedAt: null };
@@ -908,8 +904,7 @@ async function sendTwitchChatMessage(message) {
   const accessToken = await tokenManager.getAccessToken();
 
   const broadcasterId = TWITCH_CHANNEL_ID;
-  const senderId =
-    TWITCH_MODERATOR_ID; // doit matcher le user du token
+  const senderId = TWITCH_MODERATOR_ID; // doit matcher le user du token
 
   const { data } = await axios.post(
     HELIX_CHAT_MESSAGES_URL,
@@ -920,7 +915,7 @@ async function sendTwitchChatMessage(message) {
     },
     {
       headers: buildTwitchHeaders(accessToken),
-    }
+    },
   );
 
   const r = data?.data?.[0];
@@ -965,7 +960,7 @@ async function maybeSendBirthdayCongrats(login) {
   const dk = warsawDateKey(new Date());
   if (dk !== birthdayDateKey) {
     await refreshTodayBirthdays().catch((e) =>
-      console.warn("refreshTodayBirthdays failed:", e?.message || e)
+      console.warn("refreshTodayBirthdays failed:", e?.message || e),
     );
   }
 
@@ -987,7 +982,7 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   if (!login) return;
 
   maybeSendBirthdayCongrats(login).catch((e) =>
-    console.warn("birthday congrats failed:", e?.message || e)
+    console.warn("birthday congrats failed:", e?.message || e),
   );
 
   if (!CHANNEL_EMOTE_IDS.size && !CHANNEL_EMOTE_NAMES.size) {
@@ -999,7 +994,7 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   if (!streamId) {
     if (process.env.DEBUG_EMOTES) {
       console.log(
-        `[emotes:skip] no live streamId | from=${login} msg="${msg.slice(0, 80)}"`
+        `[emotes:skip] no live streamId | from=${login} msg="${msg.slice(0, 80)}"`,
       );
     }
     return;
@@ -1011,8 +1006,8 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     console.log(
       `[emotes:raw] from=${login} stream=${streamId} hasEmotes=${!!emotesObj} msg="${msg.slice(
         0,
-        80
-      )}"`
+        80,
+      )}"`,
     );
     if (emotesObj) {
       const keys = Object.keys(emotesObj);
@@ -1020,13 +1015,13 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
       keys.slice(0, 8).forEach((id) => {
         const tag = CHANNEL_EMOTE_IDS.has(String(id)) ? "mine" : "other";
         console.log(
-          `  └ id=${id} tag=${tag} count=${emotesObj[id]?.length || 0}`
+          `  └ id=${id} tag=${tag} count=${emotesObj[id]?.length || 0}`,
         );
       });
     }
     if (CHANNEL_EMOTE_IDS.size === 0) {
       console.log(
-        "⚠️ CHANNEL_EMOTE_IDS est vide — refreshChannelEmotes n'a peut-être pas marché."
+        "⚠️ CHANNEL_EMOTE_IDS est vide — refreshChannelEmotes n'a peut-être pas marché.",
       );
     }
   }
@@ -1043,23 +1038,23 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
       console.log(
         `[emotes:fallback-name] ${login} +${incByName} msg="${msg.slice(
           0,
-          80
-        )}"`
+          80,
+        )}"`,
       );
       try {
         await questStore.noteEmoteUsage(login, streamId, incByName);
         console.log(
-          `[emotes→DB] OK fallback-name | ${login} +${incByName} stream=${streamId}`
+          `[emotes→DB] OK fallback-name | ${login} +${incByName} stream=${streamId}`,
         );
       } catch (e) {
         console.error(
-          `[emotes→DB] FAIL fallback-name | ${login} +${incByName} stream=${streamId}`
+          `[emotes→DB] FAIL fallback-name | ${login} +${incByName} stream=${streamId}`,
         );
         console.error(e?.stack || e?.message || e);
       }
     } else if (process.env.DEBUG_EMOTES) {
       console.log(
-        `[emotes:skip] no twitch emote & no fallback-name match | from=${login}`
+        `[emotes:skip] no twitch emote & no fallback-name match | from=${login}`,
       );
     }
     return;
@@ -1073,12 +1068,12 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     : idsInMsg;
   let inc = matchedIds.reduce(
     (sum, id) => sum + (emotesObj[id]?.length || 0),
-    0
+    0,
   );
 
   if (!hasChannelList && inc > 0 && process.env.DEBUG_EMOTES) {
     console.log(
-      `[emotes:unfiltered] ${login} +${inc} ids=${matchedIds.join(",")}`
+      `[emotes:unfiltered] ${login} +${inc} ids=${matchedIds.join(",")}`,
     );
   }
 
@@ -1089,7 +1084,7 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     }
     if (inc > 0) {
       console.log(
-        `[emotes:fallback-name] ${login} +${inc} msg="${msg.slice(0, 80)}"`
+        `[emotes:fallback-name] ${login} +${inc} msg="${msg.slice(0, 80)}"`,
       );
     }
   }
@@ -1097,18 +1092,16 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
   if (inc <= 0) {
     if (process.env.DEBUG_EMOTES) {
       console.log(
-        `[emotes:skip] detected emotes but none are YOUR channel emotes | from=${login}`
+        `[emotes:skip] detected emotes but none are YOUR channel emotes | from=${login}`,
       );
     }
     return;
   }
 
-  const idsLabel = matchedIds.join(",") || (hasChannelList ? "-" : "unfiltered");
+  const idsLabel =
+    matchedIds.join(",") || (hasChannelList ? "-" : "unfiltered");
   console.log(
-    `[emotes] ${login} +${inc} (ids=${idsLabel}) msg="${msg.slice(
-      0,
-      80
-    )}"`
+    `[emotes] ${login} +${inc} (ids=${idsLabel}) msg="${msg.slice(0, 80)}"`,
   );
   try {
     await questStore.noteEmoteUsage(login, streamId, inc);
@@ -1128,7 +1121,7 @@ async function subscribeToRaids() {
   const exists = list.data.data.find(
     (s) =>
       s.type === "channel.raid" &&
-      s.condition?.from_broadcaster_user_id === TWITCH_CHANNEL_ID
+      s.condition?.from_broadcaster_user_id === TWITCH_CHANNEL_ID,
   );
   if (exists) return;
 
@@ -1144,7 +1137,7 @@ async function subscribeToRaids() {
         secret: WEBHOOK_SECRET,
       },
     },
-    { headers }
+    { headers },
   );
 }
 
@@ -1162,7 +1155,7 @@ client.on("raw", async (packet) => {
       if (logChannel && logChannel.isTextBased()) {
         const now = Math.floor(Date.now() / 1000);
         await logChannel.send(
-          `📩 **DM de ${user.tag}** à <t:${now}:F> :\n> ${content}`
+          `📩 **DM de ${user.tag}** à <t:${now}:F> :\n> ${content}`,
         );
       }
     } catch (err) {
@@ -1181,10 +1174,10 @@ client.on(Events.GuildMemberAdd, async (member) => {
 });
 
 client.on(Events.MessageReactionAdd, (r, u) =>
-  handleVoteChange(r, u, true, db)
+  handleVoteChange(r, u, true, db),
 );
 client.on(Events.MessageReactionRemove, (r, u) =>
-  handleVoteChange(r, u, false, db)
+  handleVoteChange(r, u, false, db),
 );
 
 client.on(Events.MessageCreate, async (message) => {
@@ -1205,13 +1198,12 @@ client.on(Events.PresenceUpdate, async (oldP, newP) => {
 
   // 2️⃣ Envoi du log de la présence detectée
   const playing = newP.activities.find(
-    (act) => act.type === ActivityType.Playing
+    (act) => act.type === ActivityType.Playing,
   );
   if (!playing) return;
 });
 
 client.login(DISCORD_BOT_TOKEN);
-
 
 async function assignOldMemberCards(db) {
   // 1️⃣ Récupérer la carte
@@ -1238,7 +1230,7 @@ async function assignOldMemberCards(db) {
     } catch (e) {
       console.warn(
         `⚠️ members.fetch (assignOldMemberCards) a échoué, fallback cache:`,
-        e?.code || e?.message || e
+        e?.code || e?.message || e,
       );
       members = guild.members.cache;
     }
@@ -1277,7 +1269,7 @@ async function assignOldMemberCards(db) {
         isAlreadyWinDiscordOldMember: true,
       });
       console.log(
-        `🎉 Carte "discord_old_member" attribuée à ${data.discord_id}`
+        `🎉 Carte "discord_old_member" attribuée à ${data.discord_id}`,
       );
     });
 
@@ -1298,7 +1290,7 @@ async function subscribeToFollows() {
       sub.type === "channel.follow" &&
       sub.version === "2" &&
       sub.condition.broadcaster_user_id === TWITCH_CHANNEL_ID &&
-      sub.condition.moderator_user_id === TWITCH_CHANNEL_ID
+      sub.condition.moderator_user_id === TWITCH_CHANNEL_ID,
   );
   if (existing) {
     return;
@@ -1332,7 +1324,7 @@ async function subscribeToRedemptions() {
   const exists = list.data.data.find(
     (s) =>
       s.type === "channel.channel_points_custom_reward_redemption.add" &&
-      s.condition?.broadcaster_user_id === TWITCH_CHANNEL_ID
+      s.condition?.broadcaster_user_id === TWITCH_CHANNEL_ID,
   );
   if (exists) {
     console.log("? EventSub redemption.add d?j? pr?sent:", exists.id);
@@ -1364,7 +1356,7 @@ async function subscribeToSubs() {
     const exists = list.data.data.find(
       (s) =>
         s.type === type &&
-        s.condition?.broadcaster_user_id === TWITCH_CHANNEL_ID
+        s.condition?.broadcaster_user_id === TWITCH_CHANNEL_ID,
     );
     if (exists) return;
     await axios.post(
@@ -1379,7 +1371,7 @@ async function subscribeToSubs() {
           secret: WEBHOOK_SECRET,
         },
       },
-      { headers }
+      { headers },
     );
   };
 
