@@ -112,8 +112,8 @@ module.exports = async function electionHandler(message, db, channelId) {
       await docRef.update({ endedAt: new Date() });
       return channel.send(
         isAuto
-          ? "Aucun participant, ?lection annul?e automatiquement."
-          : "Aucun participant, ?lection annul?e."
+          ? "Aucun participant, élection annulée automatiquement."
+          : "Aucun participant, élection annulée."
       );
     }
 
@@ -142,7 +142,7 @@ module.exports = async function electionHandler(message, db, channelId) {
     const { cards_generated = [], ...rest } = userData;
     const userInfo = { ...rest };
 
-    // Pr?parer la nouvelle carte
+    // Préparer la nouvelle carte
     const endedAt = new Date();
     const pseudo =
       userData.pseudo || (await guild.members.fetch(winnerId)).user.username;
@@ -154,7 +154,7 @@ module.exports = async function electionHandler(message, db, channelId) {
       sentAt: endedAt.toISOString(),
     };
 
-    // Mettre ? jour ou ajouter la carte dans cards_generated
+    // Mettre à jour ou ajouter la carte dans cards_generated
     const newCards = [...cards_generated];
     const idx = newCards.findIndex(
       (c) =>
@@ -163,7 +163,7 @@ module.exports = async function electionHandler(message, db, channelId) {
     if (idx === -1) newCards.push(guardianCard);
     else newCards[idx] = { ...newCards[idx], ...guardianCard };
 
-    // 2. Cr?er un batch pour les ?critures Firestore
+    // 2. Créer un batch pour les écritures Firestore
     const batch = db.batch();
     batch.update(docRef, {
       winnerId,
@@ -177,25 +177,24 @@ module.exports = async function electionHandler(message, db, channelId) {
       guardianLastWonAt: endedAt,
     });
 
-    // 3. Ex?cuter batch + op?rations Discord + envoi de message en parall?le
+    // 3. Exécuter batch + opérations Discord + envoi de message en paralléle
     const memberPromise = guild.members.fetch(winnerId);
     const batchCommit = batch.commit();
     const sendMessage = channel.send(
-      `?? ${
-        isAuto ? "(cl?ture automatique) " : ""
+      `🏆 ${
+        isAuto ? "(clôture automatique) " : ""
       } @${pseudo} est le nouveau Gardien du Stream pour ${docId} !`
     );
     const sendMessageRole = channel.send(
-      `Tu as ?t? ?lu Gardien du Stream ! Tu peux maintenant profiter de ton r?le sp?cial.`
-    );
+      `Tu as été élu Gardien du Stream ! Tu peux maintenant profiter de ton rôle spécial.`    );
 
-    // Attribution du r?le
+    // Attribution du rôle
     const rolePromise = memberPromise.then((member) => {
-      const role = guild.roles.cache.find((r) => r.name === "??? Gardien");
+      const role = guild.roles.cache.find((r) => r.name === "🛡️ Gardien");
       if (role)
         return member.roles.add(
           role,
-          "Gagnant de l'?lection Gardien du Stream"
+          "Gagnant de l'élection Gardien du Stream"
         );
     });
 
@@ -209,11 +208,11 @@ module.exports = async function electionHandler(message, db, channelId) {
     const activeElection = await getActiveElectionDoc();
     if (activeElection) {
       return message.reply(
-        `Une ?lection est d?j? en cours (${activeElection.docId}).`
+        `Une élection est déja en cours (${activeElection.docId}).`
       );
     }
 
-    // Initialise l'?lection avec tableau vide
+    // Initialise l'élection avec tableau vide
     await electionDoc.set({
       startedAt: new Date(),
       winnerId: null,
@@ -223,14 +222,14 @@ module.exports = async function electionHandler(message, db, channelId) {
     });
 
     const embed = new EmbedBuilder()
-      .setTitle(`?? ?lection du Gardien du Stream ? ${monthId}`)
+      .setTitle(`📊 Élection du Gardien du Stream ? ${monthId}`)
       .setDescription(
-        "R?agis avec ?? pour participer et tenter de devenir le prochain Gardien du Stream !"
+        "Réagis avec 👍 pour participer et tenter de devenir le prochain Gardien du Stream !"
       )
       .setFooter({ text: "Fin des votes dans 2 jours" });
 
     const poll = await channel.send({ embeds: [embed] });
-    await poll.react("??");
+    await poll.react("👍");
     await electionDoc.update({ pollMessageId: poll.id });
 
     // Auto-close apres 2 jours
@@ -241,7 +240,7 @@ module.exports = async function electionHandler(message, db, channelId) {
       await finishElection(electionCtx, null, true);
     }, AUTO_CLOSE_DELAY);
 
-    return channel.send("? ?lection lanc?e : r?action ?? pour participer !");
+    return channel.send("✅ Élection lancée : réaction 👍 pour participer !");
   }
 
 
