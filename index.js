@@ -57,6 +57,15 @@ const COLLECTION_URL = process.env.COLLECTION_URL || "https://erwayr.online";
 
 const TIMEZONE = process.env.TIMEZONE || "Europe/Warsaw";
 const BIRTHDAY_FIELD = process.env.BIRTHDAY_FIELD || "birthday";
+const BIRTHDAY_INDEX_COLLECTION =
+  process.env.BIRTHDAY_INDEX_COLLECTION || "birthdays_index";
+const BIRTHDAY_INDEX_META_DOC =
+  process.env.BIRTHDAY_INDEX_META_DOC || "settings/birthday_index_meta";
+const BIRTHDAY_INDEX_MAX_AGE_HOURS = Number(
+  process.env.BIRTHDAY_INDEX_MAX_AGE_HOURS || 24 * 7
+);
+const BIRTHDAY_INDEX_FALLBACK_SCAN =
+  process.env.BIRTHDAY_INDEX_FALLBACK_SCAN === "1";
 
 const EVENTSUB_ENDPOINT = "https://api.twitch.tv/helix/eventsub/subscriptions";
 const OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token";
@@ -740,8 +749,10 @@ let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
 let birthdayDateKey = "";
 tmiClient.connect().catch(console.error);
 refreshTodayBirthdays().catch(console.error);
-cron.schedule(CRON_BIRTHDAY_REFRESH, () =>
-  refreshTodayBirthdays().catch(console.error),
+cron.schedule(
+  CRON_BIRTHDAY_REFRESH,
+  () => refreshTodayBirthdays().catch(console.error),
+  { timezone: TIMEZONE },
 );
 //
 tmiClient.on("connected", async () => {
@@ -899,6 +910,88 @@ function pickDisplayNameFromDoc(docId, data) {
   );
 }
 
+function monthDayKeyFromParts(month, day) {
+  const mm = String(month || "").padStart(2, "0");
+  const dd = String(day || "").padStart(2, "0");
+  return `${mm}-${dd}`;
+}
+
+function toMillisMaybe(value) {
+  if (!value) return 0;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+  if (typeof value === "object" && typeof value.toDate === "function") {
+    const d = value.toDate();
+    if (!(d instanceof Date)) return 0;
+    const ms = d.getTime();
+    return Number.isNaN(ms) ? 0 : ms;
+  }
+  return 0;
+}
+
+async function buildBirthdayIndex() {
+  console.log("[birthday] build index...");
+
+  const snap = await db.collection("followers_all_time").get();
+  const index = new Map();
+
+  snap.forEach((doc) => {
+    const data = doc.data() || {};
+    const bd = parseBirthday(data[BIRTHDAY_FIELD]);
+    if (!bd) return;
+
+    const login = String(doc.id || "").toLowerCase();
+    if (!login) return;
+
+    const display = String(pickDisplayNameFromDoc(doc.id, data) || login);
+    const dayKey = monthDayKeyFromParts(bd.month, bd.day);
+    if (!dayKey || dayKey === "00-00") return;
+
+    const arr = index.get(dayKey) || [];
+    arr.push({ login, display });
+    index.set(dayKey, arr);
+  });
+
+  let batch = db.batch();
+  let ops = 0;
+  const commits = [];
+
+  for (const [dayKey, list] of index) {
+    const ref = db.collection(BIRTHDAY_INDEX_COLLECTION).doc(dayKey);
+    batch.set(
+      ref,
+      { list, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+    ops += 1;
+    if (ops >= 400) {
+      commits.push(batch.commit());
+      batch = db.batch();
+      ops = 0;
+    }
+  }
+  if (ops > 0) commits.push(batch.commit());
+  await Promise.all(commits);
+
+  await db.doc(BIRTHDAY_INDEX_META_DOC).set(
+    {
+      builtAt: admin.firestore.FieldValue.serverTimestamp(),
+      days: index.size,
+      version: 1,
+    },
+    { merge: true }
+  );
+
+  console.log(`[birthday] index built (${index.size} days)`);
+}
+
 // Envoi message Twitch via Helix
 async function sendTwitchChatMessage(message) {
   const accessToken = await tokenManager.getAccessToken();
@@ -929,27 +1022,78 @@ async function refreshTodayBirthdays() {
   const now = new Date();
   const dk = warsawDateKey(now);
   const { month, day } = getWarsawParts(now);
+  const dayKey = monthDayKeyFromParts(month, day);
 
   birthdayDateKey = dk;
   birthdayToday = new Map();
 
-  const snap = await db.collection("followers_all_time").get();
+  let usedFallback = false;
+  let needsRebuild = true;
 
-  snap.forEach((doc) => {
-    const data = doc.data() || {};
-    const bd = parseBirthday(data[BIRTHDAY_FIELD]);
-    if (!bd) return;
-    if (bd.month !== month || bd.day !== day) return;
+  try {
+    const metaSnap = await db.doc(BIRTHDAY_INDEX_META_DOC).get();
+    if (metaSnap.exists) {
+      const builtAt = toMillisMaybe(metaSnap.data()?.builtAt);
+      if (builtAt) {
+        const maxAgeMs = BIRTHDAY_INDEX_MAX_AGE_HOURS * 60 * 60 * 1000;
+        if (Date.now() - builtAt <= maxAgeMs) needsRebuild = false;
+      }
+    }
+  } catch (e) {
+    console.warn("[birthday] index meta read failed:", e?.message || e);
+  }
 
-    const login = String(doc.id || "").toLowerCase(); // chez toi doc.id = login
-    if (!login) return;
+  if (needsRebuild) {
+    try {
+      await buildBirthdayIndex();
+    } catch (e) {
+      console.warn("[birthday] index build failed:", e?.message || e);
+      if (BIRTHDAY_INDEX_FALLBACK_SCAN) {
+        const snap = await db.collection("followers_all_time").get();
+        snap.forEach((doc) => {
+          const data = doc.data() || {};
+          const bd = parseBirthday(data[BIRTHDAY_FIELD]);
+          if (!bd) return;
+          if (bd.month !== month || bd.day !== day) return;
 
-    const display = String(pickDisplayNameFromDoc(doc.id, data) || login);
-    birthdayToday.set(login, display);
-  });
+          const login = String(doc.id || "").toLowerCase();
+          if (!login) return;
 
-  console.log(`🎂 Birthdays today (${dk}) = ${birthdayToday.size}`);
+          const display = String(pickDisplayNameFromDoc(doc.id, data) || login);
+          birthdayToday.set(login, display);
+        });
+        usedFallback = true;
+      } else {
+        console.warn(
+          "[birthday] fallback scan disabled; birthdays list may be empty",
+        );
+      }
+    }
+  }
+
+  if (!usedFallback) {
+    try {
+      const daySnap = await db
+        .collection(BIRTHDAY_INDEX_COLLECTION)
+        .doc(dayKey)
+        .get();
+      const list = daySnap.exists ? daySnap.data()?.list : null;
+      if (Array.isArray(list)) {
+        list.forEach((entry) => {
+          const login = String(entry?.login || "").toLowerCase();
+          if (!login) return;
+          const display = String(entry?.display || login);
+          birthdayToday.set(login, display);
+        });
+      }
+    } catch (e) {
+      console.warn("[birthday] index day read failed:", e?.message || e);
+    }
+  }
+
+  console.log(`[birthday] Birthdays today (${dk}) = ${birthdayToday.size}`);
 }
+
 
 function buildBirthdayMessage(login, display) {
   // Personnalise ici
