@@ -62,10 +62,12 @@ const BIRTHDAY_INDEX_COLLECTION =
 const BIRTHDAY_INDEX_META_DOC =
   process.env.BIRTHDAY_INDEX_META_DOC || "settings/birthday_index_meta";
 const BIRTHDAY_INDEX_MAX_AGE_HOURS = Number(
-  process.env.BIRTHDAY_INDEX_MAX_AGE_HOURS || 24 * 7
+  process.env.BIRTHDAY_INDEX_MAX_AGE_HOURS || 0
 );
 const BIRTHDAY_INDEX_FALLBACK_SCAN =
   process.env.BIRTHDAY_INDEX_FALLBACK_SCAN === "1";
+const BIRTHDAY_DISPLAY_FIELDS = ["display_name", "displayName", "pseudo"];
+const BIRTHDAY_INDEX_VERSION = 2;
 
 const EVENTSUB_ENDPOINT = "https://api.twitch.tv/helix/eventsub/subscriptions";
 const OAUTH_TOKEN_URL = "https://id.twitch.tv/oauth2/token";
@@ -649,7 +651,10 @@ client.once(Events.ClientReady, async () => {
 
   db.collection("followers_all_time").onSnapshot(
     (snapshot) => {
+      const skipAddedForBirthday = !birthdayFollowerSeeded;
       snapshot.docChanges().forEach((change) => {
+        handleBirthdayFollowerChange(change, { skipAdded: skipAddedForBirthday });
+
         if (change.type !== "modified") return;
 
         const data = change.doc.data();
@@ -695,6 +700,7 @@ client.once(Events.ClientReady, async () => {
           next.catch(console.error);
         }
       });
+      if (!birthdayFollowerSeeded) birthdayFollowerSeeded = true;
     },
     (err) => console.error("Listener Firestore error:", err),
   );
@@ -747,6 +753,9 @@ const tmiClient = new tmi.Client({
 let birthdayToday = new Map(); // login -> displayName
 let birthdayCongratulated = new Set(); // "YYYY-MM-DD|login"
 let birthdayDateKey = "";
+let birthdayFollowerState = new Map(); // login -> { dayKey, display }
+let birthdayFollowerSeeded = false;
+const birthdaySyncQueues = new Map();
 tmiClient.connect().catch(console.error);
 refreshTodayBirthdays().catch(console.error);
 cron.schedule(
@@ -899,15 +908,12 @@ function parseBirthday(value) {
 }
 
 function pickDisplayNameFromDoc(docId, data) {
-  return (
-    data?.display_name ||
-    data?.displayName ||
-    data?.pseudo ||
-    data?.login ||
-    data?.username ||
-    data?.name ||
-    docId
-  );
+  return data?.display_name || data?.displayName || data?.pseudo || docId;
+}
+
+function birthdayFollowersQuery() {
+  const fields = Array.from(new Set([BIRTHDAY_FIELD, ...BIRTHDAY_DISPLAY_FIELDS]));
+  return db.collection("followers_all_time").select(...fields);
 }
 
 function monthDayKeyFromParts(month, day) {
@@ -936,10 +942,122 @@ function toMillisMaybe(value) {
   return 0;
 }
 
+function birthdayStateFromDoc(docId, data) {
+  const login = String(docId || "").toLowerCase();
+  const display = String(pickDisplayNameFromDoc(docId, data) || login);
+  const bd = parseBirthday(data?.[BIRTHDAY_FIELD]);
+  if (!bd) return { dayKey: "", display };
+  const dayKey = monthDayKeyFromParts(bd.month, bd.day);
+  if (!dayKey || dayKey === "00-00") return { dayKey: "", display };
+  return { dayKey, display };
+}
+
+function isSameBirthdayState(a, b) {
+  return (
+    String(a?.dayKey || "") === String(b?.dayKey || "") &&
+    String(a?.display || "") === String(b?.display || "")
+  );
+}
+
+function removeBirthdayListEntry(list, login) {
+  return list.filter((entry) => String(entry?.login || "").toLowerCase() !== login);
+}
+
+function upsertBirthdayListEntry(list, login, display) {
+  const next = removeBirthdayListEntry(list, login);
+  next.push({ login, display });
+  return next;
+}
+
+async function syncBirthdayIndexEntry(login, prevState, nextState) {
+  if (!login) return;
+  if (isSameBirthdayState(prevState, nextState)) return;
+
+  const oldDayKey = String(prevState?.dayKey || "");
+  const newDayKey = String(nextState?.dayKey || "");
+  const newDisplay = String(nextState?.display || login);
+  if (!oldDayKey && !newDayKey) return;
+
+  await db.runTransaction(async (tx) => {
+    const touchedDayKeys = Array.from(new Set([oldDayKey, newDayKey].filter(Boolean)));
+    const refs = new Map();
+    const lists = new Map();
+
+    for (const dayKey of touchedDayKeys) {
+      const ref = db.collection(BIRTHDAY_INDEX_COLLECTION).doc(dayKey);
+      refs.set(dayKey, ref);
+      const snap = await tx.get(ref);
+      const list = Array.isArray(snap.data()?.list) ? snap.data().list : [];
+      lists.set(dayKey, list);
+    }
+
+    if (oldDayKey) {
+      lists.set(oldDayKey, removeBirthdayListEntry(lists.get(oldDayKey) || [], login));
+    }
+    if (newDayKey) {
+      lists.set(
+        newDayKey,
+        upsertBirthdayListEntry(lists.get(newDayKey) || [], login, newDisplay),
+      );
+    }
+
+    for (const dayKey of touchedDayKeys) {
+      tx.set(
+        refs.get(dayKey),
+        {
+          list: lists.get(dayKey) || [],
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+  });
+
+  const todayParts = getWarsawParts(new Date());
+  const todayDayKey = monthDayKeyFromParts(todayParts.month, todayParts.day);
+  if (oldDayKey === todayDayKey && newDayKey !== todayDayKey) {
+    birthdayToday.delete(login);
+  }
+  if (newDayKey === todayDayKey) {
+    birthdayToday.set(login, newDisplay);
+  }
+}
+
+function enqueueBirthdayIndexSync(login, prevState, nextState) {
+  const chain = (birthdaySyncQueues.get(login) || Promise.resolve())
+    .then(() => syncBirthdayIndexEntry(login, prevState, nextState))
+    .catch((e) => console.warn("[birthday] incremental sync failed:", e?.message || e))
+    .finally(() => {
+      if (birthdaySyncQueues.get(login) === chain) {
+        birthdaySyncQueues.delete(login);
+      }
+    });
+  birthdaySyncQueues.set(login, chain);
+}
+
+function handleBirthdayFollowerChange(change, { skipAdded = false } = {}) {
+  const login = String(change?.doc?.id || "").toLowerCase();
+  if (!login) return;
+
+  const prevState = birthdayFollowerState.get(login) || null;
+  let nextState = null;
+
+  if (change.type !== "removed") {
+    const data = change.doc.data() || {};
+    nextState = birthdayStateFromDoc(change.doc.id, data);
+    birthdayFollowerState.set(login, nextState);
+  } else {
+    birthdayFollowerState.delete(login);
+  }
+
+  if (skipAdded && change.type === "added") return;
+  enqueueBirthdayIndexSync(login, prevState, nextState);
+}
+
 async function buildBirthdayIndex() {
   console.log("[birthday] build index...");
 
-  const snap = await db.collection("followers_all_time").get();
+  const snap = await birthdayFollowersQuery().get();
   const index = new Map();
 
   snap.forEach((doc) => {
@@ -983,8 +1101,9 @@ async function buildBirthdayIndex() {
   await db.doc(BIRTHDAY_INDEX_META_DOC).set(
     {
       builtAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       days: index.size,
-      version: 1,
+      version: BIRTHDAY_INDEX_VERSION,
     },
     { merge: true }
   );
@@ -1033,10 +1152,18 @@ async function refreshTodayBirthdays() {
   try {
     const metaSnap = await db.doc(BIRTHDAY_INDEX_META_DOC).get();
     if (metaSnap.exists) {
-      const builtAt = toMillisMaybe(metaSnap.data()?.builtAt);
-      if (builtAt) {
-        const maxAgeMs = BIRTHDAY_INDEX_MAX_AGE_HOURS * 60 * 60 * 1000;
-        if (Date.now() - builtAt <= maxAgeMs) needsRebuild = false;
+      const meta = metaSnap.data() || {};
+      const version = Number(meta.version || 0);
+      if (version >= BIRTHDAY_INDEX_VERSION) {
+        needsRebuild = false;
+        if (BIRTHDAY_INDEX_MAX_AGE_HOURS > 0) {
+          const lastTs =
+            toMillisMaybe(meta.updatedAt) || toMillisMaybe(meta.builtAt);
+          if (lastTs) {
+            const maxAgeMs = BIRTHDAY_INDEX_MAX_AGE_HOURS * 60 * 60 * 1000;
+            if (Date.now() - lastTs > maxAgeMs) needsRebuild = true;
+          }
+        }
       }
     }
   } catch (e) {
@@ -1049,7 +1176,7 @@ async function refreshTodayBirthdays() {
     } catch (e) {
       console.warn("[birthday] index build failed:", e?.message || e);
       if (BIRTHDAY_INDEX_FALLBACK_SCAN) {
-        const snap = await db.collection("followers_all_time").get();
+        const snap = await birthdayFollowersQuery().get();
         snap.forEach((doc) => {
           const data = doc.data() || {};
           const bd = parseBirthday(data[BIRTHDAY_FIELD]);
