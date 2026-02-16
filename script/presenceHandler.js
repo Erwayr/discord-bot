@@ -2,10 +2,22 @@
 const admin = require("firebase-admin"); // <- pour Timestamp
 const { ActivityType } = require("discord.js");
 
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+function toMillis(value) {
+  if (!value) return null;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+
+  const parsed = Date.parse(String(value));
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
 /**
- * Met à jour followers_all_time.games_history[] avec:
+ * Met a jour followers_all_time.games_history[] avec:
  *  - { name, count, lastPlayedAt }
- *  - lastPlayedAt est écrasé à chaque fois que l'utilisateur rejoue à ce jeu.
+ *  - lastPlayedAt est ecrase a chaque fois que l'utilisateur rejoue a ce jeu.
  */
 async function presenceHandler(oldPresence, newPresence, db) {
   if (!newPresence?.guild || !newPresence.activities?.length) return;
@@ -28,15 +40,22 @@ async function presenceHandler(oldPresence, newPresence, db) {
     ? data.games_history.slice()
     : [];
 
-  // timestamp serveur Firestore (précision seconde) ; sinon new Date() marche aussi
+  // timestamp serveur Firestore (precision seconde)
   const now = admin.firestore.Timestamp.now();
 
-  // cherche le jeu par name (exact, sensible à la casse — adapte si besoin)
+  // cherche le jeu par name (exact, sensible a la casse)
   const idx = gamesHistory.findIndex((e) => e && e.name === playing.name);
 
   if (idx >= 0) {
-    // jeu existant -> incrémente et écrase la date
     const current = gamesHistory[idx];
+    const lastPlayedMs = toMillis(current?.lastPlayedAt);
+
+    // n'ajoute pas ce jeu s'il a deja ete ajoute dans la derniere heure
+    if (lastPlayedMs != null && now.toMillis() - lastPlayedMs < ONE_HOUR_MS) {
+      return;
+    }
+
+    // jeu existant -> incremente et ecrase la date
     gamesHistory[idx] = {
       ...current,
       name: playing.name,
@@ -44,7 +63,7 @@ async function presenceHandler(oldPresence, newPresence, db) {
       lastPlayedAt: now,
     };
   } else {
-    // nouveau jeu -> crée l'entrée avec date initiale
+    // nouveau jeu -> cree l'entree avec date initiale
     gamesHistory.push({
       name: playing.name,
       count: 1,
@@ -56,7 +75,7 @@ async function presenceHandler(oldPresence, newPresence, db) {
 
   const count = gamesHistory[idx >= 0 ? idx : gamesHistory.length - 1].count;
   console.log(
-    `✅ [Presence] ${newPresence.user?.tag || discordId} → ${
+    `[Presence] ${newPresence.user?.tag || discordId} -> ${
       playing.name
     } (count=${count})`
   );
