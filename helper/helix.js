@@ -1,9 +1,28 @@
-// helpers/helix.js
 const axios = require("axios");
+
+const RECONSENT_URL =
+  process.env.TWITCH_RECONSENT_URL ||
+  "https://discord-bot-production-95c5.up.railway.app/auth/twitch/start";
+
+function isRecoverableTokenError(error) {
+  const status = error?.response?.status;
+  if (status !== 401) return false;
+
+  const msg = String(error?.response?.data?.message || "");
+  const header = String(error?.response?.headers?.["www-authenticate"] || "");
+  const text = `${header} ${msg}`.toLowerCase();
+
+  return (
+    /invalid[_\s-]?token/.test(text) ||
+    /invalid\s+oauth\s+token/.test(text) ||
+    /token.*expired/.test(text)
+  );
+}
 
 function makeHelix({ tokenManager, clientId }) {
   return async function helix({ url, method = "get", params, data }) {
     let token = await tokenManager.getAccessToken();
+
     try {
       return await axios({
         url,
@@ -13,27 +32,34 @@ function makeHelix({ tokenManager, clientId }) {
         headers: { "Client-ID": clientId, Authorization: `Bearer ${token}` },
         timeout: 10000,
       });
-    } catch (e) {
-      const s = e?.response?.status;
-      const msg = e?.response?.data?.message || "";
-      const hdr = String(e?.response?.headers?.["www-authenticate"] || "");
-      const isInvalid =
-        s === 401 && /invalid[_\s-]?token/i.test(hdr + " " + msg);
+    } catch (error) {
+      if (!isRecoverableTokenError(error)) throw error;
 
-      if (isInvalid) {
-        console.warn("🔁 401 invalid_token → force refresh & retry once");
+      console.warn(
+        "401 token Twitch invalide/expire -> refresh force + retry unique",
+      );
+
+      try {
         await tokenManager.invalidateAccessToken();
         token = await tokenManager.getAccessToken();
-        return await axios({
-          url,
-          method,
-          params,
-          data,
-          headers: { "Client-ID": clientId, Authorization: `Bearer ${token}` },
-          timeout: 10000,
-        });
+      } catch (refreshError) {
+        const code = refreshError?.code;
+        if (code === "NO_REFRESH_TOKEN" || code === "INVALID_REFRESH_TOKEN") {
+          console.error(
+            `[oauth] reconsent requis. Ouvre: ${RECONSENT_URL} (code=${code})`,
+          );
+        }
+        throw refreshError;
       }
-      throw e;
+
+      return axios({
+        url,
+        method,
+        params,
+        data,
+        headers: { "Client-ID": clientId, Authorization: `Bearer ${token}` },
+        timeout: 10000,
+      });
     }
   };
 }

@@ -1,4 +1,3 @@
-// ./script/tokenManager.js
 const axios = require("axios");
 const { FieldValue } = require("firebase-admin/firestore");
 const crypto = require("crypto");
@@ -14,7 +13,7 @@ function createTokenManager(
     clientId = process.env.TWITCH_CLIENT_ID,
     clientSecret = process.env.TWITCH_CLIENT_SECRET,
     expirySkewMs = 60_000,
-  } = {}
+  } = {},
 ) {
   const ref = db.doc(docPath);
   let inFlight = null;
@@ -33,6 +32,10 @@ function createTokenManager(
 
   async function writeDoc(patch) {
     await ref.set(patch, { merge: true });
+  }
+
+  async function invalidateAccessToken() {
+    await writeDoc({ access_token_expires_at: 0 });
   }
 
   async function doRefresh(refreshToken) {
@@ -57,6 +60,7 @@ function createTokenManager(
         token_type,
       } = res.data;
 
+      const rotatedRefresh = newRefresh || refreshToken;
       const access_token_expires_at =
         Date.now() + Math.max(1, (expires_in ?? 3600) * 1000 - expirySkewMs);
 
@@ -66,9 +70,8 @@ function createTokenManager(
         token_type,
         issuer_client_id: clientId,
 
-        // ✅ rotation propre + audit minimal
-        refresh_token: newRefresh,
-        refresh_token_sha256: sha256(newRefresh),
+        refresh_token: rotatedRefresh,
+        refresh_token_sha256: sha256(rotatedRefresh),
         prev_refresh_token_sha256: expectedSha,
         refresh_rotation_count: FieldValue.increment(1),
 
@@ -86,20 +89,16 @@ function createTokenManager(
         e?.message ||
         "Refresh failed";
 
-      // 🔁 Cas classique: un autre process a déjà rotaté
       if (status === 400 && /invalid refresh token/i.test(message)) {
-        // Re-lecture du doc: a-t-on un nouveau refresh enregistré entre-temps ?
         const latest = await readDoc();
         if (
           latest.refresh_token &&
           latest.refresh_token_sha256 &&
           latest.refresh_token_sha256 !== expectedSha
         ) {
-          // Un autre worker a gagné la course → on réessaie avec le NOUVEAU token
-          return await doRefresh(latest.refresh_token);
+          return doRefresh(latest.refresh_token);
         }
 
-        // Sinon, vrai invalid → on purge et on demande re-consent
         await writeDoc({
           access_token: null,
           refresh_token: null,
@@ -107,16 +106,16 @@ function createTokenManager(
           oauth_error: { at: Date.now(), status, message },
         });
         throw asTypedError(
-          "Invalid refresh token — reconsent required.",
+          "Invalid refresh token - reconsent required.",
           "INVALID_REFRESH_TOKEN",
-          { status, message }
+          { status, message },
         );
       }
 
       throw asTypedError(
         `Refresh failed: ${message}`,
         "REFRESH_FAILED",
-        e?.response?.data || { message }
+        e?.response?.data || { message },
       );
     }
   }
@@ -135,34 +134,31 @@ function createTokenManager(
 
     if (!initial.refresh_token) {
       throw asTypedError(
-        "No refresh_token stored — run OAuth consent.",
-        "NO_REFRESH_TOKEN"
+        "No refresh_token stored - run OAuth consent.",
+        "NO_REFRESH_TOKEN",
       );
     }
 
     if (!inFlight) {
       inFlight = (async () => {
-        // Re-lire au dernier moment (pour capter une rotation toute fraîche)
         const fresh = await readDoc();
-        const r = fresh.refresh_token;
-        if (!r) {
+        const refreshToken = fresh.refresh_token;
+        if (!refreshToken) {
           throw asTypedError(
-            "No refresh_token stored — run OAuth consent.",
-            "NO_REFRESH_TOKEN"
+            "No refresh_token stored - run OAuth consent.",
+            "NO_REFRESH_TOKEN",
           );
         }
-        return await doRefresh(r);
+        return doRefresh(refreshToken);
       })().finally(() => {
         inFlight = null;
       });
     }
-    return await inFlight;
+
+    return inFlight;
   }
 
-  return { getAccessToken };
-}
-async function invalidateAccessToken() {
-  await ref.set({ access_token_expires_at: 0 }, { merge: true });
+  return { getAccessToken, invalidateAccessToken };
 }
 
-module.exports = { createTokenManager, invalidateAccessToken };
+module.exports = { createTokenManager };
