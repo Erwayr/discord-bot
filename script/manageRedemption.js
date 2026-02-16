@@ -66,6 +66,8 @@ async function upsertParticipantFromRedemption(db, r) {
     // ⚖️ logique isSub demandée
     if (!exists) {
       update.isSub = false; // ✅ nouveau participant → isSub=false
+      update.customRankLevel = foll.customRankLevel ?? null;
+      update.customRankName = foll.customRankName ?? null;
     }
 
     const backfill = (key, ...cands) => {
@@ -86,6 +88,8 @@ async function upsertParticipantFromRedemption(db, r) {
     backfill("wizebotRankName", "wizebotRankName");
     backfill("wizebotUptime", "wizebotUptime");
     backfill("wizebotUptimeRank", "wizebotUptimeRank");
+    backfill("customRankLevel", "customRankLevel");
+    backfill("customRankName", "customRankName");
 
     tx.set(partRef, update, { merge: true });
   });
@@ -103,6 +107,7 @@ async function upsertParticipantFromSubscription(db, e) {
       tx.get(partRef),
       tx.get(follRef),
     ]);
+    const exists = partSnap.exists;
     const existing = partSnap.exists ? partSnap.data() : {};
     const foll = follSnap.exists ? follSnap.data() : {};
     const nowISO = new Date().toISOString();
@@ -115,6 +120,11 @@ async function upsertParticipantFromSubscription(db, e) {
       subCheckedAt: nowISO,
       fetched_at: nowISO,
     };
+
+    if (!exists) {
+      update.customRankLevel = foll.customRankLevel ?? null;
+      update.customRankName = foll.customRankName ?? null;
+    }
 
     // backfill sans écraser ce qui existe
     const backfill = (key, ...cands) => {
@@ -133,6 +143,8 @@ async function upsertParticipantFromSubscription(db, e) {
     backfill("wizebotRankName", "wizebotRankName");
     backfill("wizebotUptime", "wizebotUptime");
     backfill("wizebotUptimeRank", "wizebotUptimeRank");
+    backfill("customRankLevel", "customRankLevel");
+    backfill("customRankName", "customRankName");
 
     tx.set(partRef, update, { merge: true });
   });
