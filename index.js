@@ -36,6 +36,8 @@ const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || "1377870229153120257";
 const GENERAL_CHANNEL_ID =
   process.env.GENERAL_CHANNEL_ID || "797077170974490645";
 const BOOTY_CHANNEL_ID = process.env.BOOTY_CHANNEL_ID || "948504568969449513";
+const ANNOUNCEMENT_CHANNEL_ID =
+  process.env.ANNOUNCEMENT_CHANNEL_ID || "827682574024966194";
 
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
@@ -63,7 +65,7 @@ const BIRTHDAY_INDEX_COLLECTION =
 const BIRTHDAY_INDEX_META_DOC =
   process.env.BIRTHDAY_INDEX_META_DOC || "settings/birthday_index_meta";
 const BIRTHDAY_INDEX_MAX_AGE_HOURS = Number(
-  process.env.BIRTHDAY_INDEX_MAX_AGE_HOURS || 0
+  process.env.BIRTHDAY_INDEX_MAX_AGE_HOURS || 0,
 );
 const BIRTHDAY_INDEX_FALLBACK_SCAN =
   process.env.BIRTHDAY_INDEX_FALLBACK_SCAN === "1";
@@ -255,7 +257,7 @@ const client = new Client({
 const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
   db,
   client,
-  defaultChannelId: LOG_CHANNEL_ID,
+  defaultChannelId: ANNOUNCEMENT_CHANNEL_ID,
   timeZone: TIMEZONE,
   limit: 10,
   excludedLogins: WEEKLY_RECAP_EXCLUDED_LOGINS,
@@ -684,7 +686,9 @@ client.once(Events.ClientReady, async () => {
     (snapshot) => {
       const skipAddedForBirthday = !birthdayFollowerSeeded;
       snapshot.docChanges().forEach((change) => {
-        handleBirthdayFollowerChange(change, { skipAdded: skipAddedForBirthday });
+        handleBirthdayFollowerChange(change, {
+          skipAdded: skipAddedForBirthday,
+        });
 
         if (change.type !== "modified") return;
 
@@ -943,7 +947,9 @@ function pickDisplayNameFromDoc(docId, data) {
 }
 
 function birthdayFollowersQuery() {
-  const fields = Array.from(new Set([BIRTHDAY_FIELD, ...BIRTHDAY_DISPLAY_FIELDS]));
+  const fields = Array.from(
+    new Set([BIRTHDAY_FIELD, ...BIRTHDAY_DISPLAY_FIELDS]),
+  );
   return db.collection("followers_all_time").select(...fields);
 }
 
@@ -991,7 +997,9 @@ function isSameBirthdayState(a, b) {
 }
 
 function removeBirthdayListEntry(list, login) {
-  return list.filter((entry) => String(entry?.login || "").toLowerCase() !== login);
+  return list.filter(
+    (entry) => String(entry?.login || "").toLowerCase() !== login,
+  );
 }
 
 function upsertBirthdayListEntry(list, login, display) {
@@ -1010,7 +1018,9 @@ async function syncBirthdayIndexEntry(login, prevState, nextState) {
   if (!oldDayKey && !newDayKey) return;
 
   await db.runTransaction(async (tx) => {
-    const touchedDayKeys = Array.from(new Set([oldDayKey, newDayKey].filter(Boolean)));
+    const touchedDayKeys = Array.from(
+      new Set([oldDayKey, newDayKey].filter(Boolean)),
+    );
     const refs = new Map();
     const lists = new Map();
 
@@ -1023,7 +1033,10 @@ async function syncBirthdayIndexEntry(login, prevState, nextState) {
     }
 
     if (oldDayKey) {
-      lists.set(oldDayKey, removeBirthdayListEntry(lists.get(oldDayKey) || [], login));
+      lists.set(
+        oldDayKey,
+        removeBirthdayListEntry(lists.get(oldDayKey) || [], login),
+      );
     }
     if (newDayKey) {
       lists.set(
@@ -1057,7 +1070,9 @@ async function syncBirthdayIndexEntry(login, prevState, nextState) {
 function enqueueBirthdayIndexSync(login, prevState, nextState) {
   const chain = (birthdaySyncQueues.get(login) || Promise.resolve())
     .then(() => syncBirthdayIndexEntry(login, prevState, nextState))
-    .catch((e) => console.warn("[birthday] incremental sync failed:", e?.message || e))
+    .catch((e) =>
+      console.warn("[birthday] incremental sync failed:", e?.message || e),
+    )
     .finally(() => {
       if (birthdaySyncQueues.get(login) === chain) {
         birthdaySyncQueues.delete(login);
@@ -1117,7 +1132,7 @@ async function buildBirthdayIndex() {
     batch.set(
       ref,
       { list, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
-      { merge: true }
+      { merge: true },
     );
     ops += 1;
     if (ops >= 400) {
@@ -1136,7 +1151,7 @@ async function buildBirthdayIndex() {
       days: index.size,
       version: BIRTHDAY_INDEX_VERSION,
     },
-    { merge: true }
+    { merge: true },
   );
 
   console.log(`[birthday] index built (${index.size} days)`);
@@ -1251,7 +1266,6 @@ async function refreshTodayBirthdays() {
 
   console.log(`[birthday] Birthdays today (${dk}) = ${birthdayToday.size}`);
 }
-
 
 function buildBirthdayMessage(login, display) {
   // Personnalise ici
@@ -1732,4 +1746,3 @@ function formatSubDiscordMessage(e, { type, mention }) {
   }
   return `⭐ Merci pour le nouvel abonnement mon ${mention} !`;
 }
-
