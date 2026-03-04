@@ -221,21 +221,59 @@ function sumActivity(m) {
   return m.presence + m.emote + m.channelPoints + m.clips + m.raids;
 }
 
-function formatRecapMessage({ ranking, headerText }) {
+function asDiscordId(value) {
+  const v = String(value || "").trim();
+  return /^\d{6,30}$/.test(v) ? v : "";
+}
+
+function winnerMention(row) {
+  const id = asDiscordId(row?.discordId);
+  if (id) return `<@${id}>`;
+  return `@${row?.pseudo || "gagnant"}`;
+}
+
+function rankBadge(index) {
+  if (index === 0) return "🥇";
+  if (index === 1) return "🥈";
+  if (index === 2) return "🥉";
+  return "🐺";
+}
+
+function formatRecapMessage({ ranking, headerText, range, bonus }) {
   const lines = [];
-  lines.push(String(headerText || "Meilleurs Loulou de la semaine passee"));
+  lines.push(String(headerText || "✨ Meilleurs Loulou de la semaine passee ✨"));
+  if (range?.startLabel && range?.endLabel) {
+    lines.push(`📅 Periode: ${range.startLabel} au ${range.endLabel}`);
+  }
   lines.push("");
 
   if (!ranking.length) {
     lines.push("Top 0:");
+    lines.push("Personne n'a score cette semaine, on repart plus fort lundi prochain 💪");
     return lines.join("\n");
   }
 
+  const winnerRow = ranking[0];
+  lines.push(`🏆 Gagnant de la semaine: ${winnerMention(winnerRow)}`);
+  if (bonus?.applied) {
+    lines.push(
+      `🎁 Bonus applique: +${bonus.bonusPct}% d'accomplissement des quetes`
+    );
+  } else if (bonus?.reason === "ALREADY_AWARDED") {
+    lines.push(`🎁 Bonus deja attribue cette semaine (+${bonus.bonusPct}%)`);
+  } else if (bonus?.bonusPct > 0) {
+    lines.push(`🎁 Bonus non applique cette semaine`);
+  }
+  lines.push("");
+
   lines.push(`Top ${ranking.length}:`);
 
-  ranking.forEach((row) => {
-    lines.push(`${row.pseudo} - ${row.score} pts`);
+  ranking.forEach((row, idx) => {
+    lines.push(`${rankBadge(idx)} ${row.pseudo} - ${row.score} pts`);
   });
+
+  lines.push("");
+  lines.push("Merci a tous pour votre energie cette semaine ❤️");
 
   return lines.join("\n");
 }
@@ -300,7 +338,13 @@ async function computeWeeklyRanking(
     ).trim();
     if (!pseudo) return;
 
-    allRows.push({ docId: doc.id, login, pseudo, ...totals });
+    allRows.push({
+      docId: doc.id,
+      login,
+      pseudo,
+      discordId: asDiscordId(data.discord_id),
+      ...totals,
+    });
   });
 
   allRows.sort((a, b) => {
@@ -476,6 +520,8 @@ function createWeeklyFollowersRecap({
     const content = formatRecapMessage({
       ranking: result.ranking,
       headerText,
+      range: result.range,
+      bonus,
     });
 
     const channel = await client.channels.fetch(channelId);
@@ -483,9 +529,12 @@ function createWeeklyFollowersRecap({
       throw new Error(`weekly recap target channel is invalid: ${channelId}`);
     }
 
+    const winnerDiscordId = asDiscordId(result?.winner?.discordId);
     await channel.send({
       content,
-      allowedMentions: { parse: [] },
+      allowedMentions: winnerDiscordId
+        ? { parse: [], users: [winnerDiscordId] }
+        : { parse: [] },
     });
 
     return { ...result, bonus };

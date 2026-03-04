@@ -260,7 +260,7 @@ const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
   limit: 10,
   excludedLogins: WEEKLY_RECAP_EXCLUDED_LOGINS,
   questBonusPct: WEEKLY_RECAP_BONUS_PCT,
-  headerText: "Meilleurs Loulou de la semaine passee",
+  headerText: "✨ Meilleurs Loulou de la semaine passee ✨",
 });
 
 const app = express();
@@ -1498,17 +1498,10 @@ client.on(Events.MessageCreate, async (message) => {
     }
 
     try {
-      const result = await sendWeeklyFollowersRecap({
+      await sendWeeklyFollowersRecap({
         channelId: LOG_CHANNEL_ID,
       });
-      const bonusMsg = result?.bonus?.applied
-        ? `Bonus +${result.bonus.bonusPct}% applique a ${result.bonus.winnerPseudo}.`
-        : result?.bonus?.reason === "ALREADY_AWARDED"
-          ? `Bonus deja attribue cette semaine a ${result.bonus.winnerPseudo}.`
-          : "Bonus non applique.";
-      await message.reply(
-        `Recap hebdo envoye dans <#${LOG_CHANNEL_ID}> (Top ${result.ranking.length}). ${bonusMsg}`,
-      );
+      await message.react("\u2705").catch(() => {});
     } catch (e) {
       console.error("[weekly-recap] manual run failed:", e?.message || e);
       await message.reply("❌ Impossible de générer le recap hebdo.");
