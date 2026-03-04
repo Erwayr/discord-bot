@@ -11,9 +11,15 @@ const SCORE_WEIGHTS = Object.freeze({
   clipsCapPerStream: 5,
 });
 
+const DEFAULT_STATE_DOC_PATH = "settings/weekly_recap_state";
+
 function toNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeLogin(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function toMillis(value) {
@@ -106,6 +112,10 @@ function dayKeyInTimezone(date, timeZone) {
   }
 
   return `${year}-${month}-${day}`;
+}
+
+function monthKeyInTimezone(date, timeZone) {
+  return dayKeyInTimezone(date, timeZone).slice(0, 7);
 }
 
 function weekdayInTimezone(date, timeZone) {
@@ -211,51 +221,45 @@ function sumActivity(m) {
   return m.presence + m.emote + m.channelPoints + m.clips + m.raids;
 }
 
-function escapeMdInline(value = "") {
-  return String(value).replace(/[\\`*_~|>]/g, "\\$&");
-}
-
-function formatRecapMessage({
-  ranking,
-  totalActiveFollowers,
-  range,
-  timeZone,
-  limit,
-}) {
+function formatRecapMessage({ ranking, headerText }) {
   const lines = [];
-  lines.push("📊 **Recap hebdo - Top followers**");
-  lines.push(
-    `Periode: **${range.startLabel}** -> **${range.endLabel}** (${timeZone})`
-  );
+  lines.push(String(headerText || "Meilleurs Loulou de la semaine passee"));
+  lines.push("");
 
   if (!ranking.length) {
-    lines.push("");
-    lines.push("Aucune activite follower detectee sur cette periode.");
+    lines.push("Top 0:");
     return lines.join("\n");
   }
 
-  lines.push("");
-  lines.push(`Top ${Math.min(limit, ranking.length)}:`);
+  lines.push(`Top ${ranking.length}:`);
 
-  ranking.forEach((row, i) => {
-    lines.push(
-      `${i + 1}. **${escapeMdInline(row.pseudo)}** - **${row.score} pts** ` +
-        `(presence:${row.presence} emotes:${row.emote} points:${row.channelPoints} clips:${row.clips} raids:${row.raids})`
-    );
+  ranking.forEach((row) => {
+    lines.push(`${row.pseudo} - ${row.score} pts`);
   });
 
-  lines.push("");
-  lines.push(`Followers classes: **${totalActiveFollowers}**`);
   return lines.join("\n");
 }
 
-async function computeWeeklyRanking(db, { timeZone, limit }) {
+async function computeWeeklyRanking(
+  db,
+  { timeZone, limit, excludedLogins = [] }
+) {
   const range = getPreviousWeekRange(timeZone);
   const snap = await db.collection("followers_all_time").get();
   const allRows = [];
+  const excludedSet = new Set(
+    (Array.isArray(excludedLogins) ? excludedLogins : [])
+      .map(normalizeLogin)
+      .filter(Boolean)
+  );
 
   snap.forEach((doc) => {
     const data = doc.data() || {};
+    const login = normalizeLogin(
+      data.login || data.pseudo || data.display_name || data.displayName || doc.id
+    );
+    if (!login || excludedSet.has(login)) return;
+
     const livePresence = data.live_presence;
     if (!livePresence || typeof livePresence !== "object") return;
 
@@ -296,7 +300,7 @@ async function computeWeeklyRanking(db, { timeZone, limit }) {
     ).trim();
     if (!pseudo) return;
 
-    allRows.push({ pseudo, ...totals });
+    allRows.push({ docId: doc.id, login, pseudo, ...totals });
   });
 
   allRows.sort((a, b) => {
@@ -313,6 +317,117 @@ async function computeWeeklyRanking(db, { timeZone, limit }) {
     range,
     ranking: allRows.slice(0, limit),
     totalActiveFollowers: allRows.length,
+    winner: allRows[0] || null,
+  };
+}
+
+async function applyWinnerQuestBonus(
+  db,
+  {
+    winner,
+    range,
+    timeZone,
+    bonusPct,
+    stateDocPath = DEFAULT_STATE_DOC_PATH,
+  }
+) {
+  if (!winner?.docId) {
+    return {
+      applied: false,
+      reason: "NO_WINNER",
+      bonusPct: 0,
+    };
+  }
+
+  const safeBonusPct = Math.max(0, Math.floor(toNum(bonusPct)));
+  if (safeBonusPct <= 0) {
+    return {
+      applied: false,
+      reason: "BONUS_DISABLED",
+      bonusPct: 0,
+      winnerLogin: winner.login,
+      winnerPseudo: winner.pseudo,
+    };
+  }
+
+  const weekKey = `${range.startKey}_${range.endKey}`;
+  const now = new Date();
+  const monthKey = monthKeyInTimezone(now, timeZone);
+  const stateRef = db.doc(stateDocPath);
+  const winnerRef = db.collection("followers_all_time").doc(winner.docId);
+
+  let alreadyAwarded = false;
+  let before = 0;
+  let after = 0;
+
+  await db.runTransaction(async (tx) => {
+    const bonusFieldPath = `awardedWeeks.${weekKey}`;
+    const stateSnap = await tx.get(stateRef);
+    const already = stateSnap.exists ? stateSnap.get(bonusFieldPath) : null;
+
+    if (already && typeof already === "object") {
+      alreadyAwarded = true;
+      before = toNum(already.before_progress_pct);
+      after = toNum(already.after_progress_pct);
+      return;
+    }
+
+    const winnerSnap = await tx.get(winnerRef);
+    if (!winnerSnap.exists) {
+      throw new Error(`weekly bonus winner doc missing: ${winner.docId}`);
+    }
+
+    const data = winnerSnap.data() || {};
+    before = toNum(data?.live_presence?.[monthKey]?.progress_pct || 0);
+    after = Math.min(100, Math.max(0, before + safeBonusPct));
+
+    tx.update(winnerRef, {
+      [`live_presence.${monthKey}.progress_pct`]: after,
+    });
+
+    tx.set(
+      stateRef,
+      {
+        [bonusFieldPath]: {
+          winner_login: winner.login || winner.docId,
+          winner_pseudo: winner.pseudo || winner.docId,
+          range_start: range.startKey,
+          range_end: range.endKey,
+          bonus_pct: safeBonusPct,
+          month_key: monthKey,
+          before_progress_pct: before,
+          after_progress_pct: after,
+          applied_at_ms: Date.now(),
+        },
+      },
+      { merge: true }
+    );
+  });
+
+  if (alreadyAwarded) {
+    return {
+      applied: false,
+      reason: "ALREADY_AWARDED",
+      bonusPct: safeBonusPct,
+      winnerLogin: winner.login,
+      winnerPseudo: winner.pseudo,
+      weekKey,
+      monthKey,
+      before,
+      after,
+    };
+  }
+
+  return {
+    applied: true,
+    reason: "APPLIED",
+    bonusPct: safeBonusPct,
+    winnerLogin: winner.login,
+    winnerPseudo: winner.pseudo,
+    weekKey,
+    monthKey,
+    before,
+    after,
   };
 }
 
@@ -322,10 +437,20 @@ function createWeeklyFollowersRecap({
   defaultChannelId,
   timeZone = "Europe/Warsaw",
   limit = 10,
+  excludedLogins = [],
+  questBonusPct = 10,
+  stateDocPath = DEFAULT_STATE_DOC_PATH,
+  headerText = "Meilleurs Loulou de la semaine passee",
 }) {
   if (!db || !client) {
     throw new Error("createWeeklyFollowersRecap: missing db/client dependency");
   }
+
+  const safeLimit = Math.max(1, Math.floor(toNum(limit) || 10));
+  const safeBonusPct = Math.max(0, Math.floor(toNum(questBonusPct)));
+  const safeExcluded = (Array.isArray(excludedLogins) ? excludedLogins : [])
+    .map(normalizeLogin)
+    .filter(Boolean);
 
   return async function sendWeeklyFollowersRecap({
     channelId = defaultChannelId,
@@ -334,13 +459,23 @@ function createWeeklyFollowersRecap({
       throw new Error("weekly recap target channel is missing");
     }
 
-    const result = await computeWeeklyRanking(db, { timeZone, limit });
-    const content = formatRecapMessage({
-      ranking: result.ranking,
-      totalActiveFollowers: result.totalActiveFollowers,
+    const result = await computeWeeklyRanking(db, {
+      timeZone,
+      limit: safeLimit,
+      excludedLogins: safeExcluded,
+    });
+
+    const bonus = await applyWinnerQuestBonus(db, {
+      winner: result.winner,
       range: result.range,
       timeZone,
-      limit,
+      bonusPct: safeBonusPct,
+      stateDocPath,
+    });
+
+    const content = formatRecapMessage({
+      ranking: result.ranking,
+      headerText,
     });
 
     const channel = await client.channels.fetch(channelId);
@@ -353,9 +488,8 @@ function createWeeklyFollowersRecap({
       allowedMentions: { parse: [] },
     });
 
-    return result;
+    return { ...result, bonus };
   };
 }
 
 module.exports = { createWeeklyFollowersRecap };
-

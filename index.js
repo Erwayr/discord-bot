@@ -83,6 +83,13 @@ const CRON_BIRTHDAY_REFRESH = "0 0 * * *";
 const CRON_ASSIGN_OLD_MEMBER_CARDS = "0 0 * * *";
 const CRON_EMOTE_REFRESH = "0 */6 * * *";
 const CRON_WEEKLY_RECAP = process.env.CRON_WEEKLY_RECAP || "0 9 * * 1";
+const WEEKLY_RECAP_EXCLUDED_LOGINS = String(
+  process.env.WEEKLY_RECAP_EXCLUDED_LOGINS || "erwayr",
+)
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+const WEEKLY_RECAP_BONUS_PCT = Number(process.env.WEEKLY_RECAP_BONUS_PCT || 10);
 
 const EMOTE_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const LIVE_STATE_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -251,6 +258,9 @@ const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
   defaultChannelId: LOG_CHANNEL_ID,
   timeZone: TIMEZONE,
   limit: 10,
+  excludedLogins: WEEKLY_RECAP_EXCLUDED_LOGINS,
+  questBonusPct: WEEKLY_RECAP_BONUS_PCT,
+  headerText: "Meilleurs Loulou de la semaine passee",
 });
 
 const app = express();
@@ -1491,8 +1501,13 @@ client.on(Events.MessageCreate, async (message) => {
       const result = await sendWeeklyFollowersRecap({
         channelId: LOG_CHANNEL_ID,
       });
+      const bonusMsg = result?.bonus?.applied
+        ? `Bonus +${result.bonus.bonusPct}% applique a ${result.bonus.winnerPseudo}.`
+        : result?.bonus?.reason === "ALREADY_AWARDED"
+          ? `Bonus deja attribue cette semaine a ${result.bonus.winnerPseudo}.`
+          : "Bonus non applique.";
       await message.reply(
-        `✅ Recap hebdo envoyé dans <#${LOG_CHANNEL_ID}> (${result.ranking.length} / ${result.totalActiveFollowers}).`,
+        `Recap hebdo envoye dans <#${LOG_CHANNEL_ID}> (Top ${result.ranking.length}). ${bonusMsg}`,
       );
     } catch (e) {
       console.error("[weekly-recap] manual run failed:", e?.message || e);
@@ -1724,3 +1739,4 @@ function formatSubDiscordMessage(e, { type, mention }) {
   }
   return `⭐ Merci pour le nouvel abonnement mon ${mention} !`;
 }
+
