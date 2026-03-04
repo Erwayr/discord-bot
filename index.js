@@ -29,6 +29,7 @@ const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const { createClipPoller } = require("./script/clipPoller");
 const { mountTwitchAuth } = require("./script/authTwitch");
 const { createTokenManager } = require("./script/tokenManager");
+const { createWeeklyFollowersRecap } = require("./script/weeklyFollowersRecap");
 const cron = require("node-cron");
 
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || "1377870229153120257";
@@ -81,6 +82,7 @@ const CRON_LIVE_PRESENCE = "*/2 * * * *";
 const CRON_BIRTHDAY_REFRESH = "0 0 * * *";
 const CRON_ASSIGN_OLD_MEMBER_CARDS = "0 0 * * *";
 const CRON_EMOTE_REFRESH = "0 */6 * * *";
+const CRON_WEEKLY_RECAP = process.env.CRON_WEEKLY_RECAP || "0 9 * * 1";
 
 const EMOTE_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const LIVE_STATE_REFRESH_MIN_INTERVAL_MS = 60_000;
@@ -241,6 +243,14 @@ const client = new Client({
     Partials.Message, // ← pour récupérer les vieux messages
     Partials.Reaction,
   ],
+});
+
+const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
+  db,
+  client,
+  defaultChannelId: LOG_CHANNEL_ID,
+  timeZone: TIMEZONE,
+  limit: 10,
 });
 
 const app = express();
@@ -645,6 +655,17 @@ client.once(Events.ClientReady, async () => {
   // Planification quotidienne à minuit
   cron.schedule(CRON_ASSIGN_OLD_MEMBER_CARDS, () =>
     assignOldMemberCards(db).catch(console.error),
+  );
+  cron.schedule(
+    CRON_WEEKLY_RECAP,
+    () =>
+      sendWeeklyFollowersRecap({ channelId: LOG_CHANNEL_ID }).catch((e) =>
+        console.error("[weekly-recap] cron failed:", e?.message || e),
+      ),
+    { timezone: TIMEZONE },
+  );
+  console.log(
+    `[weekly-recap] scheduled (${CRON_WEEKLY_RECAP}, tz=${TIMEZONE}) -> ${LOG_CHANNEL_ID}`,
   );
 
   const processingQueues = new Map();
@@ -1457,6 +1478,29 @@ client.on(Events.MessageCreate, async (message) => {
   await messageCountHandler(message, db); // 🔄 Mise à jour du compteur
 
   await electionHandler(message, db, GENERAL_CHANNEL_ID);
+  if (message.content.trim() === "!weeklyrecap") {
+    const canRun = message.member?.permissions?.has("ManageGuild");
+    if (!canRun) {
+      await message.reply(
+        "❌ Tu n'as pas la permission pour lancer le recap hebdo.",
+      );
+      return;
+    }
+
+    try {
+      const result = await sendWeeklyFollowersRecap({
+        channelId: LOG_CHANNEL_ID,
+      });
+      await message.reply(
+        `✅ Recap hebdo envoyé dans <#${LOG_CHANNEL_ID}> (${result.ranking.length} / ${result.totalActiveFollowers}).`,
+      );
+    } catch (e) {
+      console.error("[weekly-recap] manual run failed:", e?.message || e);
+      await message.reply("❌ Impossible de générer le recap hebdo.");
+    }
+    return;
+  }
+
   if (message.content.trim() === "!rank") {
     await rankHandler(message, db);
   }
