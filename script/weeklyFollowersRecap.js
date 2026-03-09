@@ -475,6 +475,62 @@ async function applyWinnerQuestBonus(
   };
 }
 
+async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
+  const winnerLogin = normalizeLogin(
+    winner?.login || bonus?.winnerLogin || winner?.docId
+  );
+  if (!winnerLogin) {
+    return { synced: false, reason: "NO_WINNER_LOGIN" };
+  }
+
+  const participantRef = db.collection("participants").doc(winnerLogin);
+  const participantSnap = await participantRef.get();
+  if (!participantSnap.exists) {
+    return {
+      synced: false,
+      reason: "PARTICIPANT_NOT_FOUND",
+      winnerLogin,
+    };
+  }
+
+  const monthKey = String(bonus?.monthKey || "").trim();
+  const hasAfter = Number.isFinite(Number(bonus?.after));
+  const after = hasAfter ? Math.max(0, Math.min(100, toNum(bonus.after))) : null;
+
+  const payload = {
+    weekly_recap_bonus: {
+      winner_login: winnerLogin,
+      winner_pseudo:
+        String(winner?.pseudo || bonus?.winnerPseudo || winnerLogin).trim() ||
+        winnerLogin,
+      week_key: String(bonus?.weekKey || ""),
+      month_key: monthKey,
+      bonus_pct: Math.max(0, Math.floor(toNum(bonus?.bonusPct))),
+      applied: !!bonus?.applied,
+      reason: String(bonus?.reason || ""),
+      before_progress_pct: toNum(bonus?.before),
+      after_progress_pct: hasAfter ? after : null,
+      synced_at_ms: Date.now(),
+    },
+  };
+
+  if (hasAfter) {
+    payload.progress_pct = after;
+    payload.quest_progress_pct = after;
+    if (monthKey) {
+      payload[`live_presence.${monthKey}.progress_pct`] = after;
+    }
+  }
+
+  await participantRef.set(payload, { merge: true });
+  return {
+    synced: true,
+    winnerLogin,
+    monthKey: monthKey || null,
+    after,
+  };
+}
+
 function createWeeklyFollowersRecap({
   db,
   client,
@@ -517,6 +573,16 @@ function createWeeklyFollowersRecap({
       stateDocPath,
     });
 
+    let participantsSync = null;
+    try {
+      participantsSync = await syncWinnerBonusToParticipants(db, {
+        winner: result.winner,
+        bonus,
+      });
+    } catch (e) {
+      console.warn("[weekly-recap] participants sync failed:", e?.message || e);
+    }
+
     const content = formatRecapMessage({
       ranking: result.ranking,
       headerText,
@@ -537,7 +603,7 @@ function createWeeklyFollowersRecap({
         : { parse: [] },
     });
 
-    return { ...result, bonus };
+    return { ...result, bonus, participantsSync };
   };
 }
 
