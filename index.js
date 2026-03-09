@@ -787,7 +787,7 @@ client.once(Events.ClientReady, async () => {
   cron.schedule(
     CRON_WEEKLY_RECAP,
     () =>
-      sendWeeklyFollowersRecap({ channelId: LOG_CHANNEL_ID }).catch((e) =>
+      sendWeeklyFollowersRecap({ channelId: ANNOUNCEMENT_CHANNEL_ID }).catch((e) =>
         console.error("[weekly-recap] cron failed:", e?.message || e),
       ),
     { timezone: TIMEZONE },
