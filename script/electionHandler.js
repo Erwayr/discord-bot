@@ -2,6 +2,7 @@
 const { EmbedBuilder, PermissionsBitField } = require("discord.js");
 const fetch = require("node-fetch"); // npm install node-fetch@2
 const { FieldValue } = require("firebase-admin").firestore; // ← ajout
+const { commitBatchWithRetry } = require("../helper/firestoreRetry");
 
 // Durée avant clôture automatique (en millisecondes) : 2 jours
 const AUTO_CLOSE_DELAY = 2 * 24 * 60 * 60 * 1000;
@@ -179,7 +180,7 @@ module.exports = async function electionHandler(message, db, channelId) {
 
     // 3. Exécuter batch + opérations Discord + envoi de message en paralléle
     const memberPromise = guild.members.fetch(winnerId);
-    const batchCommit = batch.commit();
+    const batchCommit = commitBatchWithRetry(batch, { label: "election-finish" });
     const sendMessage = channel.send(
       `🏆 ${
         isAuto ? "(clôture automatique) " : ""

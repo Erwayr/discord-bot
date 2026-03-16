@@ -11,11 +11,13 @@ const {
 require("dotenv").config();
 
 const admin = require("firebase-admin");
+const { initializeFirestore } = require("firebase-admin/firestore");
 const axios = require("axios");
 const express = require("express");
 const bodyParser = require("body-parser");
 const crypto = require("crypto");
 const { makeHelix } = require("./helper/helix");
+const { commitBatchWithRetry } = require("./helper/firestoreRetry");
 // --- tes handlers ---
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
@@ -57,6 +59,8 @@ const TWITCH_OAUTH_REDIRECT =
   process.env.TWITCH_OAUTH_REDIRECT ||
   "https://discord-bot-production-95c5.up.railway.app/auth/twitch/callback";
 const COLLECTION_URL = process.env.COLLECTION_URL || "https://erwayr.online";
+const FIRESTORE_ENABLE_LISTENER =
+  process.env.FIRESTORE_ENABLE_LISTENER !== "0";
 
 const TIMEZONE = process.env.TIMEZONE || "Europe/Warsaw";
 const BIRTHDAY_FIELD = process.env.BIRTHDAY_FIELD || "birthday";
@@ -127,10 +131,15 @@ try {
   console.error("❌ Erreur de parsing FIREBASE_KEY_JSON :", e);
 }
 
-admin.initializeApp({ credential: admin.credential.cert(key) });
-
-const db = admin.firestore();
-db.settings({ ignoreUndefinedProperties: true });
+const FIRESTORE_PREFER_REST = process.env.FIRESTORE_PREFER_REST !== "0";
+const firebaseApp = admin.initializeApp({ credential: admin.credential.cert(key) });
+const db = initializeFirestore(firebaseApp, {
+  ignoreUndefinedProperties: true,
+  preferRest: FIRESTORE_PREFER_REST,
+});
+console.log(
+  `[firestore] transport prefere: ${FIRESTORE_PREFER_REST ? "REST" : "gRPC"}`,
+);
 
 // ---- instancie d'abord questStore (APRES db) ----
 const { createQuestStorage } = require("./script/questStorage");
@@ -798,63 +807,69 @@ client.once(Events.ClientReady, async () => {
 
   const processingQueues = new Map();
 
-  db.collection("followers_all_time").onSnapshot(
-    (snapshot) => {
-      const skipAddedForBirthday = !birthdayFollowerSeeded;
-      snapshot.docChanges().forEach((change) => {
-        handleBirthdayFollowerChange(change, {
-          skipAdded: skipAddedForBirthday,
-        });
-
-        if (change.type !== "modified") return;
-
-        const data = change.doc.data();
-        if (!data.discord_id) return;
-
-        const cards = Array.isArray(data.cards_generated)
-          ? data.cards_generated
-          : [];
-
-        // ne garder que les cartes sans notifiedAt
-        const newCards = cards.filter((c) => !c.notifiedAt);
-        if (newCards.length === 0) return;
-
-        for (const card of newCards) {
-          // clé de queue = titre de la carte
-          const idSource =
-            card.title != null && card.title !== "" && card.title !== undefined
-              ? card.title
-              : `${card.isSub}_${card.hasRedemption}`;
-          const titleKey = `${idSource}${data.pseudo}`;
-          if (processingQueues.has(titleKey)) continue;
-          const prev = processingQueues.get(titleKey) || Promise.resolve();
-
-          const next = prev.then(async () => {
-            const collectionUrl = COLLECTION_URL;
-            const baseMsg = card.title
-              ? `🎉 Tu viens de gagner la carte **${card.title}** !`
-              : `🎉 Tu viens de gagner une nouvelle carte !`;
-            const dmMsg = `${baseMsg}\n👉 Ta collection : ${collectionUrl}`;
-            console.log(
-              `🃏 [Card] ${data.pseudo} won "${card.title || "unknown"}"`,
-            );
-
-            await sendDMOrFallback(data.discord_id, dmMsg);
-
-            // marque en base
-            card.notifiedAt = new Date().toISOString();
-            if (!card.isAlreadyView) card.isAlreadyView = false;
-            await change.doc.ref.update({ cards_generated: cards });
+  if (!FIRESTORE_ENABLE_LISTENER) {
+    console.warn(
+      "[firestore] realtime listener disabled (FIRESTORE_ENABLE_LISTENER=0)",
+    );
+  } else {
+    db.collection("followers_all_time").onSnapshot(
+      (snapshot) => {
+        const skipAddedForBirthday = !birthdayFollowerSeeded;
+        snapshot.docChanges().forEach((change) => {
+          handleBirthdayFollowerChange(change, {
+            skipAdded: skipAddedForBirthday,
           });
 
-          processingQueues.set(titleKey, next);
-          next.catch(console.error);
-        }
-      });
-      if (!birthdayFollowerSeeded) birthdayFollowerSeeded = true;
-    },
-    (err) => console.error("Listener Firestore error:", err),
-  );
+          if (change.type !== "modified") return;
+
+          const data = change.doc.data();
+          if (!data.discord_id) return;
+
+          const cards = Array.isArray(data.cards_generated)
+            ? data.cards_generated
+            : [];
+
+          // ne garder que les cartes sans notifiedAt
+          const newCards = cards.filter((c) => !c.notifiedAt);
+          if (newCards.length === 0) return;
+
+          for (const card of newCards) {
+            // clé de queue = titre de la carte
+            const idSource =
+              card.title != null && card.title !== "" && card.title !== undefined
+                ? card.title
+                : `${card.isSub}_${card.hasRedemption}`;
+            const titleKey = `${idSource}${data.pseudo}`;
+            if (processingQueues.has(titleKey)) continue;
+            const prev = processingQueues.get(titleKey) || Promise.resolve();
+
+            const next = prev.then(async () => {
+              const collectionUrl = COLLECTION_URL;
+              const baseMsg = card.title
+                ? `🎉 Tu viens de gagner la carte **${card.title}** !`
+                : `🎉 Tu viens de gagner une nouvelle carte !`;
+              const dmMsg = `${baseMsg}\n👉 Ta collection : ${collectionUrl}`;
+              console.log(
+                `🃏 [Card] ${data.pseudo} won "${card.title || "unknown"}"`,
+              );
+
+              await sendDMOrFallback(data.discord_id, dmMsg);
+
+              // marque en base
+              card.notifiedAt = new Date().toISOString();
+              if (!card.isAlreadyView) card.isAlreadyView = false;
+              await change.doc.ref.update({ cards_generated: cards });
+            });
+
+            processingQueues.set(titleKey, next);
+            next.catch(console.error);
+          }
+        });
+        if (!birthdayFollowerSeeded) birthdayFollowerSeeded = true;
+      },
+      (err) => console.error("Listener Firestore error:", err),
+    );
+  }
 });
 
 const tmi = require("tmi.js");
@@ -1241,7 +1256,6 @@ async function buildBirthdayIndex() {
 
   let batch = db.batch();
   let ops = 0;
-  const commits = [];
 
   for (const [dayKey, list] of index) {
     const ref = db.collection(BIRTHDAY_INDEX_COLLECTION).doc(dayKey);
@@ -1252,13 +1266,14 @@ async function buildBirthdayIndex() {
     );
     ops += 1;
     if (ops >= 400) {
-      commits.push(batch.commit());
+      await commitBatchWithRetry(batch, { label: "birthday-index" });
       batch = db.batch();
       ops = 0;
     }
   }
-  if (ops > 0) commits.push(batch.commit());
-  await Promise.all(commits);
+  if (ops > 0) {
+    await commitBatchWithRetry(batch, { label: "birthday-index" });
+  }
 
   await db.doc(BIRTHDAY_INDEX_META_DOC).set(
     {
@@ -1615,9 +1630,13 @@ client.on(Events.MessageReactionRemove, (r, u) =>
 client.on(Events.MessageCreate, async (message) => {
   if (!message.guild || message.author.bot) return;
 
-  await messageCountHandler(message, db); // 🔄 Mise à jour du compteur
+  await messageCountHandler(message, db).catch((err) => {
+    console.error("[discord] messageCountHandler failed:", err);
+  }); // 🔄 Mise à jour du compteur
 
-  await electionHandler(message, db, GENERAL_CHANNEL_ID);
+  await electionHandler(message, db, GENERAL_CHANNEL_ID).catch((err) => {
+    console.error("[discord] electionHandler failed:", err);
+  });
   if (message.content.trim() === "!weeklyrecap") {
     const canRun = message.member?.permissions?.has("ManageGuild");
     if (!canRun) {
@@ -1726,7 +1745,7 @@ async function assignOldMemberCards(db) {
       );
     });
 
-    await batch.commit();
+    await commitBatchWithRetry(batch, { label: "assign-old-member-cards" });
     console.log(`✅ Batch de ${chunk.length} membres traité.`);
   }
 }
