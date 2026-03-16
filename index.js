@@ -879,6 +879,8 @@ let CHANNEL_EMOTE_NAMES = new Set();
 let lastEmoteRefreshAt = 0;
 let lastLiveStateFetchAt = 0;
 let liveStreamStateCache = { streamId: null, startedAt: null, cachedAt: 0 }; // 👈 nouveau
+let chatQuestStreamId = null;
+const chatQuestSeenLogins = new Set();
 
 async function refreshChannelEmotes() {
   try {
@@ -1446,6 +1448,20 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
     }
     return;
   }
+
+  if (chatQuestStreamId !== streamId) {
+    chatQuestStreamId = streamId;
+    chatQuestSeenLogins.clear();
+  }
+  if (!chatQuestSeenLogins.has(login)) {
+    try {
+      await questStore.noteChatMessage(login, streamId);
+      chatQuestSeenLogins.add(login);
+    } catch (e) {
+      console.warn("noteChatMessage failed:", e?.message || e);
+    }
+  }
+
   const emotesObj = tags.emotes || null;
 
   // Log brut utile pour savoir ce que TMI te donne réellement

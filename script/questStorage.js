@@ -131,6 +131,7 @@ function createQuestStorage(db) {
         : null,
       day_key: dayKey,
       presence: { seen: false, first_at: null, last_at: null },
+      chat_message: { sent: false, count: 0, first_at: null, last_at: null },
       emote: { used: false, count: 0, last_at: null },
       clips: { count: 0, last_id: null, last_at: null },
       channel_points: { used: false, redemptions: 0, last_at: null },
@@ -234,6 +235,49 @@ function createQuestStorage(db) {
         console.error(e?.stack || e?.message || e);
         throw e; // laisse remonter pour le log dans l'appelant
       });
+  }
+
+  async function noteChatMessage(login, streamId) {
+    const docId = login.toLowerCase();
+    const ref = col.doc(docId);
+    const mk = monthKeyUTC();
+
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+
+      // cree le doc minimal si absent
+      if (!snap.exists) {
+        tx.set(ref, { pseudo: docId, live_presence: {} }, { merge: true });
+      }
+
+      const data = snap.exists ? snap.data() : {};
+      const lp = { ...(data?.live_presence || {}) };
+      const month = ensureMonthLayer(lp, mk);
+
+      const { idx } = await ensureStreamEntry(tx, ref, month, streamId);
+      const entry = month.streams[idx];
+
+      entry.chat_message = {
+        sent: false,
+        count: 0,
+        first_at: null,
+        last_at: null,
+        ...(entry.chat_message || {}),
+      };
+
+      if (entry.chat_message.sent) return;
+
+      entry.chat_message.sent = true;
+      entry.chat_message.count = Math.max(
+        1,
+        Number(entry.chat_message.count || 0),
+      );
+      if (!entry.chat_message.first_at) entry.chat_message.first_at = Date.now();
+      entry.chat_message.last_at = Date.now();
+
+      month.last_update_at = Date.now();
+      tx.update(ref, { live_presence: lp });
+    });
   }
 
   async function noteClipCreated(login, streamId, clipId = null) {
@@ -340,6 +384,7 @@ function createQuestStorage(db) {
 
   return {
     notePresence,
+    noteChatMessage,
     noteEmoteUsage,
     noteClipCreated,
     noteChannelPoints,
