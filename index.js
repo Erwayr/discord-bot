@@ -40,6 +40,10 @@ const GENERAL_CHANNEL_ID =
 const BOOTY_CHANNEL_ID = process.env.BOOTY_CHANNEL_ID || "948504568969449513";
 const ANNOUNCEMENT_CHANNEL_ID =
   process.env.ANNOUNCEMENT_CHANNEL_ID || "827682574024966194";
+const CLIP_CHANNEL_ID =
+  process.env.CLIP_CHANNEL_ID ||
+  process.env.clip_channel_id ||
+  "839642015444762654";
 
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
@@ -171,6 +175,10 @@ const pollClipsTick = createClipPoller({
   livePresenceTick,
   clientId: TWITCH_CLIENT_ID,
   broadcasterId: TWITCH_CHANNEL_ID,
+  onNewClip: async (clip) => {
+    const message = formatClipDiscordMessage(clip);
+    await postDiscord(CLIP_CHANNEL_ID, message);
+  },
 });
 
 cron.schedule(CRON_POLL_CLIPS, pollClipsTick);
@@ -316,7 +324,46 @@ function isDuplicateDelivery(req) {
   return false;
 }
 
+function sanitizeDiscordText(value, fallback = "") {
+  return String(value || fallback)
+    .trim()
+    .replace(/@/g, "@\u200b");
+}
+
+function formatClipDiscordMessage(clip) {
+  const title = sanitizeDiscordText(clip?.title, "Nouveau clip");
+  const creator = sanitizeDiscordText(
+    clip?.creator_name || clip?.creator_login,
+    "un viewer",
+  );
+  const game = sanitizeDiscordText(clip?.game_name, "");
+  const views =
+    Number.isFinite(Number(clip?.view_count)) && Number(clip?.view_count) >= 0
+      ? Number(clip.view_count)
+      : null;
+  const fallbackUrl = clip?.id ? `https://clips.twitch.tv/${clip.id}` : "";
+  const url = String(clip?.url || fallbackUrl).trim();
+
+  const details = [
+    game ? `jeu: **${game}**` : null,
+    views !== null ? `vues: **${views}**` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  return [
+    "🎬 **Nouveau clip sur la chaine !**",
+    `**${title}**`,
+    `par **${creator}**`,
+    details,
+    url,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 async function postDiscord(channelId, text) {
+  if (!channelId) return;
   const ch = await client.channels.fetch(channelId);
   if (ch?.isTextBased() && text) await ch.send(text);
 }
