@@ -298,6 +298,7 @@ const TWITCH_SECRET = WEBHOOK_SECRET;
 const seenDeliveries = new Map(); // messageId -> ts (TTL court)
 const subTimers = new Map(); // login -> { timer, startedAt }
 const lastSubNotified = new Map(); // login -> ts
+const winnerAnnouncementLocks = new Set(); // gagnants docId -> in-flight
 
 function cleanupSeenDeliveries() {
   const now = Date.now();
@@ -443,6 +444,198 @@ function buildTwitchHeaders(accessToken, { includeContentType = true } = {}) {
 
 function shortText(value, max = 1200) {
   return String(value || "").trim().slice(0, max);
+}
+
+function normalizeLogin(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim();
+}
+
+function asDiscordId(value) {
+  const id = String(value || "").trim();
+  return /^\d{17,20}$/.test(id) ? id : null;
+}
+
+function formatWinnerDiscordMessage({ mention, prize, typeConcours }) {
+  const safeMention = String(mention || "inconnu");
+  const safePrize = String(prize || "cadeau");
+  const safeType = String(typeConcours || "normal");
+  return `🏆 Nouveau gagnant loterie: ${safeMention} - ${safePrize} (${safeType})`;
+}
+
+function formatWinnerTwitchMessage({ pseudo, prize }) {
+  const safePseudo = String(pseudo || "inconnu");
+  const safePrize = String(prize || "cadeau");
+  return `🏆 Nouveau gagnant: ${safePseudo} ! GG pour ${safePrize}`;
+}
+
+async function resolveWinnerDiscordMention({ login, pseudo }) {
+  const normalized = normalizeLogin(login || pseudo);
+  const fallback = String(pseudo || login || "inconnu").trim() || "inconnu";
+  if (!normalized) return fallback;
+
+  try {
+    const participantSnap = await db.collection("participants").doc(normalized).get();
+    const participantDiscordId = asDiscordId(
+      participantSnap.exists ? participantSnap.data()?.discord_id : null,
+    );
+    if (participantDiscordId) return `<@${participantDiscordId}>`;
+  } catch (e) {
+    console.warn(
+      `[winner-announce] participants lookup failed (${normalized}):`,
+      e?.message || e,
+    );
+  }
+
+  try {
+    const followerSnap = await db
+      .collection("followers_all_time")
+      .doc(normalized)
+      .get();
+    const followerDiscordId = asDiscordId(
+      followerSnap.exists ? followerSnap.data()?.discord_id : null,
+    );
+    if (followerDiscordId) return `<@${followerDiscordId}>`;
+  } catch (e) {
+    console.warn(
+      `[winner-announce] followers lookup failed (${normalized}):`,
+      e?.message || e,
+    );
+  }
+
+  return fallback;
+}
+
+async function tryClaimWinnerAnnouncement(docRef) {
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(docRef);
+    if (!snap.exists) return { claimed: false, reason: "missing" };
+
+    const data = snap.data() || {};
+    const status = String(data?.announce?.status || "");
+    if (status !== "pending") {
+      return { claimed: false, reason: status || "unknown" };
+    }
+
+    tx.update(docRef, {
+      "announce.status": "processing",
+      "announce.processingAt": admin.firestore.FieldValue.serverTimestamp(),
+      "announce.lastAttemptAt": admin.firestore.FieldValue.serverTimestamp(),
+      "announce.tries": admin.firestore.FieldValue.increment(1),
+      "announce.lastError": admin.firestore.FieldValue.delete(),
+    });
+
+    return { claimed: true };
+  });
+}
+
+async function handleWinnerAnnouncementChange(change) {
+  const docRef = change?.doc?.ref;
+  const docId = change?.doc?.id;
+  if (!docRef || !docId) return;
+  if (winnerAnnouncementLocks.has(docId)) return;
+
+  winnerAnnouncementLocks.add(docId);
+  try {
+    if (change.type === "removed") return;
+
+    const current = change.doc.data() || {};
+    const status = String(current?.announce?.status || "");
+    if (status !== "pending") return;
+
+    const claim = await tryClaimWinnerAnnouncement(docRef);
+    if (!claim?.claimed) return;
+
+    const freshSnap = await docRef.get();
+    if (!freshSnap.exists) return;
+    const data = freshSnap.data() || {};
+
+    const pseudo = String(data?.pseudo || "").trim() || "Inconnu";
+    const prize = String(data?.prix || "").trim() || "cadeau";
+    const typeConcours = String(data?.typeConcours || "").trim() || "normal";
+    const login = normalizeLogin(pseudo);
+    const mention = await resolveWinnerDiscordMention({ login, pseudo });
+
+    const discordMessage = formatWinnerDiscordMessage({
+      mention,
+      prize,
+      typeConcours,
+    });
+    const twitchMessage = formatWinnerTwitchMessage({ pseudo, prize });
+
+    const [discordResult, twitchResult] = await Promise.allSettled([
+      postDiscord(ANNOUNCEMENT_CHANNEL_ID, discordMessage),
+      sendTwitchChatMessage(twitchMessage),
+    ]);
+
+    const discordSent = discordResult.status === "fulfilled";
+    const twitchSent = twitchResult.status === "fulfilled";
+
+    if (discordSent && twitchSent) {
+      await docRef.update({
+        "announce.status": "sent",
+        "announce.sentAt": admin.firestore.FieldValue.serverTimestamp(),
+        "announce.lastAttemptAt": admin.firestore.FieldValue.serverTimestamp(),
+        "announce.errorAt": admin.firestore.FieldValue.delete(),
+        "announce.lastError": admin.firestore.FieldValue.delete(),
+        "announce.channels.discord": true,
+        "announce.channels.twitch": true,
+      });
+      console.log(`[winner-announce] sent doc=${docId} pseudo=${pseudo}`);
+      return;
+    }
+
+    const errors = [];
+    if (!discordSent) {
+      errors.push(
+        `discord:${shortText(
+          discordResult?.reason?.message || discordResult?.reason || "unknown",
+          320,
+        )}`,
+      );
+    }
+    if (!twitchSent) {
+      errors.push(
+        `twitch:${shortText(
+          twitchResult?.reason?.message || twitchResult?.reason || "unknown",
+          320,
+        )}`,
+      );
+    }
+
+    await docRef.update({
+      "announce.status": "error",
+      "announce.errorAt": admin.firestore.FieldValue.serverTimestamp(),
+      "announce.lastAttemptAt": admin.firestore.FieldValue.serverTimestamp(),
+      "announce.lastError": shortText(errors.join(" | "), 1500),
+      "announce.channels.discord": discordSent,
+      "announce.channels.twitch": twitchSent,
+    });
+    console.warn(
+      `[winner-announce] partial/failed doc=${docId} pseudo=${pseudo}: ${errors.join(
+        " | ",
+      )}`,
+    );
+  } catch (e) {
+    const errText = shortText(e?.stack || e?.message || e, 1500);
+    console.error(`[winner-announce] failed doc=${docId}:`, errText);
+    try {
+      await docRef.update({
+        "announce.status": "error",
+        "announce.errorAt": admin.firestore.FieldValue.serverTimestamp(),
+        "announce.lastAttemptAt": admin.firestore.FieldValue.serverTimestamp(),
+        "announce.lastError": errText,
+      });
+    } catch (updateErr) {
+      console.error(
+        `[winner-announce] failed to persist error doc=${docId}:`,
+        shortText(updateErr?.stack || updateErr?.message || updateErr, 800),
+      );
+    }
+  } finally {
+    winnerAnnouncementLocks.delete(docId);
+  }
 }
 
 function isRecoverableInvalidTokenError(error) {
@@ -868,6 +1061,23 @@ client.once(Events.ClientReady, async () => {
         if (!birthdayFollowerSeeded) birthdayFollowerSeeded = true;
       },
       (err) => console.error("Listener Firestore error:", err),
+    );
+
+    db.collection("gagnants").onSnapshot(
+      (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === "removed") return;
+          const status = String(change.doc.data()?.announce?.status || "");
+          if (status !== "pending") return;
+          handleWinnerAnnouncementChange(change).catch((e) =>
+            console.error(
+              "[winner-announce] unhandled handler error:",
+              e?.message || e,
+            ),
+          );
+        });
+      },
+      (err) => console.error("[winner-announce] listener error:", err),
     );
   }
 });
