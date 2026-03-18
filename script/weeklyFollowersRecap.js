@@ -1,12 +1,12 @@
 "use strict";
 
 const SCORE_WEIGHTS = Object.freeze({
-  presence: 5,
+  presence: 10,
   emote: 1,
   channelPoints: 2,
   clips: 8,
   raid: 4,
-  emoteCapPerStream: 20,
+  emoteCapPerStream: 5,
   channelPointsCapPerStream: 10,
   clipsCapPerStream: 5,
 });
