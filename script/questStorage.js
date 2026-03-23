@@ -2,6 +2,7 @@
 "use strict";
 
 const admin = require("firebase-admin");
+const CHAT_MESSAGE_CAP_PER_STREAM = 10;
 
 function monthKeyUTC(d = new Date()) {
   const y = d.getUTCFullYear();
@@ -237,10 +238,12 @@ function createQuestStorage(db) {
       });
   }
 
-  async function noteChatMessage(login, streamId) {
+  async function noteChatMessage(login, streamId, inc = 1) {
     const docId = login.toLowerCase();
     const ref = col.doc(docId);
     const mk = monthKeyUTC();
+    const safeInc = Math.max(1, Math.floor(Number(inc) || 1));
+    let nextCount = 0;
 
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -265,19 +268,27 @@ function createQuestStorage(db) {
         ...(entry.chat_message || {}),
       };
 
-      if (entry.chat_message.sent) return;
+      const beforeCount = Math.max(
+        0,
+        Math.floor(Number(entry.chat_message.count || 0)),
+      );
+      nextCount = Math.min(CHAT_MESSAGE_CAP_PER_STREAM, beforeCount + safeInc);
+
+      if (nextCount === beforeCount && entry.chat_message.sent) return;
 
       entry.chat_message.sent = true;
-      entry.chat_message.count = Math.max(
-        1,
-        Number(entry.chat_message.count || 0),
-      );
+      entry.chat_message.count = nextCount;
       if (!entry.chat_message.first_at) entry.chat_message.first_at = Date.now();
       entry.chat_message.last_at = Date.now();
 
       month.last_update_at = Date.now();
       tx.update(ref, { live_presence: lp });
     });
+
+    return {
+      count: nextCount,
+      capped: nextCount >= CHAT_MESSAGE_CAP_PER_STREAM,
+    };
   }
 
   async function noteClipCreated(login, streamId, clipId = null) {

@@ -1145,7 +1145,8 @@ let lastEmoteRefreshAt = 0;
 let lastLiveStateFetchAt = 0;
 let liveStreamStateCache = { streamId: null, startedAt: null, cachedAt: 0 }; // 👈 nouveau
 let chatQuestStreamId = null;
-const chatQuestSeenLogins = new Set();
+const CHAT_MESSAGE_SCORE_CAP_PER_STREAM = 10;
+const chatMessageCountsByLogin = new Map();
 
 async function refreshChannelEmotes() {
   try {
@@ -1716,12 +1717,19 @@ tmiClient.on("message", async (channel, tags, msg, self) => {
 
   if (chatQuestStreamId !== streamId) {
     chatQuestStreamId = streamId;
-    chatQuestSeenLogins.clear();
+    chatMessageCountsByLogin.clear();
   }
-  if (!chatQuestSeenLogins.has(login)) {
+  if ((chatMessageCountsByLogin.get(login) || 0) < CHAT_MESSAGE_SCORE_CAP_PER_STREAM) {
     try {
-      await questStore.noteChatMessage(login, streamId);
-      chatQuestSeenLogins.add(login);
+      const chatProgress = await questStore.noteChatMessage(login, streamId);
+      const nextCount = Math.max(
+        Number(chatMessageCountsByLogin.get(login) || 0),
+        Number(chatProgress?.count || 0),
+      );
+      chatMessageCountsByLogin.set(
+        login,
+        Math.min(CHAT_MESSAGE_SCORE_CAP_PER_STREAM, nextCount),
+      );
     } catch (e) {
       console.warn("noteChatMessage failed:", e?.message || e);
     }

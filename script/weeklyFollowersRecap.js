@@ -8,10 +8,12 @@ const {
 
 const SCORE_WEIGHTS = Object.freeze({
   presence: 10,
+  chatMessage: 5,
   emote: 1,
   channelPoints: 2,
   clips: 8,
   raid: 4,
+  chatMessageCapPerStream: 10,
   emoteCapPerStream: 5,
   channelPointsCapPerStream: 10,
   clipsCapPerStream: 5,
@@ -81,6 +83,7 @@ function normalizeStreams(streams) {
 function streamTimestamp(stream) {
   const candidates = [
     stream?.presence?.last_at,
+    stream?.chat_message?.last_at,
     stream?.emote?.last_at,
     stream?.channel_points?.last_at,
     stream?.raid?.at,
@@ -187,6 +190,12 @@ function streamDayKey(stream, timeZone) {
 
 function streamMetrics(stream) {
   const presence = stream?.presence?.seen ? 1 : 0;
+  const chatMessages = Math.max(
+    0,
+    Math.floor(
+      toNum(stream?.chat_message?.count || (stream?.chat_message?.sent ? 1 : 0))
+    )
+  );
 
   const emote = Math.max(0, Math.floor(toNum(stream?.emote?.count || 0)));
 
@@ -203,10 +212,14 @@ function streamMetrics(stream) {
   const clips = Math.max(0, Math.floor(toNum(stream?.clips?.count || 0)));
   const raids = stream?.raid?.participated ? 1 : 0;
 
-  return { presence, emote, channelPoints, clips, raids };
+  return { presence, chatMessages, emote, channelPoints, clips, raids };
 }
 
 function scoreFromMetrics(m) {
+  const chatEff = Math.min(
+    m.chatMessages,
+    SCORE_WEIGHTS.chatMessageCapPerStream
+  );
   const emoteEff = Math.min(m.emote, SCORE_WEIGHTS.emoteCapPerStream);
   const pointsEff = Math.min(
     m.channelPoints,
@@ -216,6 +229,7 @@ function scoreFromMetrics(m) {
 
   return (
     m.presence * SCORE_WEIGHTS.presence +
+    chatEff * SCORE_WEIGHTS.chatMessage +
     emoteEff * SCORE_WEIGHTS.emote +
     pointsEff * SCORE_WEIGHTS.channelPoints +
     clipsEff * SCORE_WEIGHTS.clips +
@@ -224,7 +238,14 @@ function scoreFromMetrics(m) {
 }
 
 function sumActivity(m) {
-  return m.presence + m.emote + m.channelPoints + m.clips + m.raids;
+  return (
+    m.presence +
+    m.chatMessages +
+    m.emote +
+    m.channelPoints +
+    m.clips +
+    m.raids
+  );
 }
 
 function asDiscordId(value) {
@@ -310,6 +331,7 @@ async function computeWeeklyRanking(
 
     const totals = {
       presence: 0,
+      chatMessages: 0,
       emote: 0,
       channelPoints: 0,
       clips: 0,
@@ -330,6 +352,7 @@ async function computeWeeklyRanking(
         if (sumActivity(m) <= 0) return;
 
         totals.presence += m.presence;
+        totals.chatMessages += m.chatMessages;
         totals.emote += m.emote;
         totals.channelPoints += m.channelPoints;
         totals.clips += m.clips;
@@ -358,6 +381,8 @@ async function computeWeeklyRanking(
     if (b.score !== a.score) return b.score - a.score;
     if (b.presence !== a.presence) return b.presence - a.presence;
     if (b.clips !== a.clips) return b.clips - a.clips;
+    if (b.chatMessages !== a.chatMessages)
+      return b.chatMessages - a.chatMessages;
     if (b.channelPoints !== a.channelPoints)
       return b.channelPoints - a.channelPoints;
     if (b.emote !== a.emote) return b.emote - a.emote;
