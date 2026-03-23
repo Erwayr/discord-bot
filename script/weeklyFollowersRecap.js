@@ -1,5 +1,11 @@
 "use strict";
 
+const {
+  EXCLUDED_USER_NAMES,
+  isExcludedLogin,
+  isExcludedUserLike,
+} = require("../helper/excludedUsers");
+
 const SCORE_WEIGHTS = Object.freeze({
   presence: 10,
   emote: 1,
@@ -293,6 +299,7 @@ async function computeWeeklyRanking(
 
   snap.forEach((doc) => {
     const data = doc.data() || {};
+    if (isExcludedLogin(doc.id) || isExcludedUserLike(data)) return;
     const login = normalizeLogin(
       data.login || data.pseudo || data.display_name || data.displayName || doc.id
     );
@@ -479,7 +486,7 @@ async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
   const winnerLogin = normalizeLogin(
     winner?.login || bonus?.winnerLogin || winner?.docId
   );
-  if (!winnerLogin) {
+  if (!winnerLogin || isExcludedLogin(winnerLogin)) {
     return { synced: false, reason: "NO_WINNER_LOGIN" };
   }
 
@@ -550,7 +557,9 @@ function createWeeklyFollowersRecap({
   const safeBonusPct = Math.max(0, Math.floor(toNum(questBonusPct)));
   const safeExcluded = (Array.isArray(excludedLogins) ? excludedLogins : [])
     .map(normalizeLogin)
-    .filter(Boolean);
+    .filter(Boolean)
+    .concat(EXCLUDED_USER_NAMES)
+    .filter((value, index, arr) => arr.indexOf(value) === index);
 
   return async function sendWeeklyFollowersRecap({
     channelId = defaultChannelId,

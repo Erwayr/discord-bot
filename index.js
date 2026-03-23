@@ -18,6 +18,11 @@ const bodyParser = require("body-parser");
 const crypto = require("crypto");
 const { makeHelix } = require("./helper/helix");
 const { commitBatchWithRetry } = require("./helper/firestoreRetry");
+const {
+  EXCLUDED_USER_NAMES,
+  isExcludedLogin,
+  isExcludedUserLike,
+} = require("./helper/excludedUsers");
 // --- tes handlers ---
 const welcomeHandler = require("./script/welcomeHandler");
 const rankHandler = require("./script/rankHandler");
@@ -94,12 +99,15 @@ const CRON_BIRTHDAY_REFRESH = "0 0 * * *";
 const CRON_ASSIGN_OLD_MEMBER_CARDS = "0 0 * * *";
 const CRON_EMOTE_REFRESH = "0 */6 * * *";
 const CRON_WEEKLY_RECAP = process.env.CRON_WEEKLY_RECAP || "0 9 * * 1";
-const WEEKLY_RECAP_EXCLUDED_LOGINS = String(
-  process.env.WEEKLY_RECAP_EXCLUDED_LOGINS || "erwayr",
-)
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+const WEEKLY_RECAP_EXCLUDED_LOGINS = Array.from(
+  new Set(
+    String(process.env.WEEKLY_RECAP_EXCLUDED_LOGINS || "erwayr")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+      .concat(EXCLUDED_USER_NAMES),
+  ),
+);
 const WEEKLY_RECAP_BONUS_PCT = Number(process.env.WEEKLY_RECAP_BONUS_PCT || 10);
 
 const EMOTE_REFRESH_MIN_INTERVAL_MS = 5 * 60 * 1000;
