@@ -27,7 +27,9 @@ function toNum(value) {
 }
 
 function normalizeLogin(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 function toMillis(value) {
@@ -193,8 +195,10 @@ function streamMetrics(stream) {
   const chatMessages = Math.max(
     0,
     Math.floor(
-      toNum(stream?.chat_message?.count || (stream?.chat_message?.sent ? 1 : 0))
-    )
+      toNum(
+        stream?.chat_message?.count || (stream?.chat_message?.sent ? 1 : 0),
+      ),
+    ),
   );
 
   const emote = Math.max(0, Math.floor(toNum(stream?.emote?.count || 0)));
@@ -203,9 +207,11 @@ function streamMetrics(stream) {
     0,
     Math.floor(
       toNum(
-        stream?.channel_points?.redemptions || stream?.channel_points?.count || 0
-      )
-    )
+        stream?.channel_points?.redemptions ||
+          stream?.channel_points?.count ||
+          0,
+      ),
+    ),
   );
   if (!channelPoints && stream?.channel_points?.used) channelPoints = 1;
 
@@ -218,12 +224,12 @@ function streamMetrics(stream) {
 function scoreFromMetrics(m) {
   const chatEff = Math.min(
     m.chatMessages,
-    SCORE_WEIGHTS.chatMessageCapPerStream
+    SCORE_WEIGHTS.chatMessageCapPerStream,
   );
   const emoteEff = Math.min(m.emote, SCORE_WEIGHTS.emoteCapPerStream);
   const pointsEff = Math.min(
     m.channelPoints,
-    SCORE_WEIGHTS.channelPointsCapPerStream
+    SCORE_WEIGHTS.channelPointsCapPerStream,
   );
   const clipsEff = Math.min(m.clips, SCORE_WEIGHTS.clipsCapPerStream);
 
@@ -239,12 +245,7 @@ function scoreFromMetrics(m) {
 
 function sumActivity(m) {
   return (
-    m.presence +
-    m.chatMessages +
-    m.emote +
-    m.channelPoints +
-    m.clips +
-    m.raids
+    m.presence + m.chatMessages + m.emote + m.channelPoints + m.clips + m.raids
   );
 }
 
@@ -268,7 +269,9 @@ function rankBadge(index) {
 
 function formatRecapMessage({ ranking, headerText, range, bonus }) {
   const lines = [];
-  lines.push(String(headerText || "✨ Meilleurs Loulou de la semaine passee ✨"));
+  lines.push(
+    String(headerText || "✨ Meilleurs Loulou de la semaine passee ✨"),
+  );
   if (range?.startLabel && range?.endLabel) {
     lines.push(`📅 Periode: ${range.startLabel} au ${range.endLabel}`);
   }
@@ -276,16 +279,16 @@ function formatRecapMessage({ ranking, headerText, range, bonus }) {
 
   if (!ranking.length) {
     lines.push("Top 0:");
-    lines.push("Personne n'a score cette semaine, on repart plus fort lundi prochain 💪");
+    lines.push(
+      "Personne n'a score cette semaine, on repart plus fort lundi prochain 💪",
+    );
     return lines.join("\n");
   }
 
   const winnerRow = ranking[0];
   lines.push(`🏆 Gagnant de la semaine: ${winnerMention(winnerRow)}`);
   if (bonus?.applied) {
-    lines.push(
-      `🎁 Bonus applique: +${bonus.bonusPct}% d'accomplissement des quetes`
-    );
+    lines.push(`🎁 Bonus : +${bonus.bonusPct}% d'accomplissement des quetes`);
   } else if (bonus?.reason === "ALREADY_AWARDED") {
     lines.push(`🎁 Bonus deja attribue cette semaine (+${bonus.bonusPct}%)`);
   } else if (bonus?.bonusPct > 0) {
@@ -307,7 +310,7 @@ function formatRecapMessage({ ranking, headerText, range, bonus }) {
 
 async function computeWeeklyRanking(
   db,
-  { timeZone, limit, excludedLogins = [] }
+  { timeZone, limit, excludedLogins = [] },
 ) {
   const range = getPreviousWeekRange(timeZone);
   const snap = await db.collection("followers_all_time").get();
@@ -315,14 +318,18 @@ async function computeWeeklyRanking(
   const excludedSet = new Set(
     (Array.isArray(excludedLogins) ? excludedLogins : [])
       .map(normalizeLogin)
-      .filter(Boolean)
+      .filter(Boolean),
   );
 
   snap.forEach((doc) => {
     const data = doc.data() || {};
     if (isExcludedLogin(doc.id) || isExcludedUserLike(data)) return;
     const login = normalizeLogin(
-      data.login || data.pseudo || data.display_name || data.displayName || doc.id
+      data.login ||
+        data.pseudo ||
+        data.display_name ||
+        data.displayName ||
+        doc.id,
     );
     if (!login || excludedSet.has(login)) return;
 
@@ -364,7 +371,7 @@ async function computeWeeklyRanking(
     if (totals.score <= 0) return;
 
     const pseudo = String(
-      data.pseudo || data.display_name || data.displayName || doc.id
+      data.pseudo || data.display_name || data.displayName || doc.id,
     ).trim();
     if (!pseudo) return;
 
@@ -399,13 +406,7 @@ async function computeWeeklyRanking(
 
 async function applyWinnerQuestBonus(
   db,
-  {
-    winner,
-    range,
-    timeZone,
-    bonusPct,
-    stateDocPath = DEFAULT_STATE_DOC_PATH,
-  }
+  { winner, range, timeZone, bonusPct, stateDocPath = DEFAULT_STATE_DOC_PATH },
 ) {
   if (!winner?.docId) {
     return {
@@ -476,7 +477,7 @@ async function applyWinnerQuestBonus(
           applied_at_ms: Date.now(),
         },
       },
-      { merge: true }
+      { merge: true },
     );
   });
 
@@ -509,7 +510,7 @@ async function applyWinnerQuestBonus(
 
 async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
   const winnerLogin = normalizeLogin(
-    winner?.login || bonus?.winnerLogin || winner?.docId
+    winner?.login || bonus?.winnerLogin || winner?.docId,
   );
   if (!winnerLogin || isExcludedLogin(winnerLogin)) {
     return { synced: false, reason: "NO_WINNER_LOGIN" };
@@ -527,7 +528,9 @@ async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
 
   const monthKey = String(bonus?.monthKey || "").trim();
   const hasAfter = Number.isFinite(Number(bonus?.after));
-  const after = hasAfter ? Math.max(0, Math.min(100, toNum(bonus.after))) : null;
+  const after = hasAfter
+    ? Math.max(0, Math.min(100, toNum(bonus.after)))
+    : null;
 
   const payload = {
     weekly_recap_bonus: {
