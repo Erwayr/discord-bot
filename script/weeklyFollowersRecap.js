@@ -260,6 +260,20 @@ function winnerMention(row) {
   return `@${row?.pseudo || "gagnant"}`;
 }
 
+function rankingMentionIds(ranking) {
+  const ids = [];
+  const seen = new Set();
+
+  for (const row of Array.isArray(ranking) ? ranking : []) {
+    const id = asDiscordId(row?.discordId);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+
+  return ids;
+}
+
 function rankBadge(index) {
   if (index === 0) return "🥇";
   if (index === 1) return "🥈";
@@ -299,7 +313,7 @@ function formatRecapMessage({ ranking, headerText, range, bonus }) {
   lines.push(`Top ${ranking.length}:`);
 
   ranking.forEach((row, idx) => {
-    lines.push(`${rankBadge(idx)} ${row.pseudo} - ${row.score} pts`);
+    lines.push(`${rankBadge(idx)} ${winnerMention(row)} - ${row.score} pts`);
   });
 
   lines.push("");
@@ -632,11 +646,11 @@ function createWeeklyFollowersRecap({
       throw new Error(`weekly recap target channel is invalid: ${channelId}`);
     }
 
-    const winnerDiscordId = asDiscordId(result?.winner?.discordId);
+    const mentionIds = rankingMentionIds(result.ranking);
     await channel.send({
       content,
-      allowedMentions: winnerDiscordId
-        ? { parse: [], users: [winnerDiscordId] }
+      allowedMentions: mentionIds.length
+        ? { parse: [], users: mentionIds }
         : { parse: [] },
     });
 
