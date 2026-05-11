@@ -18,6 +18,23 @@ function formatPct(value) {
   return `${Math.round(n)}%`;
 }
 
+function formatProgressBar(value, size = 10) {
+  const pct = Math.max(0, Math.min(100, toNum(value)));
+  const filled = Math.round((pct / 100) * size);
+  return "▰".repeat(filled) + "▱".repeat(Math.max(0, size - filled));
+}
+
+function formatMonthLabel(monthKey) {
+  const [year, month] = String(monthKey || "").split("-");
+  const date = new Date(Number(year), Number(month || 1) - 1, 1);
+  if (Number.isNaN(date.getTime())) return monthKey || "ce mois";
+  const label = new Intl.DateTimeFormat("fr-FR", {
+    month: "long",
+    year: "numeric",
+  }).format(date);
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
 function valueOrDash(value) {
   if (value == null || value === "") return "—";
   return String(value);
@@ -82,63 +99,6 @@ function cardsArray(data) {
     return Object.values(data.cards_generated);
   }
   return [];
-}
-
-function normalizeStreams(streams) {
-  if (Array.isArray(streams)) return streams;
-  if (streams && typeof streams === "object") {
-    return Object.keys(streams)
-      .sort((a, b) => Number(a) - Number(b))
-      .map((k) => streams[k])
-      .filter((v) => v && typeof v === "object");
-  }
-  return [];
-}
-
-function countMonthLive(monthNode) {
-  const totals = {
-    presence: 0,
-    chatMessages: 0,
-    emotes: 0,
-    channelPoints: 0,
-    clips: 0,
-    raids: 0,
-  };
-
-  for (const stream of normalizeStreams(monthNode?.streams)) {
-    if (stream?.presence?.seen) totals.presence += 1;
-
-    const chatMessages = Math.max(
-      0,
-      Math.floor(
-        toNum(
-          stream?.chat_message?.count ||
-            (stream?.chat_message?.sent ? 1 : 0),
-        ),
-      ),
-    );
-    totals.chatMessages += chatMessages;
-
-    totals.emotes += Math.max(0, Math.floor(toNum(stream?.emote?.count || 0)));
-
-    let channelPoints = Math.max(
-      0,
-      Math.floor(
-        toNum(
-          stream?.channel_points?.redemptions ||
-            stream?.channel_points?.count ||
-            0,
-        ),
-      ),
-    );
-    if (!channelPoints && stream?.channel_points?.used) channelPoints = 1;
-    totals.channelPoints += channelPoints;
-
-    totals.clips += Math.max(0, Math.floor(toNum(stream?.clips?.count || 0)));
-    if (stream?.raid?.participated) totals.raids += 1;
-  }
-
-  return totals;
 }
 
 function resolveQuestProgress(data, monthKey) {
@@ -268,8 +228,9 @@ function subLabel(data) {
   if (!data?.isStillSub && months <= 0) return "—";
   const status = data?.isStillSub ? "Actif" : "Ancien";
   const tier = data?.subTier ? ` • ${data.subTier}` : "";
+  const duration = months > 0 ? `${months} mois` : "Durée non connue";
   const last = data?.lastSubAt ? `\nDernier sub: ${formatDate(data.lastSubAt)}` : "";
-  return `${status}${tier}\n${months} mois${last}`;
+  return `**${status}**${tier}\n${duration}${last}`;
 }
 
 async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
@@ -281,8 +242,6 @@ async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
   const latestReward = await fetchLatestReward(db, profile);
 
   const monthKey = currentMonthKey(config?.timezone || "Europe/Warsaw");
-  const monthNode = data?.live_presence?.[monthKey] || {};
-  const liveTotals = countMonthLive(monthNode);
   const questProgress = resolveQuestProgress(data, monthKey);
   const topGame = topGameFromHistory(data?.games_history);
   const ownedCards = cardsArray(data).length;
@@ -297,50 +256,44 @@ async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
   );
 
   const embed = new EmbedBuilder()
-    .setColor("#FFD700")
-    .setTitle(`Profil de ${displayName}`)
+    .setColor("#F6C85F")
+    .setTitle("🌟 Profil communautaire")
     .setDescription(
-      rank > 0
-        ? `Classement WizeBot: **#${rank}**`
-        : "Classement WizeBot: **—**",
+      [
+        `**${displayName}**`,
+        `${rank > 0 ? `🏆 **#${rank}** au classement` : "🏆 Classement **—**"}`,
+        rankName && rankName !== "—" ? `✨ ${rankName}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n"),
     )
     .addFields(
       {
-        name: "WizeBot",
+        name: "🏆 Rang",
         value:
-          `Titre: **${valueOrDash(rankName)}**\n` +
-          `Niveau: **${formatNumber(level)}**\n` +
-          `EXP: **${formatNumber(data?.wizebotExp || 0)}**`,
+          `Niveau **${formatNumber(level)}**\n` +
+          `EXP **${formatNumber(data?.wizebotExp || 0)}**`,
         inline: true,
       },
       {
-        name: "Collection",
+        name: "🃏 Collection",
         value:
-          `Cartes: **${formatNumber(ownedCards)} / ${formatNumber(
+          `**${formatNumber(ownedCards)} / ${formatNumber(
             totalCardsSnap.size,
-          )}**\n` + `Victoires loterie: **${formatNumber(totalWins)}**`,
+          )}** cartes\n` + `**${formatNumber(totalWins)}** victoires`,
         inline: true,
       },
       {
-        name: `Quêtes ${monthKey}`,
+        name: `🎯 Quêtes • ${formatMonthLabel(monthKey)}`,
         value:
-          `Progression: **${formatPct(questProgress)}**\n` +
-          `Présences: **${formatNumber(liveTotals.presence)}** • Chat: **${formatNumber(
-            liveTotals.chatMessages,
-          )}**\n` +
-          `Emotes: **${formatNumber(liveTotals.emotes)}** • Points: **${formatNumber(
-            liveTotals.channelPoints,
-          )}**\n` +
-          `Clips: **${formatNumber(liveTotals.clips)}** • Raids: **${formatNumber(
-            liveTotals.raids,
-          )}**`,
+          `${formatProgressBar(questProgress)} **${formatPct(questProgress)}**`,
         inline: false,
       },
       {
-        name: "Discord",
+        name: "💬 Discord",
         value:
-          `Messages: **${formatNumber(data?.discord_count_message || 0)}**\n` +
-          `Top jeu: **${
+          `**${formatNumber(data?.discord_count_message || 0)}** messages\n` +
+          `Jeu favori: **${
             topGame
               ? `${topGame.name} (${formatNumber(topGame.count)})`
               : "—"
@@ -348,12 +301,12 @@ async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
         inline: true,
       },
       {
-        name: "Sub Twitch",
+        name: "⭐ Abonnement",
         value: subLabel(data),
         inline: true,
       },
       {
-        name: "Dernière récompense",
+        name: "🎁 Dernière récompense",
         value: formatReward(latestReward),
         inline: false,
       },
