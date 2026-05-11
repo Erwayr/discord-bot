@@ -2,11 +2,18 @@
 
 const { ActivityType, Events } = require("discord.js");
 const welcomeHandler = require("../script/welcomeHandler");
-const rankHandler = require("../script/rankHandler");
 const messageCountHandler = require("../script/messageCountHandler");
 const presenceHandler = require("../script/presenceHandler");
 const electionHandler = require("../script/electionHandler");
 const handleVoteChange = require("../script/handleVoteChange");
+const {
+  handleProfileInteraction,
+  handleProfileMessage,
+} = require("../script/profileHandler");
+const {
+  PROFILE_COMMAND_NAME,
+  registerProfileSlashCommand,
+} = require("./slashCommands");
 
 function registerDiscordEvents({
   client,
@@ -27,6 +34,9 @@ function registerDiscordEvents({
     }
 
     await twitchEventSub.subscribeAll();
+    await registerProfileSlashCommand({ client, config }).catch((e) =>
+      console.error("[slash] /profil registration failed:", e?.message || e),
+    );
 
     for (const guild of client.guilds.cache.values()) {
       try {
@@ -83,6 +93,12 @@ function registerDiscordEvents({
     handleVoteChange(r, u, false, db),
   );
 
+  client.on(Events.InteractionCreate, async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+    if (interaction.commandName !== PROFILE_COMMAND_NAME) return;
+    await handleProfileInteraction(interaction, db, config);
+  });
+
   client.on(Events.MessageCreate, async (message) => {
     if (!message.guild || message.author.bot) return;
 
@@ -118,7 +134,7 @@ function registerDiscordEvents({
     }
 
     if (message.content.trim() === "!rank") {
-      await rankHandler(message, db);
+      await handleProfileMessage(message, db, config);
     }
   });
 

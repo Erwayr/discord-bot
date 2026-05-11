@@ -16,6 +16,7 @@ const config = {
       process.env.clip_channel_id ||
       "839642015444762654",
     botToken: process.env.DISCORD_BOT_TOKEN,
+    guildId: process.env.DISCORD_GUILD_ID || "",
   },
 
   twitch: {
