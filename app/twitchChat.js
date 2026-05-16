@@ -189,7 +189,9 @@ function createTwitchChat({
       CHAT_MESSAGE_SCORE_CAP_PER_STREAM
     ) {
       try {
-        const chatProgress = await questStore.noteChatMessage(login, streamId);
+        const chatProgress = await questStore.noteChatMessage(login, streamId, 1, {
+          startedAt: liveState.startedAt,
+        });
         const nextCount = Math.max(
           Number(chatMessageCountsByLogin.get(login) || 0),
           Number(chatProgress?.count || 0),
@@ -244,7 +246,9 @@ function createTwitchChat({
           )}"`,
         );
         try {
-          await questStore.noteEmoteUsage(login, streamId, incByName);
+          await questStore.noteEmoteUsage(login, streamId, incByName, {
+            startedAt: liveState.startedAt,
+          });
           console.log(
             `[emotes→DB] OK fallback-name | ${login} +${incByName} stream=${streamId}`,
           );
@@ -304,7 +308,9 @@ function createTwitchChat({
       `[emotes] ${login} +${inc} (ids=${idsLabel}) msg="${msg.slice(0, 80)}"`,
     );
     try {
-      await questStore.noteEmoteUsage(login, streamId, inc);
+      await questStore.noteEmoteUsage(login, streamId, inc, {
+        startedAt: liveState.startedAt,
+      });
       console.log(`[emotes→DB] OK | ${login} +${inc} stream=${streamId}`);
     } catch (e) {
       console.error(`[emotes→DB] FAIL | ${login} +${inc} stream=${streamId}`);

@@ -1,6 +1,5 @@
 "use strict";
 
-const admin = require("firebase-admin");
 const { makeHelix } = require("../helper/helix");
 /**
  * @param {Object} deps
@@ -29,12 +28,6 @@ function createLivePresenceTicker({
   let CURRENT_STREAM_ID = null;
   let CURRENT_STARTED_AT = null;
   const COUNTED_LOGINS_THIS_STREAM = new Set();
-
-  function monthKeyFrom(date = new Date()) {
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-    return `${y}-${m}`;
-  }
 
   async function getCurrentStreamInfo() {
     const { data } = await helix({
@@ -70,33 +63,6 @@ function createLivePresenceTicker({
     } while (cursor && guard < 20);
 
     return logins;
-  }
-
-  async function incrementMonthlyPresenceIfNeeded(login, streamId) {
-    const ref = db.collection("followers_all_time").doc(login);
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) return;
-
-      const data = snap.data() || {};
-      const monthKey = monthKeyFrom();
-      const presence = { ...(data.live_presence || {}) };
-      const node = {
-        count: 0,
-        last_stream_id: null,
-        last_increment_at: null,
-        ...(presence[monthKey] || {}),
-      };
-
-      if (node.last_stream_id === streamId) return;
-
-      node.count = (node.count || 0) + 1;
-      node.last_stream_id = streamId;
-      node.last_increment_at = admin.firestore.Timestamp.now();
-      presence[monthKey] = node;
-
-      tx.update(ref, { live_presence: presence });
-    });
   }
 
   async function runTick() {
@@ -151,7 +117,6 @@ function createLivePresenceTicker({
         await Promise.all(
           slice.map(async (login) => {
             try {
-              await incrementMonthlyPresenceIfNeeded(login, CURRENT_STREAM_ID);
               await store.notePresence(login, CURRENT_STREAM_ID, {
                 startedAt: CURRENT_STARTED_AT,
                 context: null,

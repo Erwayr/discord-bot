@@ -112,7 +112,9 @@ function createClipPoller({
         const login = logins.get(creatorId);
         if (!login) continue;
         for (const clipId of clipIds) {
-          await questStore.noteClipCreated(login, streamId, clipId);
+          await questStore.noteClipCreated(login, streamId, clipId, {
+            startedAt,
+          });
         }
       }
 

@@ -203,9 +203,9 @@ function createTwitchEventSub({
 
       try {
         const login = (r.user_login || r.user_name || "").toLowerCase();
-        const { streamId } = livePresenceTick.getLiveStreamState();
+        const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
         if (login && streamId) {
-          await questStore.noteChannelPoints(login, streamId, 1);
+          await questStore.noteChannelPoints(login, streamId, 1, { startedAt });
           console.log(`✅ ChannelPoints +1 → ${login} (stream ${streamId})`);
         } else {
           console.log(
@@ -290,7 +290,7 @@ function createTwitchEventSub({
 
     if (subscription.type === "channel.raid") {
       try {
-        const { streamId } = livePresenceTick.getLiveStreamState();
+        const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
         if (!streamId) return res.sendStatus(200);
 
         const accessToken = await tokenManager.getAccessToken();
@@ -325,7 +325,7 @@ function createTwitchEventSub({
 
         await Promise.all(
           logins.map((login) =>
-            questStore.noteRaidParticipation(login, streamId),
+            questStore.noteRaidParticipation(login, streamId, { startedAt }),
           ),
         );
       } catch (e) {

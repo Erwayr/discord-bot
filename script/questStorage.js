@@ -3,6 +3,7 @@
 
 const admin = require("firebase-admin");
 const CHAT_MESSAGE_CAP_PER_STREAM = 10;
+const STREAM_RESTART_MERGE_WINDOW_MS = 3 * 60 * 60 * 1000;
 
 function monthKeyUTC(d = new Date()) {
   const y = d.getUTCFullYear();
@@ -53,6 +54,92 @@ function streamDayKey(entry) {
   );
 }
 
+function timestampToMs(value) {
+  const d = toDateMaybe(value);
+  return d ? d.getTime() : null;
+}
+
+function normalizeStreamId(streamId) {
+  return String(streamId || "").trim();
+}
+
+function streamIdsFor(entry) {
+  const out = new Set();
+  const mainId = normalizeStreamId(entry?.stream_id);
+  if (mainId) out.add(mainId);
+  if (Array.isArray(entry?.stream_ids)) {
+    entry.stream_ids.forEach((id) => {
+      const safeId = normalizeStreamId(id);
+      if (safeId) out.add(safeId);
+    });
+  }
+  return out;
+}
+
+function streamHasId(entry, streamId) {
+  const safeStreamId = normalizeStreamId(streamId);
+  return !!safeStreamId && streamIdsFor(entry).has(safeStreamId);
+}
+
+function rememberStreamId(entry, streamId) {
+  const safeStreamId = normalizeStreamId(streamId);
+  if (!entry || !safeStreamId) return;
+
+  const ids = streamIdsFor(entry);
+  if (!entry.stream_id) entry.stream_id = safeStreamId;
+  ids.add(normalizeStreamId(entry.stream_id));
+  ids.add(safeStreamId);
+
+  if (ids.size > 1) {
+    entry.stream_ids = Array.from(ids);
+  }
+}
+
+function latestKnownActivityMs(entry) {
+  if (!entry) return null;
+  const candidates = [
+    entry?.ended_at,
+    entry?.presence?.last_at,
+    entry?.chat_message?.last_at,
+    entry?.emote?.last_at,
+    entry?.clips?.last_at,
+    entry?.channel_points?.last_at,
+    entry?.raid?.at,
+    entry?.started_at,
+    entry?.at,
+    entry?.date,
+    entry?.timestamp,
+  ];
+
+  let latest = null;
+  for (const candidate of candidates) {
+    const ms = timestampToMs(candidate);
+    if (ms == null) continue;
+    latest = latest == null ? ms : Math.max(latest, ms);
+  }
+  return latest;
+}
+
+function findRestartMergeIndex(streams, dayKey, startedDate) {
+  if (!dayKey || !startedDate) return -1;
+
+  const startedMs = startedDate.getTime();
+  let best = { idx: -1, gapMs: Infinity };
+
+  streams.forEach((stream, idx) => {
+    if (streamDayKey(stream) !== dayKey) return;
+    const lastActivityMs = latestKnownActivityMs(stream);
+    if (lastActivityMs == null || lastActivityMs > startedMs) return;
+
+    const gapMs = startedMs - lastActivityMs;
+    if (gapMs < STREAM_RESTART_MERGE_WINDOW_MS && gapMs < best.gapMs) {
+      best = { idx, gapMs };
+    }
+  });
+
+  return best.idx;
+}
+
 function ensureMonthLayer(livePresence, monthKey) {
   const month = { ...(livePresence[monthKey] || {}) };
   month.streams = Array.isArray(month.streams) ? [...month.streams] : [];
@@ -79,11 +166,7 @@ function pickContext(ctx = {}) {
 }
 
 function findStreamIndex(streams, streamId) {
-  return streams.findIndex((s) => s && s.stream_id === streamId);
-}
-
-function findStreamIndexByDay(streams, dayKey) {
-  return streams.findIndex((s) => streamDayKey(s) === dayKey);
+  return streams.findIndex((s) => streamHasId(s, streamId));
 }
 
 /**
@@ -111,18 +194,16 @@ function createQuestStorage(db) {
     const startedDate = toDateMaybe(startedAt);
     const anchorDate = startedDate || new Date();
     const dayKey = dayKeyUTC(anchorDate);
-    const dayIdx = findStreamIndexByDay(month.streams, dayKey);
-    if (dayIdx >= 0) {
-      const entry = month.streams[dayIdx];
-      const streamChanged = streamId && entry.stream_id !== streamId;
-      if (streamChanged) {
-        entry.stream_id = streamId;
-      }
+    const restartIdx = findRestartMergeIndex(
+      month.streams,
+      dayKey,
+      startedDate
+    );
+    if (restartIdx >= 0) {
+      const entry = month.streams[restartIdx];
+      rememberStreamId(entry, streamId);
       if (!entry.day_key) entry.day_key = dayKey;
-      if (startedDate && (!entry.started_at || streamChanged)) {
-        entry.started_at = admin.firestore.Timestamp.fromDate(startedDate);
-      }
-      return { idx: dayIdx, created: false };
+      return { idx: restartIdx, created: false };
     }
 
     const entry = {
@@ -180,7 +261,7 @@ function createQuestStorage(db) {
     });
   }
 
-  async function noteEmoteUsage(login, streamId, inc = 1) {
+  async function noteEmoteUsage(login, streamId, inc = 1, { startedAt } = {}) {
     const docId = login.toLowerCase();
     const ref = col.doc(docId);
     const mk = monthKeyUTC();
@@ -206,7 +287,8 @@ function createQuestStorage(db) {
           tx,
           ref,
           month,
-          streamId
+          streamId,
+          startedAt
         );
         const entry = month.streams[idx];
         const before = entry.emote?.count || 0;
@@ -238,7 +320,7 @@ function createQuestStorage(db) {
       });
   }
 
-  async function noteChatMessage(login, streamId, inc = 1) {
+  async function noteChatMessage(login, streamId, inc = 1, { startedAt } = {}) {
     const docId = login.toLowerCase();
     const ref = col.doc(docId);
     const mk = monthKeyUTC();
@@ -257,7 +339,13 @@ function createQuestStorage(db) {
       const lp = { ...(data?.live_presence || {}) };
       const month = ensureMonthLayer(lp, mk);
 
-      const { idx } = await ensureStreamEntry(tx, ref, month, streamId);
+      const { idx } = await ensureStreamEntry(
+        tx,
+        ref,
+        month,
+        streamId,
+        startedAt,
+      );
       const entry = month.streams[idx];
 
       entry.chat_message = {
@@ -291,7 +379,12 @@ function createQuestStorage(db) {
     };
   }
 
-  async function noteClipCreated(login, streamId, clipId = null) {
+  async function noteClipCreated(
+    login,
+    streamId,
+    clipId = null,
+    { startedAt } = {}
+  ) {
     const ref = col.doc(login);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -302,7 +395,13 @@ function createQuestStorage(db) {
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
 
-      const { idx } = await ensureStreamEntry(tx, ref, month, streamId);
+      const { idx } = await ensureStreamEntry(
+        tx,
+        ref,
+        month,
+        streamId,
+        startedAt
+      );
       const entry = month.streams[idx];
 
       entry.clips.count = (entry.clips.count || 0) + 1;
@@ -314,7 +413,12 @@ function createQuestStorage(db) {
     });
   }
 
-  async function noteChannelPoints(login, streamId, redemptionsInc = 1) {
+  async function noteChannelPoints(
+    login,
+    streamId,
+    redemptionsInc = 1,
+    { startedAt } = {}
+  ) {
     const ref = col.doc(login.toLowerCase());
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -333,7 +437,13 @@ function createQuestStorage(db) {
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
 
-      const { idx } = await ensureStreamEntry(tx, ref, month, streamId);
+      const { idx } = await ensureStreamEntry(
+        tx,
+        ref,
+        month,
+        streamId,
+        startedAt
+      );
       const entry = month.streams[idx];
 
       entry.channel_points.used = true;
@@ -346,7 +456,7 @@ function createQuestStorage(db) {
     });
   }
 
-  async function noteRaidParticipation(login, streamId) {
+  async function noteRaidParticipation(login, streamId, { startedAt } = {}) {
     const ref = col.doc(login);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -357,7 +467,13 @@ function createQuestStorage(db) {
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
 
-      const { idx } = await ensureStreamEntry(tx, ref, month, streamId);
+      const { idx } = await ensureStreamEntry(
+        tx,
+        ref,
+        month,
+        streamId,
+        startedAt
+      );
       const entry = month.streams[idx];
 
       if (!entry.raid.participated) {
