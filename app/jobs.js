@@ -92,20 +92,6 @@ function createJobs({
 
     cron.schedule(config.cron.tokenKeepalive, async () => {
       try {
-        const snap = await db.doc("settings/twitch_moderator").get();
-        const s = snap.exists ? snap.data() : null;
-        if (
-          s?.issuer_client_id &&
-          s.issuer_client_id !== config.twitch.clientId
-        ) {
-          console.error(
-            "❌ Client-ID mismatch: token lié à",
-            s.issuer_client_id,
-            "mais env TWITCH_CLIENT_ID =",
-            config.twitch.clientId,
-            "→ refais /auth/twitch/start avec le bon client ou corrige l'env.",
-          );
-        }
         await authHealth.ensureValidUserAccessToken({
           source: "cron:token_keepalive",
         });

@@ -69,7 +69,7 @@ const config = {
 
   cron: {
     pollClips: "*/5 * * * *",
-    tokenKeepalive: "*/15 * * * *",
+    tokenKeepalive: process.env.CRON_TOKEN_KEEPALIVE || "0 */6 * * *",
     livePresence: "*/2 * * * *",
     birthdayRefresh: "0 0 * * *",
     assignOldMemberCards: "0 0 * * *",

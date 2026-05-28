@@ -17,6 +17,8 @@ function createTokenManager(
 ) {
   const ref = db.doc(docPath);
   let inFlight = null;
+  let cachedAccessToken = null;
+  let cachedAccessTokenExpiresAt = 0;
 
   function asTypedError(message, code, extra) {
     const err = new Error(message);
@@ -35,6 +37,8 @@ function createTokenManager(
   }
 
   async function invalidateAccessToken() {
+    cachedAccessToken = null;
+    cachedAccessTokenExpiresAt = 0;
     await writeDoc({ access_token_expires_at: 0 });
   }
 
@@ -80,6 +84,9 @@ function createTokenManager(
         oauth_error: null,
       });
 
+      cachedAccessToken = access_token;
+      cachedAccessTokenExpiresAt = access_token_expires_at;
+
       return access_token;
     } catch (e) {
       const status = e?.response?.data?.status || e?.response?.status;
@@ -105,6 +112,8 @@ function createTokenManager(
           access_token_expires_at: 0,
           oauth_error: { at: Date.now(), status, message },
         });
+        cachedAccessToken = null;
+        cachedAccessTokenExpiresAt = 0;
         throw asTypedError(
           "Invalid refresh token - reconsent required.",
           "INVALID_REFRESH_TOKEN",
@@ -121,14 +130,25 @@ function createTokenManager(
   }
 
   async function getAccessToken() {
-    const initial = await readDoc();
     const now = Date.now();
+
+    if (
+      cachedAccessToken &&
+      cachedAccessTokenExpiresAt &&
+      now < cachedAccessTokenExpiresAt - expirySkewMs
+    ) {
+      return cachedAccessToken;
+    }
+
+    const initial = await readDoc();
 
     if (
       initial.access_token &&
       initial.access_token_expires_at &&
       now < initial.access_token_expires_at - expirySkewMs
     ) {
+      cachedAccessToken = initial.access_token;
+      cachedAccessTokenExpiresAt = Number(initial.access_token_expires_at) || 0;
       return initial.access_token;
     }
 
@@ -142,6 +162,17 @@ function createTokenManager(
     if (!inFlight) {
       inFlight = (async () => {
         const fresh = await readDoc();
+        const freshExpiresAt = Number(fresh.access_token_expires_at) || 0;
+        if (
+          fresh.access_token &&
+          freshExpiresAt &&
+          Date.now() < freshExpiresAt - expirySkewMs
+        ) {
+          cachedAccessToken = fresh.access_token;
+          cachedAccessTokenExpiresAt = freshExpiresAt;
+          return fresh.access_token;
+        }
+
         const refreshToken = fresh.refresh_token;
         if (!refreshToken) {
           throw asTypedError(
