@@ -362,7 +362,7 @@ function formatRewardParts(reward) {
   const bonusPct = toSafeCount(reward?.bonusPct);
   const popsReward = toSafeCount(reward?.popsReward);
   if (bonusPct > 0) parts.push(`+${bonusPct}% quetes`);
-  if (popsReward > 0) parts.push(`+${popsReward} POPS`);
+  if (popsReward > 0) parts.push(`+${popsReward} ♦️`);
   return parts.join(", ");
 }
 
@@ -373,22 +373,21 @@ function formatRecapRewardsBlock(rewardResult) {
   const visibleRewards = rewards.filter((reward) => formatRewardParts(reward));
   if (!visibleRewards.length) return [];
 
-  let title = "🎁 Gains attribues:";
+  const lines = [];
   if (rewardResult?.reason === "MANUAL_PREVIEW") {
-    title = "🎁 Apercu manuel - gains non appliques:";
+    lines.push("🧪 Apercu manuel - gains non appliques");
   } else if (rewardResult?.reason === "ALREADY_AWARDED") {
-    title = "🎁 Gains deja attribues cette semaine:";
+    lines.push("🎁 Gains deja attribues cette semaine");
   } else if (!rewardResult?.applied) {
-    title = "🎁 Gains non appliques:";
+    lines.push("🎁 Gains non appliques");
   }
 
-  return [
-    title,
-    ...visibleRewards.map((reward) => {
+  return lines.concat(
+    visibleRewards.map((reward) => {
       const rankIndex = Math.max(0, toSafeCount(reward.rank) - 1);
       return `${rankBadge(rankIndex)} ${winnerMention(reward.row || reward)}: ${formatRewardParts(reward)}`;
     }),
-  ];
+  );
 }
 
 function formatHeaderText(headerText, range) {
@@ -415,8 +414,7 @@ function formatRecapMessage({ ranking, headerText, range, rewardResult }) {
     return lines.join("\n");
   }
 
-  const winnerRow = ranking[0];
-  lines.push(`🏆 Gagnant de la semaine: ${winnerMention(winnerRow)}`);
+  lines.push("🏆 Voici les Gagnants :");
   const rewardLines = formatRecapRewardsBlock(rewardResult);
   if (rewardLines.length) {
     lines.push(...rewardLines);

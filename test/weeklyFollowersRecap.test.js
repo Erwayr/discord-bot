@@ -307,7 +307,7 @@ function createRecap(db, client) {
   });
 }
 
-test("manual preview uses current week and shows top 3 POPS without writes", async () => {
+test("manual preview uses current week and shows top 3 ruby rewards without writes", async () => {
   const db = buildDb();
   const client = createFakeClient();
   const sendWeeklyFollowersRecap = createRecap(db, client);
@@ -331,10 +331,13 @@ test("manual preview uses current week and shows top 3 POPS without writes", asy
 
   const content = client.sent[0].payload.content;
   assert.match(content, /semaine en cours/);
+  assert.match(content, /Voici les Gagnants/);
   assert.match(content, /Apercu manuel - gains non appliques/);
-  assert.match(content, /\+100 POPS/);
-  assert.match(content, /\+50 POPS/);
-  assert.match(content, /\+25 POPS/);
+  assert.match(content, /\+100 ♦️/);
+  assert.match(content, /\+50 ♦️/);
+  assert.match(content, /\+25 ♦️/);
+  assert.doesNotMatch(content, /Gagnant de la semaine/);
+  assert.doesNotMatch(content, /POPS/);
   assert.doesNotMatch(content, /444444444444444444/);
 });
 
@@ -404,7 +407,9 @@ test("recap works when fewer than three users are ranked", async () => {
   assert.equal(result.rewardResult.rewards[0].popsReward, 100);
 
   const content = client.sent[0].payload.content;
-  assert.match(content, /\+100 POPS/);
-  assert.doesNotMatch(content, /\+50 POPS/);
+  assert.match(content, /Voici les Gagnants/);
+  assert.match(content, /\+100 ♦️/);
+  assert.doesNotMatch(content, /\+50 ♦️/);
+  assert.doesNotMatch(content, /POPS/);
   assert.equal(db.data("followers_all_time/previous_one").pops.balance, 100);
 });
