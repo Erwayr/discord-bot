@@ -20,10 +20,34 @@ const SCORE_WEIGHTS = Object.freeze({
 });
 
 const DEFAULT_STATE_DOC_PATH = "settings/weekly_recap_state";
+const POPS_SCHEMA_VERSION = 1;
+const DEFAULT_WINNER_POPS_REWARD = 100;
+const WEEKLY_RECAP_POPS_TRANSACTION_TYPE = "weekly_recap_winner";
 
 function toNum(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function toSafeCount(value) {
+  return Math.max(0, Math.floor(toNum(value)));
+}
+
+function normalizePopsWallet(source = {}) {
+  const wallet =
+    source?.pops && typeof source.pops === "object" ? source.pops : source;
+  const balance = toSafeCount(wallet?.balance);
+  const lifetimeEarned = Math.max(balance, toSafeCount(wallet?.lifetimeEarned));
+
+  return {
+    balance,
+    lifetimeEarned,
+    schemaVersion: Number(wallet?.schemaVersion || POPS_SCHEMA_VERSION),
+  };
+}
+
+function weeklyRecapPopsTransactionId(weekKey) {
+  return `weekly_recap_${String(weekKey || "").trim()}`;
 }
 
 function normalizeLogin(value) {
@@ -281,6 +305,29 @@ function rankBadge(index) {
   return "🐺";
 }
 
+function formatRecapBonusLine(bonus) {
+  const rewardParts = [];
+  const bonusPct = toSafeCount(bonus?.bonusPct);
+  const popsReward = toSafeCount(bonus?.popsReward);
+
+  if (bonusPct > 0) {
+    rewardParts.push(`+${bonusPct}% d'accomplissement des quetes`);
+  }
+  if (popsReward > 0) {
+    rewardParts.push(`♦️ +${popsReward} POPS`);
+  }
+  if (!rewardParts.length) return "";
+
+  const rewardText = rewardParts.join(" et ");
+  if (bonus?.applied) {
+    return `🎁 Bonus gagnant: ${rewardText}`;
+  }
+  if (bonus?.reason === "ALREADY_AWARDED") {
+    return `🎁 Bonus gagnant deja attribue cette semaine (${rewardText})`;
+  }
+  return `🎁 Bonus gagnant non applique cette semaine (${rewardText})`;
+}
+
 function formatRecapMessage({ ranking, headerText, range, bonus }) {
   const lines = [];
   lines.push(
@@ -301,13 +348,8 @@ function formatRecapMessage({ ranking, headerText, range, bonus }) {
 
   const winnerRow = ranking[0];
   lines.push(`🏆 Gagnant de la semaine: ${winnerMention(winnerRow)}`);
-  if (bonus?.applied) {
-    lines.push(`🎁 Bonus : +${bonus.bonusPct}% d'accomplissement des quetes`);
-  } else if (bonus?.reason === "ALREADY_AWARDED") {
-    lines.push(`🎁 Bonus deja attribue cette semaine (+${bonus.bonusPct}%)`);
-  } else if (bonus?.bonusPct > 0) {
-    lines.push(`🎁 Bonus non applique cette semaine`);
-  }
+  const bonusLine = formatRecapBonusLine(bonus);
+  if (bonusLine) lines.push(bonusLine);
   lines.push("");
 
   lines.push(`Top ${ranking.length}:`);
