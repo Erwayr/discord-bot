@@ -40,6 +40,16 @@ const WEEKLY_PLANNING_DAY_LABELS_FR = Object.freeze({
   sunday: "Dimanche",
 });
 
+const WEEKLY_PLANNING_DAY_EMOJIS = Object.freeze({
+  monday: "🌙",
+  tuesday: "⚡",
+  wednesday: "🎮",
+  thursday: "✨",
+  friday: "🚀",
+  saturday: "🎉",
+  sunday: "☕",
+});
+
 function trimText(value) {
   return String(value ?? "").trim();
 }
@@ -109,6 +119,14 @@ function formatDateLabel(date, timeZone) {
   }).format(date);
 }
 
+function formatShortDateLabel(date, timeZone) {
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone,
+    day: "2-digit",
+    month: "2-digit",
+  }).format(date);
+}
+
 function formatPlanningDateLabel(dayKey) {
   const normalized = normalizePlanningDate(dayKey);
   if (!normalized) return "";
@@ -160,6 +178,22 @@ function normalizePlanningDate(value) {
     return null;
   }
   return raw;
+}
+
+function minutesInTimezone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const rawHour = Number(parts.find((part) => part.type === "hour")?.value || 0);
+  const rawMinute = Number(
+    parts.find((part) => part.type === "minute")?.value || 0,
+  );
+  const hour = Number.isFinite(rawHour) ? rawHour % 24 : 0;
+  const minute = Number.isFinite(rawMinute) ? rawMinute : 0;
+  return hour * 60 + minute;
 }
 
 function planningTimeToMinutes(value) {
@@ -241,11 +275,58 @@ function hashWeeklyPlanning(planning) {
     .slice(0, 16);
 }
 
-function buildPlanningDescription(planning, range) {
-  const lines = [
-    `Semaine du **${range.startLabel}** au **${range.endLabel}**`,
-  ];
-  let activeSlots = 0;
+function getPlanningCounts(planning) {
+  let activeDays = 0;
+  let totalSlots = 0;
+
+  WEEKLY_PLANNING_DAY_ORDER.forEach((dayKey) => {
+    const count = Array.isArray(planning?.days?.[dayKey])
+      ? planning.days[dayKey].length
+      : 0;
+    if (count > 0) activeDays += 1;
+    totalSlots += count;
+  });
+
+  return { activeDays, totalSlots };
+}
+
+function findNextPlanningSlot(planning, range, now = new Date()) {
+  const timezone = planning?.timezone || WEEKLY_PLANNING_DEFAULT_TIMEZONE;
+  const todayKey = dayKeyInTimezone(now, timezone);
+  const nowMinutes = minutesInTimezone(now, timezone);
+
+  for (let index = 0; index < WEEKLY_PLANNING_DAY_ORDER.length; index += 1) {
+    const dayKey = WEEKLY_PLANNING_DAY_ORDER[index];
+    const slots = Array.isArray(planning?.days?.[dayKey])
+      ? planning.days[dayKey]
+      : [];
+    if (!slots.length) continue;
+
+    const dayDate = addUtcDays(range.startDate, index);
+    const datedDayKey = dayKeyInTimezone(dayDate, timezone);
+    if (datedDayKey < todayKey) continue;
+
+    for (const slot of slots) {
+      const startMinutes = planningTimeToMinutes(slot.startTime || slot.time);
+      if (datedDayKey === todayKey && startMinutes < nowMinutes) continue;
+      return { dayKey, dayDate, slot };
+    }
+  }
+
+  return null;
+}
+
+function formatPlanningNextSlot(nextSlot, timezone) {
+  if (!nextSlot?.slot) return "";
+  const dayLabel = WEEKLY_PLANNING_DAY_LABELS_FR[nextSlot.dayKey] || nextSlot.dayKey;
+  const dateLabel = formatShortDateLabel(nextSlot.dayDate, timezone);
+  const timeLabel = formatPlanningSlotTime(nextSlot.slot);
+  const title = sanitizeDiscordText(nextSlot.slot.title, "Live");
+  return `Prochain rendez-vous : **${dayLabel} ${dateLabel}** à \`${timeLabel}\` avec **${title}**.`;
+}
+
+function buildPlanningFields(planning, range) {
+  const fields = [];
 
   WEEKLY_PLANNING_DAY_ORDER.forEach((dayKey, index) => {
     const slots = Array.isArray(planning?.days?.[dayKey])
@@ -253,22 +334,58 @@ function buildPlanningDescription(planning, range) {
       : [];
     if (!slots.length) return;
 
-    activeSlots += slots.length;
     const dayDate = addUtcDays(range.startDate, index);
     const dayLabel = WEEKLY_PLANNING_DAY_LABELS_FR[dayKey] || dayKey;
-    lines.push("");
-    lines.push(`**${dayLabel} ${formatDateLabel(dayDate, planning.timezone)}**`);
-    slots.forEach((slot) => {
-      const time = formatPlanningSlotTime(slot);
-      const title = sanitizeDiscordText(slot.title, "Live");
-      const note = sanitizeDiscordText(slot.note);
-      lines.push(`• \`${time}\` ${title}${note ? ` — ${note}` : ""}`);
+    const emoji = WEEKLY_PLANNING_DAY_EMOJIS[dayKey] || "•";
+    const value = slots
+      .map((slot) => {
+        const time = formatPlanningSlotTime(slot);
+        const title = sanitizeDiscordText(slot.title, "Live");
+        const note = sanitizeDiscordText(slot.note);
+        return note
+          ? `\`${time}\` **${title}**\n> ${note}`
+          : `\`${time}\` **${title}**`;
+      })
+      .join("\n");
+
+    fields.push({
+      name: `${emoji} ${dayLabel} ${formatShortDateLabel(dayDate, planning.timezone)}`,
+      value: truncateText(value || "Jour off.", 1024),
+      inline: false,
     });
   });
 
-  if (!activeSlots) {
-    lines.push("");
-    lines.push("Aucun stream prévu pour le moment.");
+  if (!fields.length) {
+    fields.push({
+      name: "Cette semaine",
+      value:
+        "Aucun stream prévu pour le moment. Le planning peut encore bouger, garde un oeil sur le site.",
+      inline: false,
+    });
+  }
+
+  return fields.slice(0, 24);
+}
+
+function buildPlanningDescription(planning, range, { now = new Date() } = {}) {
+  const { activeDays, totalSlots } = getPlanningCounts(planning);
+  const nextSlot = findNextPlanningSlot(planning, range, now);
+  const lines = [
+    `Du **${range.startLabel}** au **${range.endLabel}**`,
+  ];
+
+  if (totalSlots > 0) {
+    const dayWord = activeDays > 1 ? "jours" : "jour";
+    const slotWord = totalSlots > 1 ? "rendez-vous" : "rendez-vous";
+    lines.push(
+      `Cette semaine, on se retrouve pour **${totalSlots} ${slotWord}** sur **${activeDays} ${dayWord}**.`,
+    );
+    const nextLabel = formatPlanningNextSlot(nextSlot, planning.timezone);
+    if (nextLabel) lines.push(nextLabel);
+  } else {
+    lines.push(
+      "Aucun stream n'est encore posé. Je te partage le planning dès qu'il bouge.",
+    );
   }
 
   if (planning?.monthlyDrawDate) {
@@ -279,7 +396,7 @@ function buildPlanningDescription(planning, range) {
     }
   }
 
-  return truncateText(lines.join("\n"), 3900);
+  return truncateText(lines.join("\n"), 1500);
 }
 
 function buildPlanningDraft(rawPlanning, { now = new Date(), timeZone } = {}) {
@@ -287,8 +404,9 @@ function buildPlanningDraft(rawPlanning, { now = new Date(), timeZone } = {}) {
   const effectiveTimeZone = trimText(timeZone) || planning.timezone;
   const range = getPlanningWeekRange(effectiveTimeZone, now);
   const planningHash = hashWeeklyPlanning(planning);
-  const description = buildPlanningDescription(planning, range);
-  const title = "Planning de la semaine";
+  const description = buildPlanningDescription(planning, range, { now });
+  const fields = buildPlanningFields(planning, range);
+  const title = "🗓️ Planning de la semaine";
   const content = `${title}\n\n${description}`;
 
   return {
@@ -298,6 +416,7 @@ function buildPlanningDraft(rawPlanning, { now = new Date(), timeZone } = {}) {
     planningHash,
     title,
     description,
+    fields,
     content,
   };
 }
@@ -355,19 +474,22 @@ function buildPlanningMessagePayload(
   { test = false, review = false, disabled = false } = {},
 ) {
   const embed = new EmbedBuilder()
-    .setTitle(test ? "TEST - Planning de la semaine" : draft.title)
+    .setTitle(test ? "🧪 TEST - Planning de la semaine" : draft.title)
     .setDescription(draft.description)
     .setColor(test ? 0xf59e0b : review ? 0x60a5fa : 0x8b5cf6)
     .setFooter({
-      text: `Semaine ${draft.range.startKey} -> ${draft.range.endKey}`,
+      text: `Planning Erwayr • ${draft.range.startKey} -> ${draft.range.endKey}`,
     })
     .setTimestamp(new Date());
+  if (Array.isArray(draft.fields) && draft.fields.length) {
+    embed.addFields(draft.fields);
+  }
 
   const content = test
-    ? "🧪 **TEST - non publié**"
+    ? "🧪 **TEST - non publié**\nVoici le rendu qui serait envoyé dans le canal annonces."
     : review
-      ? "📝 **Brouillon planning à valider**"
-      : "🗓️ **Planning de la semaine**";
+      ? "📝 **Brouillon planning à valider**\nClique sur **Valider** pour publier, ou **Refuser** si tu veux modifier le site avant."
+      : "🗓️ **Planning de la semaine d'Erwayr**";
 
   return {
     content,

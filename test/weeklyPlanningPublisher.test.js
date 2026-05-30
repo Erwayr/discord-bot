@@ -227,7 +227,8 @@ test("test payload is marked non published and has no buttons", () => {
 
   assert.match(payload.content, /TEST - non publié/);
   assert.equal(payload.components.length, 0);
-  assert.match(payload.embeds[0].data.description, /Aucun stream prévu/);
+  assert.match(payload.embeds[0].data.description, /Aucun stream/);
+  assert.match(payload.embeds[0].data.fields[0].value, /planning peut encore bouger/);
 });
 
 test("preview creation is idempotent for the same week and planning hash", async () => {
