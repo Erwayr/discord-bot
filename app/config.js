@@ -88,6 +88,27 @@ const config = {
       ),
     ),
     bonusPct: Number(process.env.WEEKLY_RECAP_BONUS_PCT || 10),
+    rankRewards: [
+      {
+        rank: 1,
+        bonusPct: Number(
+          process.env.WEEKLY_RECAP_RANK1_BONUS_PCT ||
+            process.env.WEEKLY_RECAP_BONUS_PCT ||
+            10,
+        ),
+        popsReward: Number(process.env.WEEKLY_RECAP_RANK1_POPS || 100),
+      },
+      {
+        rank: 2,
+        bonusPct: Number(process.env.WEEKLY_RECAP_RANK2_BONUS_PCT || 5),
+        popsReward: Number(process.env.WEEKLY_RECAP_RANK2_POPS || 50),
+      },
+      {
+        rank: 3,
+        bonusPct: Number(process.env.WEEKLY_RECAP_RANK3_BONUS_PCT || 2),
+        popsReward: Number(process.env.WEEKLY_RECAP_RANK3_POPS || 25),
+      },
+    ],
   },
 
   timing: {

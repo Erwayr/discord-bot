@@ -125,6 +125,7 @@ function registerDiscordEvents({
         await sendWeeklyFollowersRecap({
           channelId: config.discord.logChannelId,
           applyRewards: false,
+          rangeMode: "current",
         });
         await message.react("\u2705").catch(() => {});
       } catch (e) {

@@ -21,8 +21,15 @@ const SCORE_WEIGHTS = Object.freeze({
 
 const DEFAULT_STATE_DOC_PATH = "settings/weekly_recap_state";
 const POPS_SCHEMA_VERSION = 1;
-const DEFAULT_WINNER_POPS_REWARD = 100;
 const WEEKLY_RECAP_POPS_TRANSACTION_TYPE = "weekly_recap_winner";
+const WEEKLY_RECAP_POPS_TRANSACTION_SOURCE = "weekly_recap";
+const WEEK_RANGE_CURRENT = "current";
+const WEEK_RANGE_PREVIOUS = "previous";
+const DEFAULT_RANK_REWARDS = Object.freeze([
+  { rank: 1, bonusPct: 10, popsReward: 100 },
+  { rank: 2, bonusPct: 5, popsReward: 50 },
+  { rank: 3, bonusPct: 2, popsReward: 25 },
+]);
 
 function toNum(value) {
   const n = Number(value);
@@ -46,8 +53,9 @@ function normalizePopsWallet(source = {}) {
   };
 }
 
-function weeklyRecapPopsTransactionId(weekKey) {
-  return `weekly_recap_${String(weekKey || "").trim()}`;
+function weeklyRecapPopsTransactionId(weekKey, rank) {
+  const safeRank = Math.max(1, Math.floor(toNum(rank) || 1));
+  return `weekly_recap_${String(weekKey || "").trim()}_rank_${safeRank}`;
 }
 
 function normalizeLogin(value) {
@@ -205,6 +213,29 @@ function getPreviousWeekRange(timeZone, now = new Date()) {
   };
 }
 
+function getWeeklyRange(timeZone, mode = WEEK_RANGE_PREVIOUS, now = new Date()) {
+  const rangeMode = mode === WEEK_RANGE_CURRENT ? WEEK_RANGE_CURRENT : WEEK_RANGE_PREVIOUS;
+  const weekday = weekdayInTimezone(now, timeZone); // Sun=0 .. Sat=6
+  const daysSinceMonday = (weekday + 6) % 7; // Mon -> 0, Sun -> 6
+  const currentWeekAnchor = addUtcDays(now, -daysSinceMonday);
+  const startDate =
+    rangeMode === WEEK_RANGE_CURRENT
+      ? currentWeekAnchor
+      : addUtcDays(currentWeekAnchor, -7);
+  const endDate =
+    rangeMode === WEEK_RANGE_CURRENT ? now : addUtcDays(currentWeekAnchor, -1);
+
+  return {
+    mode: rangeMode,
+    startDate,
+    endDate,
+    startKey: dayKeyInTimezone(startDate, timeZone),
+    endKey: dayKeyInTimezone(endDate, timeZone),
+    startLabel: formatDateLabel(startDate, timeZone),
+    endLabel: formatDateLabel(endDate, timeZone),
+  };
+}
+
 function streamDayKey(stream, timeZone) {
   const ts = streamTimestamp(stream);
   if (ts > 0) return dayKeyInTimezone(new Date(ts), timeZone);
@@ -305,37 +336,72 @@ function rankBadge(index) {
   return "🐺";
 }
 
-function formatRecapBonusLine(bonus) {
-  const rewardParts = [];
-  const bonusPct = toSafeCount(bonus?.bonusPct);
-  const popsReward = toSafeCount(bonus?.popsReward);
-
-  if (bonusPct > 0) {
-    rewardParts.push(`+${bonusPct}% d'accomplissement des quetes`);
-  }
-  if (popsReward > 0) {
-    rewardParts.push(`♦️ +${popsReward} POPS`);
-  }
-  if (!rewardParts.length) return "";
-
-  const rewardText = rewardParts.join(" et ");
-  if (bonus?.applied) {
-    return `🎁 Bonus gagnant: ${rewardText}`;
-  }
-  if (bonus?.reason === "ALREADY_AWARDED") {
-    return `🎁 Bonus gagnant deja attribue cette semaine (${rewardText})`;
-  }
-  if (bonus?.reason === "MANUAL_PREVIEW") {
-    return `🎁 Apercu manuel: bonus non applique (${rewardText})`;
-  }
-  return `🎁 Bonus gagnant non applique cette semaine (${rewardText})`;
+function normalizeRankRewards(rankRewards, fallbackBonusPct = 10) {
+  const source = Array.isArray(rankRewards) && rankRewards.length
+    ? rankRewards
+    : DEFAULT_RANK_REWARDS;
+  return source
+    .map((reward, index) => ({
+      rank: Math.max(1, Math.floor(toNum(reward?.rank || index + 1))),
+      bonusPct: toSafeCount(
+        reward?.bonusPct ?? (index === 0 ? fallbackBonusPct : 0),
+      ),
+      popsReward: toSafeCount(reward?.popsReward),
+    }))
+    .filter((reward) => reward.rank > 0)
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, 3);
 }
 
-function formatRecapMessage({ ranking, headerText, range, bonus }) {
+function rewardForRank(rank, rankRewards) {
+  return rankRewards.find((reward) => reward.rank === rank) || null;
+}
+
+function formatRewardParts(reward) {
+  const parts = [];
+  const bonusPct = toSafeCount(reward?.bonusPct);
+  const popsReward = toSafeCount(reward?.popsReward);
+  if (bonusPct > 0) parts.push(`+${bonusPct}% quetes`);
+  if (popsReward > 0) parts.push(`+${popsReward} POPS`);
+  return parts.join(", ");
+}
+
+function formatRecapRewardsBlock(rewardResult) {
+  const rewards = Array.isArray(rewardResult?.rewards)
+    ? rewardResult.rewards
+    : [];
+  const visibleRewards = rewards.filter((reward) => formatRewardParts(reward));
+  if (!visibleRewards.length) return [];
+
+  let title = "🎁 Gains attribues:";
+  if (rewardResult?.reason === "MANUAL_PREVIEW") {
+    title = "🎁 Apercu manuel - gains non appliques:";
+  } else if (rewardResult?.reason === "ALREADY_AWARDED") {
+    title = "🎁 Gains deja attribues cette semaine:";
+  } else if (!rewardResult?.applied) {
+    title = "🎁 Gains non appliques:";
+  }
+
+  return [
+    title,
+    ...visibleRewards.map((reward) => {
+      const rankIndex = Math.max(0, toSafeCount(reward.rank) - 1);
+      return `${rankBadge(rankIndex)} ${winnerMention(reward.row || reward)}: ${formatRewardParts(reward)}`;
+    }),
+  ];
+}
+
+function formatHeaderText(headerText, range) {
+  const text = String(headerText || "✨ Meilleurs Loulou de la semaine passee ✨");
+  if (range?.mode !== WEEK_RANGE_CURRENT) return text;
+  return text
+    .replace("semaine passee", "semaine en cours")
+    .replace("semaine passée", "semaine en cours");
+}
+
+function formatRecapMessage({ ranking, headerText, range, rewardResult }) {
   const lines = [];
-  lines.push(
-    String(headerText || "✨ Meilleurs Loulou de la semaine passee ✨"),
-  );
+  lines.push(formatHeaderText(headerText, range));
   if (range?.startLabel && range?.endLabel) {
     lines.push(`📅 Periode: ${range.startLabel} au ${range.endLabel}`);
   }
@@ -351,8 +417,10 @@ function formatRecapMessage({ ranking, headerText, range, bonus }) {
 
   const winnerRow = ranking[0];
   lines.push(`🏆 Gagnant de la semaine: ${winnerMention(winnerRow)}`);
-  const bonusLine = formatRecapBonusLine(bonus);
-  if (bonusLine) lines.push(bonusLine);
+  const rewardLines = formatRecapRewardsBlock(rewardResult);
+  if (rewardLines.length) {
+    lines.push(...rewardLines);
+  }
   lines.push("");
 
   lines.push(`Top ${ranking.length}:`);
@@ -369,9 +437,9 @@ function formatRecapMessage({ ranking, headerText, range, bonus }) {
 
 async function computeWeeklyRanking(
   db,
-  { timeZone, limit, excludedLogins = [] },
+  { timeZone, limit, excludedLogins = [], rangeMode = WEEK_RANGE_PREVIOUS },
 ) {
-  const range = getPreviousWeekRange(timeZone);
+  const range = getWeeklyRange(timeZone, rangeMode);
   const snap = await db.collection("followers_all_time").get();
   const allRows = [];
   const excludedSet = new Set(
@@ -463,77 +531,187 @@ async function computeWeeklyRanking(
   };
 }
 
-async function applyWinnerQuestBonus(
+function buildPlannedRankRewards({
+  ranking,
+  range,
+  timeZone,
+  rankRewards,
+  reason = "MANUAL_PREVIEW",
+}) {
+  const weekKey = range ? `${range.startKey}_${range.endKey}` : "";
+  const monthKey = monthKeyInTimezone(new Date(), timeZone);
+  return (Array.isArray(ranking) ? ranking : [])
+    .slice(0, 3)
+    .map((row, index) => {
+      const rank = index + 1;
+      const reward = rewardForRank(rank, rankRewards);
+      if (!reward) return null;
+      return {
+        row,
+        rank,
+        applied: false,
+        reason,
+        bonusPct: reward.bonusPct,
+        popsReward: reward.popsReward,
+        winnerLogin: row?.login || row?.docId || "",
+        winnerPseudo: row?.pseudo || row?.docId || "",
+        docId: row?.docId || "",
+        discordId: row?.discordId || "",
+        weekKey,
+        monthKey,
+        before: null,
+        after: null,
+        popsBefore: null,
+        popsAfter: null,
+        transactionId: weeklyRecapPopsTransactionId(weekKey, rank),
+      };
+    })
+    .filter(Boolean);
+}
+
+function cleanRewardForState(reward) {
+  return {
+    rank: reward.rank,
+    winner_login: reward.winnerLogin,
+    winner_pseudo: reward.winnerPseudo,
+    bonus_pct: reward.bonusPct,
+    pops_reward: reward.popsReward,
+    before_progress_pct: reward.before,
+    after_progress_pct: reward.after,
+    pops_before: reward.popsBefore,
+    pops_after: reward.popsAfter,
+    transaction_id: reward.transactionId || null,
+  };
+}
+
+function getAwardedWeek(stateSnap, weekKey) {
+  if (!stateSnap?.exists) return null;
+  const fieldPath = `awardedWeeks.${weekKey}`;
+  const fromGetter =
+    typeof stateSnap.get === "function" ? stateSnap.get(fieldPath) : null;
+  if (fromGetter) return fromGetter;
+
+  const data = typeof stateSnap.data === "function" ? stateSnap.data() : {};
+  return data?.awardedWeeks?.[weekKey] || data?.[fieldPath] || null;
+}
+
+async function applyWeeklyRankRewards(
   db,
-  { winner, range, timeZone, bonusPct, stateDocPath = DEFAULT_STATE_DOC_PATH },
+  { ranking, range, timeZone, rankRewards, stateDocPath = DEFAULT_STATE_DOC_PATH },
 ) {
-  if (!winner?.docId) {
+  const plannedRewards = buildPlannedRankRewards({
+    ranking,
+    range,
+    timeZone,
+    rankRewards,
+    reason: "APPLIED",
+  });
+
+  const weekKey = range ? `${range.startKey}_${range.endKey}` : "";
+  const monthKey = monthKeyInTimezone(new Date(), timeZone);
+  if (!plannedRewards.length) {
     return {
       applied: false,
-      reason: "NO_WINNER",
-      bonusPct: 0,
+      reason: "NO_WINNERS",
+      weekKey,
+      monthKey,
+      rewards: [],
     };
   }
 
-  const safeBonusPct = Math.max(0, Math.floor(toNum(bonusPct)));
-  if (safeBonusPct <= 0) {
-    return {
-      applied: false,
-      reason: "BONUS_DISABLED",
-      bonusPct: 0,
-      winnerLogin: winner.login,
-      winnerPseudo: winner.pseudo,
-    };
-  }
-
-  const weekKey = `${range.startKey}_${range.endKey}`;
-  const now = new Date();
-  const monthKey = monthKeyInTimezone(now, timeZone);
   const stateRef = db.doc(stateDocPath);
-  const winnerRef = db.collection("followers_all_time").doc(winner.docId);
-
   let alreadyAwarded = false;
-  let before = 0;
-  let after = 0;
+  let rewards = plannedRewards;
 
   await db.runTransaction(async (tx) => {
-    const bonusFieldPath = `awardedWeeks.${weekKey}`;
     const stateSnap = await tx.get(stateRef);
-    const already = stateSnap.exists ? stateSnap.get(bonusFieldPath) : null;
+    const already = getAwardedWeek(stateSnap, weekKey);
 
     if (already && typeof already === "object") {
       alreadyAwarded = true;
-      before = toNum(already.before_progress_pct);
-      after = toNum(already.after_progress_pct);
       return;
     }
 
-    const winnerSnap = await tx.get(winnerRef);
-    if (!winnerSnap.exists) {
-      throw new Error(`weekly bonus winner doc missing: ${winner.docId}`);
+    const followerReads = [];
+    for (const planned of plannedRewards) {
+      const winnerRef = db.collection("followers_all_time").doc(planned.docId);
+      const winnerSnap = await tx.get(winnerRef);
+      if (!winnerSnap.exists) {
+        throw new Error(`weekly bonus winner doc missing: ${planned.docId}`);
+      }
+      followerReads.push({ planned, winnerRef, winnerSnap });
     }
 
-    const data = winnerSnap.data() || {};
-    before = toNum(data?.live_presence?.[monthKey]?.progress_pct || 0);
-    after = Math.min(100, Math.max(0, before + safeBonusPct));
+    const appliedAt = new Date();
+    const appliedAtMs = Date.now();
+    const appliedRewards = [];
 
-    tx.update(winnerRef, {
-      [`live_presence.${monthKey}.progress_pct`]: after,
-    });
+    for (const { planned, winnerRef, winnerSnap } of followerReads) {
+      const data = winnerSnap.data() || {};
+      const before = toNum(data?.live_presence?.[monthKey]?.progress_pct || 0);
+      const after = Math.min(100, Math.max(0, before + planned.bonusPct));
+      const currentWallet = normalizePopsWallet(data);
+      const nextWallet = {
+        balance: currentWallet.balance + planned.popsReward,
+        lifetimeEarned: currentWallet.lifetimeEarned + planned.popsReward,
+        schemaVersion: POPS_SCHEMA_VERSION,
+      };
+      const appliedReward = {
+        ...planned,
+        applied: true,
+        reason: "APPLIED",
+        before,
+        after,
+        popsBefore: currentWallet.balance,
+        popsAfter: nextWallet.balance,
+      };
 
+      tx.update(winnerRef, {
+        [`live_presence.${monthKey}.progress_pct`]: after,
+        "pops.balance": nextWallet.balance,
+        "pops.lifetimeEarned": nextWallet.lifetimeEarned,
+        "pops.updatedAt": appliedAt,
+        "pops.schemaVersion": POPS_SCHEMA_VERSION,
+      });
+
+      if (planned.popsReward > 0) {
+        tx.set(
+          winnerRef
+            .collection("pops_transactions")
+            .doc(planned.transactionId),
+          {
+            type: WEEKLY_RECAP_POPS_TRANSACTION_TYPE,
+            amount: planned.popsReward,
+            rank: planned.rank,
+            bonusPct: planned.bonusPct,
+            weekKey,
+            rangeStart: range.startKey,
+            rangeEnd: range.endKey,
+            monthKey,
+            createdAt: appliedAt,
+            source: WEEKLY_RECAP_POPS_TRANSACTION_SOURCE,
+            schemaVersion: POPS_SCHEMA_VERSION,
+            serverAuthoritative: true,
+          },
+        );
+      }
+
+      appliedRewards.push(appliedReward);
+    }
+
+    rewards = appliedRewards;
     tx.set(
       stateRef,
       {
-        [bonusFieldPath]: {
-          winner_login: winner.login || winner.docId,
-          winner_pseudo: winner.pseudo || winner.docId,
-          range_start: range.startKey,
-          range_end: range.endKey,
-          bonus_pct: safeBonusPct,
-          month_key: monthKey,
-          before_progress_pct: before,
-          after_progress_pct: after,
-          applied_at_ms: Date.now(),
+        awardedWeeks: {
+          [weekKey]: {
+            range_start: range.startKey,
+            range_end: range.endKey,
+            month_key: monthKey,
+            applied_at_ms: appliedAtMs,
+            schema_version: POPS_SCHEMA_VERSION,
+            rewards: appliedRewards.map(cleanRewardForState),
+          },
         },
       },
       { merge: true },
@@ -544,48 +722,44 @@ async function applyWinnerQuestBonus(
     return {
       applied: false,
       reason: "ALREADY_AWARDED",
-      bonusPct: safeBonusPct,
-      winnerLogin: winner.login,
-      winnerPseudo: winner.pseudo,
       weekKey,
       monthKey,
-      before,
-      after,
+      rewards: plannedRewards.map((reward) => ({
+        ...reward,
+        applied: false,
+        reason: "ALREADY_AWARDED",
+      })),
     };
   }
 
   return {
     applied: true,
     reason: "APPLIED",
-    bonusPct: safeBonusPct,
-    winnerLogin: winner.login,
-    winnerPseudo: winner.pseudo,
     weekKey,
     monthKey,
-    before,
-    after,
+    rewards,
   };
 }
 
-function createManualPreviewBonus({ winner, range, timeZone, bonusPct }) {
-  const safeBonusPct = Math.max(0, Math.floor(toNum(bonusPct)));
+function createManualPreviewRewardResult({ ranking, range, timeZone, rankRewards }) {
   return {
     applied: false,
     reason: "MANUAL_PREVIEW",
-    bonusPct: safeBonusPct,
-    popsReward: 0,
-    winnerLogin: winner?.login || winner?.docId || "",
-    winnerPseudo: winner?.pseudo || winner?.docId || "",
     weekKey: range ? `${range.startKey}_${range.endKey}` : "",
     monthKey: monthKeyInTimezone(new Date(), timeZone),
-    before: null,
-    after: null,
+    rewards: buildPlannedRankRewards({
+      ranking,
+      range,
+      timeZone,
+      rankRewards,
+      reason: "MANUAL_PREVIEW",
+    }),
   };
 }
 
-async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
+async function syncWeeklyRewardToParticipants(db, { reward }) {
   const winnerLogin = normalizeLogin(
-    winner?.login || bonus?.winnerLogin || winner?.docId,
+    reward?.winnerLogin || reward?.row?.login || reward?.docId,
   );
   if (!winnerLogin || isExcludedLogin(winnerLogin)) {
     return { synced: false, reason: "NO_WINNER_LOGIN" };
@@ -601,25 +775,28 @@ async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
     };
   }
 
-  const monthKey = String(bonus?.monthKey || "").trim();
-  const hasAfter = Number.isFinite(Number(bonus?.after));
+  const monthKey = String(reward?.monthKey || "").trim();
+  const hasAfter = Number.isFinite(Number(reward?.after));
   const after = hasAfter
-    ? Math.max(0, Math.min(100, toNum(bonus.after)))
+    ? Math.max(0, Math.min(100, toNum(reward.after)))
     : null;
 
   const payload = {
     weekly_recap_bonus: {
       winner_login: winnerLogin,
       winner_pseudo:
-        String(winner?.pseudo || bonus?.winnerPseudo || winnerLogin).trim() ||
+        String(reward?.winnerPseudo || reward?.row?.pseudo || winnerLogin).trim() ||
         winnerLogin,
-      week_key: String(bonus?.weekKey || ""),
+      rank: Math.max(1, Math.floor(toNum(reward?.rank) || 1)),
+      week_key: String(reward?.weekKey || ""),
       month_key: monthKey,
-      bonus_pct: Math.max(0, Math.floor(toNum(bonus?.bonusPct))),
-      applied: !!bonus?.applied,
-      reason: String(bonus?.reason || ""),
-      before_progress_pct: toNum(bonus?.before),
+      bonus_pct: Math.max(0, Math.floor(toNum(reward?.bonusPct))),
+      pops_reward: Math.max(0, Math.floor(toNum(reward?.popsReward))),
+      applied: !!reward?.applied,
+      reason: String(reward?.reason || ""),
+      before_progress_pct: toNum(reward?.before),
       after_progress_pct: hasAfter ? after : null,
+      transaction_id: String(reward?.transactionId || ""),
       synced_at_ms: Date.now(),
     },
   };
@@ -649,6 +826,7 @@ function createWeeklyFollowersRecap({
   limit = 10,
   excludedLogins = [],
   questBonusPct = 10,
+  rankRewards = DEFAULT_RANK_REWARDS,
   stateDocPath = DEFAULT_STATE_DOC_PATH,
   headerText = "Meilleurs Loulou de la semaine passee",
 }) {
@@ -658,6 +836,7 @@ function createWeeklyFollowersRecap({
 
   const safeLimit = Math.max(1, Math.floor(toNum(limit) || 10));
   const safeBonusPct = Math.max(0, Math.floor(toNum(questBonusPct)));
+  const safeRankRewards = normalizeRankRewards(rankRewards, safeBonusPct);
   const safeExcluded = (Array.isArray(excludedLogins) ? excludedLogins : [])
     .map(normalizeLogin)
     .filter(Boolean)
@@ -667,6 +846,7 @@ function createWeeklyFollowersRecap({
   return async function sendWeeklyFollowersRecap({
     channelId = defaultChannelId,
     applyRewards = true,
+    rangeMode = WEEK_RANGE_PREVIOUS,
   } = {}) {
     if (!channelId) {
       throw new Error("weekly recap target channel is missing");
@@ -676,47 +856,52 @@ function createWeeklyFollowersRecap({
       timeZone,
       limit: safeLimit,
       excludedLogins: safeExcluded,
+      rangeMode,
     });
 
     const shouldApplyRewards = applyRewards !== false;
-    let bonus = createManualPreviewBonus({
-      winner: result.winner,
+    let rewardResult = createManualPreviewRewardResult({
+      ranking: result.ranking,
       range: result.range,
       timeZone,
-      bonusPct: safeBonusPct,
+      rankRewards: safeRankRewards,
     });
-    let participantsSync = null;
+    let participantsSync = [];
 
     if (shouldApplyRewards) {
-      // Keep every reward write here, including future POPS grants.
-      bonus = await applyWinnerQuestBonus(db, {
-        winner: result.winner,
+      rewardResult = await applyWeeklyRankRewards(db, {
+        ranking: result.ranking,
         range: result.range,
         timeZone,
-        bonusPct: safeBonusPct,
+        rankRewards: safeRankRewards,
         stateDocPath,
       });
 
-      try {
-        participantsSync = await syncWinnerBonusToParticipants(db, {
-          winner: result.winner,
-          bonus,
-        });
-      } catch (e) {
-        console.warn(
-          "[weekly-recap] participants sync failed:",
-          e?.message || e,
-        );
+      if (rewardResult.applied) {
+        for (const reward of rewardResult.rewards) {
+          try {
+            participantsSync.push(
+              await syncWeeklyRewardToParticipants(db, { reward }),
+            );
+          } catch (e) {
+            console.warn(
+              "[weekly-recap] participants sync failed:",
+              e?.message || e,
+            );
+          }
+        }
+      } else {
+        participantsSync = [{ synced: false, reason: rewardResult.reason }];
       }
     } else {
-      participantsSync = { synced: false, reason: "REWARDS_DISABLED" };
+      participantsSync = [{ synced: false, reason: "REWARDS_DISABLED" }];
     }
 
     const content = formatRecapMessage({
       ranking: result.ranking,
       headerText,
       range: result.range,
-      bonus,
+      rewardResult,
     });
 
     const channel = await client.channels.fetch(channelId);
@@ -732,7 +917,12 @@ function createWeeklyFollowersRecap({
         : { parse: [] },
     });
 
-    return { ...result, bonus, participantsSync };
+    return {
+      ...result,
+      bonus: rewardResult,
+      rewardResult,
+      participantsSync,
+    };
   };
 }
 

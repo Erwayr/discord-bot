@@ -85,6 +85,7 @@ const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
   limit: 10,
   excludedLogins: config.weeklyRecap.excludedLogins,
   questBonusPct: config.weeklyRecap.bonusPct,
+  rankRewards: config.weeklyRecap.rankRewards,
   headerText: "✨ Meilleurs Loulou de la semaine passee ✨",
 });
 

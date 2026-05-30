@@ -7,6 +7,27 @@ const { createWeeklyFollowersRecap } = require("../script/weeklyFollowersRecap")
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function clone(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMerge(target, source) {
+  const next = clone(target || {});
+  for (const [key, value] of Object.entries(source || {})) {
+    if (isPlainObject(value) && isPlainObject(next[key])) {
+      next[key] = deepMerge(next[key], value);
+    } else {
+      next[key] = clone(value);
+    }
+  }
+  return next;
+}
+
 function getPathValue(source, fieldPath) {
   return String(fieldPath)
     .split(".")
@@ -22,10 +43,6 @@ function applyFieldPath(target, fieldPath, value) {
     node = node[part];
   }
   node[parts[0]] = value;
-}
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
 }
 
 class FakeSnapshot {
@@ -52,6 +69,10 @@ class FakeDocRef {
     this.id = path.split("/").pop();
   }
 
+  collection(name) {
+    return new FakeCollectionRef(this.db, `${this.path}/${name}`);
+  }
+
   snapshot() {
     return new FakeSnapshot(this, this.db.store.get(this.path) || null);
   }
@@ -68,17 +89,17 @@ class FakeDocRef {
 }
 
 class FakeCollectionRef {
-  constructor(db, name) {
+  constructor(db, path) {
     this.db = db;
-    this.name = name;
+    this.path = path;
   }
 
   doc(id) {
-    return new FakeDocRef(this.db, `${this.name}/${id}`);
+    return new FakeDocRef(this.db, `${this.path}/${id}`);
   }
 
   async get() {
-    const prefix = `${this.name}/`;
+    const prefix = `${this.path}/`;
     const docs = [];
     for (const [path, data] of this.db.store.entries()) {
       if (!path.startsWith(prefix)) continue;
@@ -124,6 +145,10 @@ class FakeDb {
     this.store = new Map(
       Object.entries(initialDocs).map(([path, data]) => [path, clone(data)]),
     );
+    this.resetCalls();
+  }
+
+  resetCalls() {
     this.calls = {
       gets: [],
       sets: [],
@@ -148,34 +173,105 @@ class FakeDb {
   }
 
   setDoc(path, payload, options = {}) {
-    const current = options.merge ? clone(this.store.get(path) || {}) : {};
-    this.store.set(path, { ...current, ...clone(payload) });
+    const current = options.merge ? this.store.get(path) || {} : {};
+    this.store.set(path, deepMerge(current, payload));
+  }
+
+  data(path) {
+    return clone(this.store.get(path));
   }
 }
 
-function currentMonthKey() {
-  return new Date().toISOString().slice(0, 7);
+function addDays(date, days) {
+  return new Date(date.getTime() + days * DAY_MS);
 }
 
-function followerWithWeeklyActivity() {
-  const monthKey = currentMonthKey();
+function monthKey(date) {
+  return date.toISOString().slice(0, 7);
+}
+
+function streamOn(date, chatCount) {
   return {
-    login: "alice",
-    pseudo: "Alice",
-    discord_id: "123456789012345678",
-    live_presence: {
-      [monthKey]: {
-        progress_pct: 20,
-        streams: [
-          {
-            started_at: new Date(Date.now() - 7 * DAY_MS).toISOString(),
-            presence: { seen: true },
-            chat_message: { count: 2 },
-          },
-        ],
-      },
-    },
+    started_at: date.toISOString(),
+    presence: { seen: true },
+    chat_message: { count: chatCount },
   };
+}
+
+function followerDoc({ login, pseudo, discordId, currentChat = 0, previousChat = 0 }) {
+  const now = new Date();
+  const currentDate = now;
+  const previousDate = addDays(now, -7);
+  const livePresence = {};
+
+  function addStream(date, chatCount) {
+    if (chatCount <= 0) return;
+    const key = monthKey(date);
+    livePresence[key] ||= { progress_pct: 20, streams: [] };
+    livePresence[key].streams.push(streamOn(date, chatCount));
+  }
+
+  addStream(currentDate, currentChat);
+  addStream(previousDate, previousChat);
+
+  return {
+    login,
+    pseudo,
+    discord_id: discordId,
+    pops: { balance: 0, lifetimeEarned: 0, schemaVersion: 1 },
+    live_presence: livePresence,
+  };
+}
+
+function buildDb({ includeThreePrevious = true } = {}) {
+  const docs = {
+    "followers_all_time/current_one": followerDoc({
+      login: "current_one",
+      pseudo: "CurrentOne",
+      discordId: "111111111111111111",
+      currentChat: 10,
+    }),
+    "followers_all_time/current_two": followerDoc({
+      login: "current_two",
+      pseudo: "CurrentTwo",
+      discordId: "222222222222222222",
+      currentChat: 8,
+    }),
+    "followers_all_time/current_three": followerDoc({
+      login: "current_three",
+      pseudo: "CurrentThree",
+      discordId: "333333333333333333",
+      currentChat: 6,
+    }),
+    "followers_all_time/previous_one": followerDoc({
+      login: "previous_one",
+      pseudo: "PreviousOne",
+      discordId: "444444444444444444",
+      previousChat: 10,
+    }),
+    "participants/previous_one": { pseudo: "PreviousOne" },
+  };
+
+  if (includeThreePrevious) {
+    Object.assign(docs, {
+      "followers_all_time/previous_two": followerDoc({
+        login: "previous_two",
+        pseudo: "PreviousTwo",
+        discordId: "555555555555555555",
+        previousChat: 8,
+      }),
+      "followers_all_time/previous_three": followerDoc({
+        login: "previous_three",
+        pseudo: "PreviousThree",
+        discordId: "666666666666666666",
+        previousChat: 6,
+      }),
+      "participants/previous_two": { pseudo: "PreviousTwo" },
+      "participants/previous_three": { pseudo: "PreviousThree" },
+    });
+  }
+
+  return new FakeDb(docs);
 }
 
 function createFakeClient() {
@@ -195,55 +291,120 @@ function createFakeClient() {
   };
 }
 
-test("manual preview sends recap without reward writes", async () => {
-  const db = new FakeDb({
-    "followers_all_time/alice": followerWithWeeklyActivity(),
-    "participants/alice": { pseudo: "Alice" },
-  });
-  const client = createFakeClient();
-  const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
+function createRecap(db, client) {
+  return createWeeklyFollowersRecap({
     db,
     client,
     defaultChannelId: "announcements",
     timeZone: "UTC",
-    questBonusPct: 10,
+    limit: 10,
+    rankRewards: [
+      { rank: 1, bonusPct: 10, popsReward: 100 },
+      { rank: 2, bonusPct: 5, popsReward: 50 },
+      { rank: 3, bonusPct: 2, popsReward: 25 },
+    ],
+    headerText: "✨ Meilleurs Loulou de la semaine passee ✨",
   });
+}
+
+test("manual preview uses current week and shows top 3 POPS without writes", async () => {
+  const db = buildDb();
+  const client = createFakeClient();
+  const sendWeeklyFollowersRecap = createRecap(db, client);
 
   const result = await sendWeeklyFollowersRecap({
     channelId: "logs",
     applyRewards: false,
+    rangeMode: "current",
   });
 
-  assert.equal(result.bonus.reason, "MANUAL_PREVIEW");
-  assert.equal(result.participantsSync.reason, "REWARDS_DISABLED");
+  assert.equal(result.range.mode, "current");
+  assert.deepEqual(
+    result.rewardResult.rewards.map((reward) => reward.popsReward),
+    [100, 50, 25],
+  );
+  assert.equal(result.rewardResult.rewards[0].winnerLogin, "current_one");
   assert.equal(db.calls.runTransactions, 0);
   assert.equal(db.calls.txUpdates.length, 0);
+  assert.equal(db.calls.txSets.length, 0);
   assert.equal(db.calls.sets.length, 0);
-  assert.match(client.sent[0].payload.content, /Apercu manuel/);
+
+  const content = client.sent[0].payload.content;
+  assert.match(content, /semaine en cours/);
+  assert.match(content, /Apercu manuel - gains non appliques/);
+  assert.match(content, /\+100 POPS/);
+  assert.match(content, /\+50 POPS/);
+  assert.match(content, /\+25 POPS/);
+  assert.doesNotMatch(content, /444444444444444444/);
 });
 
-test("default recap applies winner reward and participant sync", async () => {
-  const db = new FakeDb({
-    "followers_all_time/alice": followerWithWeeklyActivity(),
-    "participants/alice": { pseudo: "Alice" },
-  });
+test("default recap uses previous week and applies top 3 progress and POPS", async () => {
+  const db = buildDb();
   const client = createFakeClient();
-  const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
-    db,
-    client,
-    defaultChannelId: "announcements",
-    timeZone: "UTC",
-    questBonusPct: 10,
-  });
+  const sendWeeklyFollowersRecap = createRecap(db, client);
 
   const result = await sendWeeklyFollowersRecap({ channelId: "announcements" });
 
-  assert.equal(result.bonus.reason, "APPLIED");
-  assert.equal(result.participantsSync.synced, true);
-  assert.equal(db.calls.runTransactions, 1);
-  assert.equal(db.calls.txUpdates.length, 1);
-  assert.equal(
-    db.calls.sets.some((call) => call.path === "participants/alice"),
-    true,
+  assert.equal(result.range.mode, "previous");
+  assert.equal(result.rewardResult.reason, "APPLIED");
+  assert.deepEqual(
+    result.rewardResult.rewards.map((reward) => reward.winnerLogin),
+    ["previous_one", "previous_two", "previous_three"],
   );
+  assert.deepEqual(
+    result.rewardResult.rewards.map((reward) => reward.popsReward),
+    [100, 50, 25],
+  );
+  assert.equal(db.calls.runTransactions, 1);
+  assert.equal(db.calls.txUpdates.length, 3);
+  assert.equal(
+    db.calls.txSets.filter((call) => call.path.includes("/pops_transactions/"))
+      .length,
+    3,
+  );
+  assert.equal(db.calls.sets.length, 3);
+
+  assert.equal(db.data("followers_all_time/previous_one").pops.balance, 100);
+  assert.equal(db.data("followers_all_time/previous_two").pops.balance, 50);
+  assert.equal(db.data("followers_all_time/previous_three").pops.balance, 25);
+  assert.equal(db.data("participants/previous_one").progress_pct, 30);
+  assert.equal(db.data("participants/previous_two").progress_pct, 25);
+  assert.equal(db.data("participants/previous_three").progress_pct, 22);
+  assert.equal(db.data("participants/previous_one").pops, undefined);
+});
+
+test("second default recap run does not double-credit rewards", async () => {
+  const db = buildDb();
+  const client = createFakeClient();
+  const sendWeeklyFollowersRecap = createRecap(db, client);
+
+  await sendWeeklyFollowersRecap({ channelId: "announcements" });
+  db.resetCalls();
+
+  const result = await sendWeeklyFollowersRecap({ channelId: "announcements" });
+
+  assert.equal(result.rewardResult.reason, "ALREADY_AWARDED");
+  assert.equal(db.calls.runTransactions, 1);
+  assert.equal(db.calls.txUpdates.length, 0);
+  assert.equal(db.calls.txSets.length, 0);
+  assert.equal(db.calls.sets.length, 0);
+  assert.equal(db.data("followers_all_time/previous_one").pops.balance, 100);
+  assert.match(client.sent.at(-1).payload.content, /Gains deja attribues/);
+});
+
+test("recap works when fewer than three users are ranked", async () => {
+  const db = buildDb({ includeThreePrevious: false });
+  const client = createFakeClient();
+  const sendWeeklyFollowersRecap = createRecap(db, client);
+
+  const result = await sendWeeklyFollowersRecap({ channelId: "announcements" });
+
+  assert.equal(result.rewardResult.reason, "APPLIED");
+  assert.equal(result.rewardResult.rewards.length, 1);
+  assert.equal(result.rewardResult.rewards[0].popsReward, 100);
+
+  const content = client.sent[0].payload.content;
+  assert.match(content, /\+100 POPS/);
+  assert.doesNotMatch(content, /\+50 POPS/);
+  assert.equal(db.data("followers_all_time/previous_one").pops.balance, 100);
 });
