@@ -325,6 +325,9 @@ function formatRecapBonusLine(bonus) {
   if (bonus?.reason === "ALREADY_AWARDED") {
     return `🎁 Bonus gagnant deja attribue cette semaine (${rewardText})`;
   }
+  if (bonus?.reason === "MANUAL_PREVIEW") {
+    return `🎁 Apercu manuel: bonus non applique (${rewardText})`;
+  }
   return `🎁 Bonus gagnant non applique cette semaine (${rewardText})`;
 }
 
@@ -564,6 +567,22 @@ async function applyWinnerQuestBonus(
   };
 }
 
+function createManualPreviewBonus({ winner, range, timeZone, bonusPct }) {
+  const safeBonusPct = Math.max(0, Math.floor(toNum(bonusPct)));
+  return {
+    applied: false,
+    reason: "MANUAL_PREVIEW",
+    bonusPct: safeBonusPct,
+    popsReward: 0,
+    winnerLogin: winner?.login || winner?.docId || "",
+    winnerPseudo: winner?.pseudo || winner?.docId || "",
+    weekKey: range ? `${range.startKey}_${range.endKey}` : "",
+    monthKey: monthKeyInTimezone(new Date(), timeZone),
+    before: null,
+    after: null,
+  };
+}
+
 async function syncWinnerBonusToParticipants(db, { winner, bonus }) {
   const winnerLogin = normalizeLogin(
     winner?.login || bonus?.winnerLogin || winner?.docId,
@@ -647,6 +666,7 @@ function createWeeklyFollowersRecap({
 
   return async function sendWeeklyFollowersRecap({
     channelId = defaultChannelId,
+    applyRewards = true,
   } = {}) {
     if (!channelId) {
       throw new Error("weekly recap target channel is missing");
@@ -658,22 +678,38 @@ function createWeeklyFollowersRecap({
       excludedLogins: safeExcluded,
     });
 
-    const bonus = await applyWinnerQuestBonus(db, {
+    const shouldApplyRewards = applyRewards !== false;
+    let bonus = createManualPreviewBonus({
       winner: result.winner,
       range: result.range,
       timeZone,
       bonusPct: safeBonusPct,
-      stateDocPath,
     });
-
     let participantsSync = null;
-    try {
-      participantsSync = await syncWinnerBonusToParticipants(db, {
+
+    if (shouldApplyRewards) {
+      // Keep every reward write here, including future POPS grants.
+      bonus = await applyWinnerQuestBonus(db, {
         winner: result.winner,
-        bonus,
+        range: result.range,
+        timeZone,
+        bonusPct: safeBonusPct,
+        stateDocPath,
       });
-    } catch (e) {
-      console.warn("[weekly-recap] participants sync failed:", e?.message || e);
+
+      try {
+        participantsSync = await syncWinnerBonusToParticipants(db, {
+          winner: result.winner,
+          bonus,
+        });
+      } catch (e) {
+        console.warn(
+          "[weekly-recap] participants sync failed:",
+          e?.message || e,
+        );
+      }
+    } else {
+      participantsSync = { synced: false, reason: "REWARDS_DISABLED" };
     }
 
     const content = formatRecapMessage({

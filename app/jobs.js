@@ -182,6 +182,7 @@ function createJobs({
       () =>
         sendWeeklyFollowersRecap({
           channelId: config.discord.announcementChannelId,
+          applyRewards: true,
         }).catch((e) =>
           console.error("[weekly-recap] cron failed:", e?.message || e),
         ),
