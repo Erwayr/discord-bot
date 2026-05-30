@@ -12,6 +12,7 @@ function createJobs({
   livePresenceTick,
   pollClipsTick,
   sendWeeklyFollowersRecap,
+  weeklyPlanningPublisher,
   authHealth,
   birthdays,
   twitchChat,
@@ -192,6 +193,20 @@ function createJobs({
     console.log(
       `[weekly-recap] scheduled (${config.cron.weeklyRecap}, tz=${config.timezone}) -> ${config.discord.logChannelId}`,
     );
+
+    if (weeklyPlanningPublisher) {
+      cron.schedule(
+        config.cron.weeklyPlanning,
+        () =>
+          weeklyPlanningPublisher.schedulePlanningPreview().catch((e) =>
+            console.error("[weekly-planning] cron failed:", e?.message || e),
+          ),
+        { timezone: config.timezone },
+      );
+      console.log(
+        `[weekly-planning] scheduled (${config.cron.weeklyPlanning}, tz=${config.timezone}) -> ${config.planning.reviewChannelId}`,
+      );
+    }
   }
 
   return {

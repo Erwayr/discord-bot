@@ -11,6 +11,9 @@ const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const { createQuestStorage } = require("./script/questStorage");
 const { createTokenManager } = require("./script/tokenManager");
 const { createWeeklyFollowersRecap } = require("./script/weeklyFollowersRecap");
+const {
+  createWeeklyPlanningPublisher,
+} = require("./script/weeklyPlanningPublisher");
 const { createBirthdayService } = require("./app/birthdays");
 const config = require("./app/config");
 const { createDiscordClient } = require("./app/discordClient");
@@ -89,6 +92,16 @@ const sendWeeklyFollowersRecap = createWeeklyFollowersRecap({
   headerText: "✨ Meilleurs Loulou de la semaine passee ✨",
 });
 
+const weeklyPlanningPublisher = createWeeklyPlanningPublisher({
+  db,
+  admin,
+  client,
+  config,
+  defaultReviewChannelId: config.planning.reviewChannelId,
+  defaultPublicChannelId: config.planning.publicChannelId,
+  timeZone: config.timezone,
+});
+
 const birthdays = createBirthdayService({ db, admin, config });
 const twitchChat = createTwitchChat({
   config,
@@ -124,6 +137,7 @@ const jobs = createJobs({
   livePresenceTick,
   pollClipsTick,
   sendWeeklyFollowersRecap,
+  weeklyPlanningPublisher,
   authHealth,
   birthdays,
   twitchChat,
@@ -157,6 +171,7 @@ registerDiscordEvents({
   jobs,
   firestoreListeners,
   sendWeeklyFollowersRecap,
+  weeklyPlanningPublisher,
 });
 
 jobs.scheduleCoreJobs();

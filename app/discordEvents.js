@@ -14,6 +14,10 @@ const {
   PROFILE_COMMAND_NAME,
   registerProfileSlashCommand,
 } = require("./slashCommands");
+const {
+  isPlanningApprover,
+  parsePlanningButtonCustomId,
+} = require("../script/weeklyPlanningPublisher");
 
 function registerDiscordEvents({
   client,
@@ -24,6 +28,7 @@ function registerDiscordEvents({
   jobs,
   firestoreListeners,
   sendWeeklyFollowersRecap,
+  weeklyPlanningPublisher,
 }) {
   client.once(Events.ClientReady, async () => {
     console.log(`✅ Connecté en tant que ${client.user.tag}`);
@@ -94,6 +99,59 @@ function registerDiscordEvents({
   );
 
   client.on(Events.InteractionCreate, async (interaction) => {
+    if (interaction.isButton?.()) {
+      const planningAction = parsePlanningButtonCustomId(interaction.customId);
+      if (!planningAction) return;
+
+      if (
+        !isPlanningApprover(interaction.member, interaction.user?.id, config)
+      ) {
+        await interaction.reply({
+          content: "❌ Tu n'as pas la permission pour valider le planning.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      if (!weeklyPlanningPublisher) {
+        await interaction.reply({
+          content: "❌ Le module planning n'est pas disponible.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+      try {
+        if (planningAction.action === "approve") {
+          await weeklyPlanningPublisher.approvePlanning({
+            weekKey: planningAction.weekKey,
+            planningHash: planningAction.planningHash,
+            approvedBy: interaction.user?.id,
+          });
+          await interaction.message?.edit({ components: [] }).catch(() => {});
+          await interaction.editReply(
+            "✅ Planning validé et publié dans le canal annonces.",
+          );
+          return;
+        }
+
+        await weeklyPlanningPublisher.rejectPlanning({
+          weekKey: planningAction.weekKey,
+          planningHash: planningAction.planningHash,
+          rejectedBy: interaction.user?.id,
+        });
+        await interaction.message?.edit({ components: [] }).catch(() => {});
+        await interaction.editReply("✅ Brouillon planning refusé.");
+      } catch (e) {
+        console.error("[weekly-planning] button failed:", e?.message || e);
+        await interaction.editReply(
+          `❌ ${e?.message || "Impossible de traiter le planning."}`,
+        );
+      }
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== PROFILE_COMMAND_NAME) return;
     await handleProfileInteraction(interaction, db, config);
@@ -112,7 +170,9 @@ function registerDiscordEvents({
       },
     );
 
-    if (message.content.trim() === "!weeklyrecap") {
+    const command = message.content.trim().toLowerCase();
+
+    if (command === "!weeklyrecap") {
       const canRun = message.member?.permissions?.has("ManageGuild");
       if (!canRun) {
         await message.reply(
@@ -135,7 +195,52 @@ function registerDiscordEvents({
       return;
     }
 
-    if (message.content.trim() === "!rank") {
+    if (command === "!planningtest" || command === "!planningpreview") {
+      const canRun = isPlanningApprover(message.member, message.author.id, config);
+      if (!canRun) {
+        await message.reply(
+          "❌ Tu n'as pas la permission pour tester le planning.",
+        );
+        return;
+      }
+      if (!weeklyPlanningPublisher) {
+        await message.reply("❌ Le module planning n'est pas disponible.");
+        return;
+      }
+
+      try {
+        if (command === "!planningtest") {
+          await weeklyPlanningPublisher.sendPlanningTest({
+            channelId: config.discord.logChannelId,
+          });
+          await message.react("\u2705").catch(() => {});
+          return;
+        }
+
+        const result = await weeklyPlanningPublisher.createPlanningPreview({
+          channelId: config.planning.reviewChannelId,
+          requestedBy: message.author.id,
+          source: "manual",
+        });
+        if (result?.skipped) {
+          await message.reply(
+            "ℹ️ Un brouillon identique existe déjà pour cette semaine.",
+          );
+        } else {
+          await message.react("\u2705").catch(() => {});
+        }
+      } catch (e) {
+        console.error("[weekly-planning] command failed:", e?.message || e);
+        await message.reply(
+          `❌ Impossible de générer le planning: ${
+            e?.message || "erreur inconnue"
+          }`,
+        );
+      }
+      return;
+    }
+
+    if (command === "!rank") {
       await handleProfileMessage(message, db, config);
     }
   });

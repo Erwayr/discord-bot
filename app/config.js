@@ -75,6 +75,7 @@ const config = {
     assignOldMemberCards: "0 0 * * *",
     emoteRefresh: "0 */6 * * *",
     weeklyRecap: process.env.CRON_WEEKLY_RECAP || "0 9 * * 1",
+    weeklyPlanning: process.env.CRON_WEEKLY_PLANNING || "0 9 * * 1",
   },
 
   weeklyRecap: {
@@ -109,6 +110,18 @@ const config = {
         popsReward: Number(process.env.WEEKLY_RECAP_RANK3_POPS || 25),
       },
     ],
+  },
+
+  planning: {
+    reviewChannelId:
+      process.env.PLANNING_REVIEW_CHANNEL_ID ||
+      process.env.LOG_CHANNEL_ID ||
+      "1377870229153120257",
+    publicChannelId:
+      process.env.PLANNING_PUBLIC_CHANNEL_ID ||
+      process.env.ANNOUNCEMENT_CHANNEL_ID ||
+      "827682574024966194",
+    approverUserIds: process.env.PLANNING_APPROVER_USER_IDS || "",
   },
 
   timing: {
