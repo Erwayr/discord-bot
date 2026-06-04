@@ -92,12 +92,6 @@ function birthdayCountLabel(count) {
   return `${count}x`;
 }
 
-function trimDiscordValue(value, max = 1024) {
-  const text = String(value || "").trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
-}
-
 function resolveBirthdayBannerAttachment(
   bannerPath = DEFAULT_BIRTHDAY_BANNER_PATH,
 ) {
@@ -126,51 +120,41 @@ function buildDiscordBirthdayPayload({
   const grouped = count > 1;
   const prefix = test ? "🧪 TEST - non publié\n" : "";
   const content = grouped
-    ? `${prefix}🎉✨ **ANNIVERSAIRE COMMUNAUTÉ** ✨🎉\n🎂 Aujourd'hui, ${birthdayCountLabel(
+    ? `${prefix}**ANNIVERSAIRE COMMUNAUTÉ** ✨🎉\n- Aujourd'hui, ${birthdayCountLabel(
         count,
-      )} tournée de bougies pour ${names} ! Sortez les confettis et le loot légendaire.`
-    : `${prefix}🎉✨ **QUÊTE ANNIVERSAIRE DÉBLOQUÉE** ✨🎉\n🎂 Tout le monde, on fait du bruit pour ${names} !`;
+      )} tournée de bougies pour ${names} ! Sortez les confettis et le loot légendaire 🎂`
+    : `${prefix}**QUÊTE ANNIVERSAIRE DÉBLOQUÉE** ✨🎉\n- Tout le monde, on fait du bruit pour ${names} 🎂`;
 
-  const list = entries
-    .map((entry) => `✨ ${mentionOrDisplay(entry, { mention: true })}`)
-    .join("\n");
   const title = grouped
-    ? `${test ? "TEST - " : ""}🎂 Raid de bougies débloqué !`
-    : `${test ? "TEST - " : ""}🎂 Joyeux anniversaire ${entries[0].display} !`;
+    ? `${test ? "TEST - " : ""}Raid de bougies débloqué ! 🎂`
+    : `${test ? "TEST - " : ""}Joyeux anniversaire ${entries[0].display} ! 🎂`;
   const description = grouped
     ? [
-        `🎮 **Événement rare :** ${birthdayCountLabel(
+        `- **Événement rare :** ${birthdayCountLabel(
           count,
-        )} anniversaire dans la communauté Erwayr.`,
-        `🏆 ${names} partagent la scène du jour et lancent une party pleine de bougies.`,
-        "🎁 **Buff communautaire activé :** confettis, cadeaux, bonne humeur et XP de fête pour tout le général.",
+        )} anniversaire dans la communauté Erwayr 🎮`,
+        `- ${names} partagent la scène du jour et lancent une party pleine de bougies 🏆`,
+        "- **Buff communautaire activé :** confettis, cadeaux, bonne humeur et XP de fête pour tout le général 🎁",
       ].join("\n")
     : [
-        `🏆 **Héros du jour :** ${mentionOrDisplay(entries[0], {
+        `- **Héros du jour :** ${mentionOrDisplay(entries[0], {
           mention: true,
-        })}`,
-        "🎮 **Quête spéciale :** souffler ses bougies avec toute la communauté Erwayr en soutien.",
-        "🎁 **Récompense légendaire :** cadeaux, bons moments, confettis et une pluie de GG dans le général.",
+        })} 🏆`,
+        "- **Quête spéciale :** souffler ses bougies avec toute la communauté Erwayr en soutien 🎮",
+        "- **Récompense légendaire :** cadeaux, bons moments, confettis et une pluie de GG dans le général 🎁",
       ].join("\n");
 
   const embed = new EmbedBuilder()
     .setColor(test ? 0xffa726 : 0xff3d8b)
     .setTitle(title)
     .setDescription(description)
-    .addFields(
-      {
-        name: grouped ? "🎊 Party squad du jour" : "🎊 Héros du jour",
-        value: trimDiscordValue(list),
-        inline: false,
-      },
-      {
-        name: "✨ Mission du serveur",
-        value: grouped
-          ? "Envoyer une vague de vœux, de GG et de bonnes ondes à toute l'équipe anniversaire."
-          : "Remplir le général de vœux, de GG et de petites étincelles de bonne humeur.",
-        inline: false,
-      },
-    )
+    .addFields({
+      name: "Mission du serveur ✨",
+      value: grouped
+        ? "- Envoyer une vague de vœux, de GG et de bonnes ondes à toute l'équipe anniversaire ✨"
+        : "- Remplir le général de vœux, de GG et de petites étincelles de bonne humeur ✨",
+      inline: false,
+    })
     .setFooter({
       text: test
         ? "Erwayr • Preview anniversaire"

@@ -75,7 +75,16 @@ test("buildDiscordBirthdayPayload attaches birthday banner when asset exists", (
     "attachment://birthday-banner.png",
   );
   assert.match(payload.content, /QUÊTE ANNIVERSAIRE DÉBLOQUÉE/);
-  assert.match(payload.embeds[0].data.description, /Récompense légendaire/);
+  assert.match(payload.embeds[0].data.description, /- \*\*Héros du jour :\*\*/);
+  assert.match(payload.embeds[0].data.description, /Récompense légendaire.*🎁/);
+  assert.deepEqual(payload.embeds[0].data.fields, [
+    {
+      name: "Mission du serveur ✨",
+      value:
+        "- Remplir le général de vœux, de GG et de petites étincelles de bonne humeur ✨",
+      inline: false,
+    },
+  ]);
 });
 
 test("buildDiscordBirthdayPayload falls back cleanly without banner", () => {
@@ -131,8 +140,10 @@ test("buildDiscordBirthdayPayload groups multiple birthdays in one payload", () 
   assert.match(payload.content, /double tournée de bougies/);
   assert.match(payload.content, /ANNIVERSAIRE COMMUNAUTÉ/);
   assert.equal(payload.embeds.length, 1);
-  assert.match(payload.embeds[0].data.fields[0].value, /111111111111111111/);
-  assert.match(payload.embeds[0].data.fields[0].value, /222222222222222222/);
+  assert.match(payload.embeds[0].data.description, /111111111111111111/);
+  assert.match(payload.embeds[0].data.description, /222222222222222222/);
+  assert.equal(payload.embeds[0].data.fields.length, 1);
+  assert.equal(payload.embeds[0].data.fields[0].name, "Mission du serveur ✨");
   assert.deepEqual(payload.allowedMentions, {
     parse: [],
     users: ["111111111111111111", "222222222222222222"],
