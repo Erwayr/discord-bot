@@ -1,6 +1,170 @@
 "use strict";
 
+const { EmbedBuilder } = require("discord.js");
 const { commitBatchWithRetry } = require("../helper/firestoreRetry");
+const { asDiscordId } = require("./textUtils");
+
+function safeDiscordText(value, fallback = "") {
+  return String(value || fallback)
+    .trim()
+    .replace(/@/g, "@\u200b");
+}
+
+function normalizeBirthdayLogin(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeBirthdayEntry(entry = {}) {
+  const login = normalizeBirthdayLogin(entry.login || entry.pseudo || entry.id);
+  const display = safeDiscordText(
+    entry.display ||
+      entry.display_name ||
+      entry.displayName ||
+      entry.globalName ||
+      entry.username ||
+      login,
+    login || "membre",
+  );
+  const discordId = asDiscordId(
+    entry.discord_id || entry.discordId || entry.discordID,
+  );
+
+  return {
+    login: login || display.toLowerCase(),
+    display,
+    discord_id: discordId || "",
+  };
+}
+
+function pickDisplayNameFromDoc(docId, data) {
+  return data?.display_name || data?.displayName || data?.pseudo || docId;
+}
+
+function birthdayEntryFromDoc(docId, data = {}) {
+  return normalizeBirthdayEntry({
+    login: docId,
+    display: pickDisplayNameFromDoc(docId, data),
+    discord_id: data?.discord_id,
+  });
+}
+
+function uniqueBirthdayEntries(birthdays = []) {
+  const seen = new Set();
+  return birthdays
+    .map(normalizeBirthdayEntry)
+    .filter((entry) => {
+      const key = entry.discord_id || entry.login || entry.display;
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function mentionOrDisplay(entry, { mention = true } = {}) {
+  const normalized = normalizeBirthdayEntry(entry);
+  if (mention && normalized.discord_id) return `<@${normalized.discord_id}>`;
+  return `**${normalized.display}**`;
+}
+
+function formatBirthdayNameList(entries, { mention = true } = {}) {
+  const names = entries.map((entry) => mentionOrDisplay(entry, { mention }));
+  if (names.length <= 1) return names[0] || "";
+  if (names.length === 2) return `${names[0]} et ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} et ${names[names.length - 1]}`;
+}
+
+function birthdayCountLabel(count) {
+  if (count === 2) return "double";
+  if (count === 3) return "triple";
+  return `${count}x`;
+}
+
+function trimDiscordValue(value, max = 1024) {
+  const text = String(value || "").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+}
+
+function buildDiscordBirthdayPayload({ birthdays = [], test = false } = {}) {
+  const entries = uniqueBirthdayEntries(birthdays);
+  if (!entries.length) return null;
+
+  const mentionIds = entries
+    .map((entry) => entry.discord_id)
+    .filter(Boolean);
+  const names = formatBirthdayNameList(entries, { mention: true });
+  const count = entries.length;
+  const grouped = count > 1;
+  const prefix = test ? "🧪 TEST - non publié\n" : "";
+  const content = grouped
+    ? `${prefix}🎂 Aujourd'hui, ${birthdayCountLabel(
+        count,
+      )} tournée de bougies pour ${names} !`
+    : `${prefix}🎂 Tout le monde, on fait du bruit pour ${names} !`;
+
+  const list = entries
+    .map((entry) => `• ${mentionOrDisplay(entry, { mention: true })}`)
+    .join("\n");
+  const title = grouped
+    ? `${test ? "TEST - " : ""}Joyeux anniversaire a vous ${count} !`
+    : `${test ? "TEST - " : ""}Joyeux anniversaire ${entries[0].display} !`;
+  const description = grouped
+    ? [
+        `Aujourd'hui, ${birthdayCountLabel(
+          count,
+        )} tournée de bougies dans la communauté Erwayr.`,
+        "Un seul message, plusieurs héros du jour: sortez les confettis et faites du bruit dans le général !",
+      ].join("\n")
+    : [
+        `Aujourd'hui, ${mentionOrDisplay(entries[0], {
+          mention: true,
+        })} débloque une quête spéciale: souffler ses bougies avec toute la communauté.`,
+        "Que la journée soit remplie de cadeaux, de bons moments et de loot légendaire.",
+      ].join("\n");
+
+  const embed = new EmbedBuilder()
+    .setColor(test ? 0xf59e0b : 0xf6c85f)
+    .setTitle(title)
+    .setDescription(description)
+    .addFields({
+      name: grouped ? "A célébrer aujourd'hui" : "Héros du jour",
+      value: trimDiscordValue(list),
+      inline: false,
+    })
+    .setFooter({
+      text: test
+        ? "Erwayr • Preview anniversaire"
+        : "Erwayr • Anniversaire du jour",
+    })
+    .setTimestamp(new Date());
+
+  return {
+    content,
+    embeds: [embed],
+    allowedMentions:
+      !test && mentionIds.length
+        ? { parse: [], users: mentionIds }
+        : { parse: [] },
+  };
+}
+
+function discordEntryFromMember(member) {
+  const user = member?.user || member || {};
+  const discordId = asDiscordId(member?.id || user?.id);
+  const display =
+    member?.displayName ||
+    member?.nickname ||
+    user?.globalName ||
+    user?.username ||
+    "membre";
+  return normalizeBirthdayEntry({
+    login: discordId || display,
+    display,
+    discord_id: discordId,
+  });
+}
 
 function createBirthdayService({ db, admin, config }) {
   const birthdayConfig = config.birthdays;
@@ -74,13 +238,9 @@ function createBirthdayService({ db, admin, config }) {
     return null;
   }
 
-  function pickDisplayNameFromDoc(docId, data) {
-    return data?.display_name || data?.displayName || data?.pseudo || docId;
-  }
-
   function birthdayFollowersQuery() {
     const fields = Array.from(
-      new Set([birthdayConfig.field, ...birthdayConfig.displayFields]),
+      new Set([birthdayConfig.field, ...birthdayConfig.displayFields, "discord_id"]),
     );
     return db.collection("followers_all_time").select(...fields);
   }
@@ -113,18 +273,22 @@ function createBirthdayService({ db, admin, config }) {
 
   function birthdayStateFromDoc(docId, data) {
     const login = String(docId || "").toLowerCase();
-    const display = String(pickDisplayNameFromDoc(docId, data) || login);
+    const entry = birthdayEntryFromDoc(docId, data);
+    const display = entry.display;
     const bd = parseBirthday(data?.[birthdayConfig.field]);
-    if (!bd) return { dayKey: "", display };
+    if (!bd) return { dayKey: "", display, discord_id: entry.discord_id };
     const dayKey = monthDayKeyFromParts(bd.month, bd.day);
-    if (!dayKey || dayKey === "00-00") return { dayKey: "", display };
-    return { dayKey, display };
+    if (!dayKey || dayKey === "00-00") {
+      return { dayKey: "", display, discord_id: entry.discord_id };
+    }
+    return { dayKey, display, discord_id: entry.discord_id };
   }
 
   function isSameBirthdayState(a, b) {
     return (
       String(a?.dayKey || "") === String(b?.dayKey || "") &&
-      String(a?.display || "") === String(b?.display || "")
+      String(a?.display || "") === String(b?.display || "") &&
+      String(a?.discord_id || "") === String(b?.discord_id || "")
     );
   }
 
@@ -134,9 +298,9 @@ function createBirthdayService({ db, admin, config }) {
     );
   }
 
-  function upsertBirthdayListEntry(list, login, display) {
+  function upsertBirthdayListEntry(list, login, display, discordId) {
     const next = removeBirthdayListEntry(list, login);
-    next.push({ login, display });
+    next.push({ login, display, discord_id: asDiscordId(discordId) || "" });
     return next;
   }
 
@@ -147,6 +311,7 @@ function createBirthdayService({ db, admin, config }) {
     const oldDayKey = String(prevState?.dayKey || "");
     const newDayKey = String(nextState?.dayKey || "");
     const newDisplay = String(nextState?.display || login);
+    const newDiscordId = asDiscordId(nextState?.discord_id) || "";
     if (!oldDayKey && !newDayKey) return;
 
     await db.runTransaction(async (tx) => {
@@ -173,7 +338,12 @@ function createBirthdayService({ db, admin, config }) {
       if (newDayKey) {
         lists.set(
           newDayKey,
-          upsertBirthdayListEntry(lists.get(newDayKey) || [], login, newDisplay),
+          upsertBirthdayListEntry(
+            lists.get(newDayKey) || [],
+            login,
+            newDisplay,
+            newDiscordId,
+          ),
         );
       }
 
@@ -195,7 +365,14 @@ function createBirthdayService({ db, admin, config }) {
       birthdayToday.delete(login);
     }
     if (newDayKey === todayDayKey) {
-      birthdayToday.set(login, newDisplay);
+      birthdayToday.set(
+        login,
+        normalizeBirthdayEntry({
+          login,
+          display: newDisplay,
+          discord_id: newDiscordId,
+        }),
+      );
     }
   }
 
@@ -254,12 +431,12 @@ function createBirthdayService({ db, admin, config }) {
       const login = String(doc.id || "").toLowerCase();
       if (!login) return;
 
-      const display = String(pickDisplayNameFromDoc(doc.id, data) || login);
+      const entry = birthdayEntryFromDoc(doc.id, data);
       const dayKey = monthDayKeyFromParts(bd.month, bd.day);
       if (!dayKey || dayKey === "00-00") return;
 
       const arr = index.get(dayKey) || [];
-      arr.push({ login, display });
+      arr.push(entry);
       index.set(dayKey, arr);
     });
 
@@ -347,8 +524,7 @@ function createBirthdayService({ db, admin, config }) {
             const login = String(doc.id || "").toLowerCase();
             if (!login) return;
 
-            const display = String(pickDisplayNameFromDoc(doc.id, data) || login);
-            birthdayToday.set(login, display);
+            birthdayToday.set(login, birthdayEntryFromDoc(doc.id, data));
           });
           usedFallback = true;
         } else {
@@ -370,8 +546,7 @@ function createBirthdayService({ db, admin, config }) {
           list.forEach((entry) => {
             const login = String(entry?.login || "").toLowerCase();
             if (!login) return;
-            const display = String(entry?.display || login);
-            birthdayToday.set(login, display);
+            birthdayToday.set(login, normalizeBirthdayEntry({ ...entry, login }));
           });
         }
       } catch (e) {
@@ -399,11 +574,160 @@ function createBirthdayService({ db, admin, config }) {
     const key = `${dk}|${login}`;
     if (birthdayCongratulated.has(key)) return;
 
-    const display = birthdayToday.get(login) || login;
+    const entry = normalizeBirthdayEntry(birthdayToday.get(login) || { login });
+    const display = entry.display || login;
     const msg = buildBirthdayMessage(login, display);
 
     await sendTwitchChatMessage(msg);
     birthdayCongratulated.add(key);
+  }
+
+  function birthdayEntriesForDiscord() {
+    return uniqueBirthdayEntries(Array.from(birthdayToday.values()));
+  }
+
+  function discordAnnouncementCollection() {
+    return (
+      birthdayConfig.discordAnnouncementCollection ||
+      "birthday_discord_announcements"
+    );
+  }
+
+  function nowServerTimestamp() {
+    return admin.firestore.FieldValue.serverTimestamp();
+  }
+
+  function compactBirthdayEntries(entries) {
+    return entries.map((entry) => ({
+      login: entry.login,
+      display: entry.display,
+      discord_id: entry.discord_id || "",
+    }));
+  }
+
+  async function claimDiscordBirthdayAnnouncement(dateKey, entries) {
+    const ref = db.collection(discordAnnouncementCollection()).doc(dateKey);
+    const payload = {
+      dateKey,
+      status: "processing",
+      count: entries.length,
+      birthdays: compactBirthdayEntries(entries),
+      updatedAt: nowServerTimestamp(),
+    };
+
+    if (typeof db.runTransaction === "function") {
+      return db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        const status = String(snap.exists ? snap.data()?.status || "" : "");
+        if (status === "sent") return null;
+        tx.set(
+          ref,
+          {
+            ...payload,
+            processingAt: nowServerTimestamp(),
+          },
+          { merge: true },
+        );
+        return ref;
+      });
+    }
+
+    const snap = await ref.get();
+    const status = String(snap.exists ? snap.data()?.status || "" : "");
+    if (status === "sent") return null;
+    await ref.set(
+      {
+        ...payload,
+        processingAt: nowServerTimestamp(),
+      },
+      { merge: true },
+    );
+    return ref;
+  }
+
+  async function fetchDiscordTextChannel(client, channelId) {
+    if (!channelId) throw new Error("Canal Discord anniversaire manquant.");
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased?.()) {
+      throw new Error(`Canal Discord anniversaire invalide: ${channelId}`);
+    }
+    return channel;
+  }
+
+  async function sendDiscordBirthdayAnnouncements({ client, channelId } = {}) {
+    const dateKey = warsawDateKey(new Date());
+    if (dateKey !== birthdayDateKey) {
+      await refreshTodayBirthdays();
+    }
+
+    const entries = birthdayEntriesForDiscord();
+    if (!entries.length) {
+      return { sent: false, skipped: true, reason: "NO_BIRTHDAY", count: 0 };
+    }
+
+    const ref = await claimDiscordBirthdayAnnouncement(dateKey, entries);
+    if (!ref) {
+      return {
+        sent: false,
+        skipped: true,
+        reason: "ALREADY_SENT",
+        count: entries.length,
+      };
+    }
+
+    try {
+      const payload = buildDiscordBirthdayPayload({ birthdays: entries });
+      const channel = await fetchDiscordTextChannel(client, channelId);
+      const message = await channel.send(payload);
+      await ref.set(
+        {
+          status: "sent",
+          sentAt: nowServerTimestamp(),
+          updatedAt: nowServerTimestamp(),
+          channelId,
+          messageId: message?.id || "",
+        },
+        { merge: true },
+      );
+      return {
+        sent: true,
+        skipped: false,
+        count: entries.length,
+        messageId: message?.id || "",
+      };
+    } catch (e) {
+      await ref.set(
+        {
+          status: "error",
+          errorAt: nowServerTimestamp(),
+          updatedAt: nowServerTimestamp(),
+          lastError: String(e?.message || e).slice(0, 1200),
+        },
+        { merge: true },
+      );
+      throw e;
+    }
+  }
+
+  async function sendDiscordBirthdayTest({
+    client,
+    channelId,
+    members = [],
+  } = {}) {
+    const entries = uniqueBirthdayEntries(members.map(discordEntryFromMember));
+    const payload = buildDiscordBirthdayPayload({ birthdays: entries, test: true });
+    if (!payload) {
+      return { sent: false, skipped: true, reason: "NO_MEMBER", count: 0 };
+    }
+
+    const channel = await fetchDiscordTextChannel(client, channelId);
+    const message = await channel.send(payload);
+    return {
+      sent: true,
+      skipped: false,
+      count: entries.length,
+      messageId: message?.id || "",
+    };
   }
 
   return {
@@ -411,7 +735,12 @@ function createBirthdayService({ db, admin, config }) {
     buildBirthdayIndex,
     handleFollowerChanges,
     maybeSendBirthdayCongrats,
+    sendDiscordBirthdayAnnouncements,
+    sendDiscordBirthdayTest,
   };
 }
 
-module.exports = { createBirthdayService };
+module.exports = {
+  buildDiscordBirthdayPayload,
+  createBirthdayService,
+};

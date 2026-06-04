@@ -180,6 +180,19 @@ function createJobs({
     }
   }
 
+  async function refreshAndSendBirthdayAnnouncements() {
+    await birthdays.refreshTodayBirthdays();
+    const result = await birthdays.sendDiscordBirthdayAnnouncements({
+      client,
+      channelId: config.discord.generalChannelId,
+    });
+    if (result?.sent) {
+      console.log(
+        `[birthday-discord] annonce envoyée (${result.count} anniversaire(s)) -> ${config.discord.generalChannelId}`,
+      );
+    }
+  }
+
   function scheduleCoreJobs() {
     cron.schedule(config.cron.pollClips, pollClipsTick);
 
@@ -254,7 +267,7 @@ function createJobs({
     birthdays.refreshTodayBirthdays().catch(console.error);
     cron.schedule(
       config.cron.birthdayRefresh,
-      () => birthdays.refreshTodayBirthdays().catch(console.error),
+      () => refreshAndSendBirthdayAnnouncements().catch(console.error),
       { timezone: config.timezone },
     );
 
@@ -266,6 +279,7 @@ function createJobs({
   async function runClientReadyJobs() {
     await assignOldMemberCards().catch(console.error);
     await assignServerBoosterCards().catch(console.error);
+    await refreshAndSendBirthdayAnnouncements().catch(console.error);
 
     cron.schedule(config.cron.assignOldMemberCards, () =>
       assignOldMemberCards().catch(console.error),

@@ -172,6 +172,7 @@ registerDiscordEvents({
   firestoreListeners,
   sendWeeklyFollowersRecap,
   weeklyPlanningPublisher,
+  birthdays,
 });
 
 jobs.scheduleCoreJobs();
