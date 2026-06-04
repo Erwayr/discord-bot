@@ -28,9 +28,27 @@ function asCardsArray(cardsLike) {
   return [];
 }
 
+function hasNativeServerBoosterRole(member) {
+  if (!member?.roles) return false;
+  if (member.roles.premiumSubscriberRole) return true;
+  if (typeof member.roles.cache?.some === "function") {
+    return member.roles.cache.some((role) => role?.tags?.premiumSubscriberRole);
+  }
+  if (typeof member.roles.cache?.values === "function") {
+    return [...member.roles.cache.values()].some(
+      (role) => role?.tags?.premiumSubscriberRole,
+    );
+  }
+  return false;
+}
+
 function isServerBoosterMember(member) {
   if (!member || member.user?.bot) return false;
-  return Boolean(member.premiumSinceTimestamp || member.premiumSince);
+  return Boolean(
+    member.premiumSinceTimestamp ||
+      member.premiumSince ||
+      hasNativeServerBoosterRole(member),
+  );
 }
 
 function getServerBoosterStartedAt(member) {
@@ -81,6 +99,7 @@ async function ensureServerBoosterCardTemplate(db) {
   const snap = await ref.get();
   if (!snap.exists) {
     await ref.set(SERVER_BOOSTER_CARD_TEMPLATE);
+    console.log(`✅ Carte "${SERVER_BOOSTER_CARD_ID}" créée dans cards_collections.`);
     return { ...SERVER_BOOSTER_CARD_TEMPLATE };
   }
   return {
@@ -195,6 +214,7 @@ module.exports = {
   ensureServerBoosterCardTemplate,
   getServerBoosterStartedAt,
   grantServerBoosterCardsByDiscordIds,
+  hasNativeServerBoosterRole,
   hasServerBoosterCard,
   isServerBoosterMember,
 };

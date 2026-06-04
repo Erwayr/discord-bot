@@ -109,8 +109,10 @@ function createJobs({
   }
 
   async function assignServerBoosterCards() {
+    const cardTemplate = await ensureServerBoosterCardTemplate(db);
     const boosterMembersById = new Map();
     for (const guild of client.guilds.cache.values()) {
+      let guildBoosterCount = 0;
       const members = await fetchGuildMembersForJob(
         guild,
         "assignServerBoosterCards",
@@ -118,13 +120,21 @@ function createJobs({
       members.forEach((member) => {
         if (isServerBoosterMember(member)) {
           boosterMembersById.set(member.id, member);
+          guildBoosterCount += 1;
         }
       });
+      console.log(
+        `🔎 [assign-server-booster-cards] ${guild.name}: ${guildBoosterCount} booster(s) détecté(s) sur ${members.size} membre(s) chargé(s).`,
+      );
     }
 
-    if (boosterMembersById.size === 0) return;
+    if (boosterMembersById.size === 0) {
+      console.log(
+        "ℹ️ [assign-server-booster-cards] aucun booster Discord détecté.",
+      );
+      return;
+    }
 
-    const cardTemplate = await ensureServerBoosterCardTemplate(db);
     const result = await grantServerBoosterCardsByDiscordIds({
       db,
       admin,

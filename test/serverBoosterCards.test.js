@@ -9,6 +9,7 @@ const {
   buildServerBoosterCard,
   buildServerBoosterUpdatePayload,
   getServerBoosterStartedAt,
+  hasNativeServerBoosterRole,
   hasServerBoosterCard,
   isServerBoosterMember,
 } = require("../script/serverBoosterCards");
@@ -36,6 +37,18 @@ test("isServerBoosterMember detects native Discord boost state", () => {
   );
   assert.equal(
     isServerBoosterMember({
+      id: "role",
+      user: { bot: false },
+      roles: {
+        cache: new Map([
+          ["booster", { tags: { premiumSubscriberRole: true } }],
+        ]),
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isServerBoosterMember({
       id: "3",
       user: { bot: true },
       premiumSinceTimestamp: Date.now(),
@@ -43,6 +56,36 @@ test("isServerBoosterMember detects native Discord boost state", () => {
     false,
   );
   assert.equal(isServerBoosterMember({ id: "4", user: { bot: false } }), false);
+});
+
+test("hasNativeServerBoosterRole detects the tagged Discord role", () => {
+  assert.equal(
+    hasNativeServerBoosterRole({
+      roles: {
+        premiumSubscriberRole: { id: "native-booster-role" },
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    hasNativeServerBoosterRole({
+      roles: {
+        cache: new Map([
+          ["member", { tags: {} }],
+          ["booster", { tags: { premiumSubscriberRole: true } }],
+        ]),
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    hasNativeServerBoosterRole({
+      roles: {
+        cache: new Map([["member", { tags: {} }]]),
+      },
+    }),
+    false,
+  );
 });
 
 test("buildServerBoosterCard keeps permanent collection metadata", () => {
