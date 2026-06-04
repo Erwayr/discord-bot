@@ -3,6 +3,11 @@
 const cron = require("node-cron");
 const { commitBatchWithRetry } = require("../helper/firestoreRetry");
 const { shortText } = require("./textUtils");
+const {
+  ensureServerBoosterCardTemplate,
+  grantServerBoosterCardsByDiscordIds,
+  isServerBoosterMember,
+} = require("../script/serverBoosterCards");
 
 function createJobs({
   db,
@@ -85,6 +90,83 @@ function createJobs({
 
       await commitBatchWithRetry(batch, { label: "assign-old-member-cards" });
       console.log(`✅ Batch de ${chunk.length} membres traité.`);
+    }
+  }
+
+  async function fetchGuildMembersForJob(guild, label) {
+    try {
+      return await guild.members.fetch({
+        withPresences: false,
+        time: 300_000,
+      });
+    } catch (e) {
+      console.warn(
+        `⚠️ members.fetch (${label}) a échoué, fallback cache:`,
+        e?.code || e?.message || e,
+      );
+      return guild.members.cache;
+    }
+  }
+
+  async function assignServerBoosterCards() {
+    const boosterMembersById = new Map();
+    for (const guild of client.guilds.cache.values()) {
+      const members = await fetchGuildMembersForJob(
+        guild,
+        "assignServerBoosterCards",
+      );
+      members.forEach((member) => {
+        if (isServerBoosterMember(member)) {
+          boosterMembersById.set(member.id, member);
+        }
+      });
+    }
+
+    if (boosterMembersById.size === 0) return;
+
+    const cardTemplate = await ensureServerBoosterCardTemplate(db);
+    const result = await grantServerBoosterCardsByDiscordIds({
+      db,
+      admin,
+      discordIds: [...boosterMembersById.keys()],
+      cardTemplate,
+      memberById: boosterMembersById,
+      batchSize: config.batchSize,
+      label: "assign-server-booster-cards",
+    });
+
+    if (result.missing > 0) {
+      console.log(
+        `ℹ️ [assign-server-booster-cards] ${result.missing} booster(s) sans profil Twitch lié.`,
+      );
+    }
+  }
+
+  async function assignServerBoosterCardForMember(
+    member,
+    { previousMember = null } = {},
+  ) {
+    if (!isServerBoosterMember(member)) return;
+    if (previousMember && isServerBoosterMember(previousMember)) return;
+
+    const discordId = String(member?.id || "").trim();
+    if (!discordId) return;
+
+    const cardTemplate = await ensureServerBoosterCardTemplate(db);
+    const result = await grantServerBoosterCardsByDiscordIds({
+      db,
+      admin,
+      discordIds: [discordId],
+      cardTemplate,
+      memberById: new Map([[discordId, member]]),
+      batchSize: 1,
+      label: "guild-member-update-server-booster",
+    });
+
+    if (result.missing > 0) {
+      console.log(
+        `ℹ️ [guild-member-update-server-booster] aucun profil lié pour ${discordId}.`,
+      );
     }
   }
 
@@ -173,9 +255,13 @@ function createJobs({
 
   async function runClientReadyJobs() {
     await assignOldMemberCards().catch(console.error);
+    await assignServerBoosterCards().catch(console.error);
 
     cron.schedule(config.cron.assignOldMemberCards, () =>
       assignOldMemberCards().catch(console.error),
+    );
+    cron.schedule(config.cron.assignServerBoosterCards, () =>
+      assignServerBoosterCards().catch(console.error),
     );
 
     cron.schedule(
@@ -213,6 +299,8 @@ function createJobs({
     scheduleCoreJobs,
     runClientReadyJobs,
     assignOldMemberCards,
+    assignServerBoosterCards,
+    assignServerBoosterCardForMember,
   };
 }
 

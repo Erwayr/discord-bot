@@ -91,6 +91,19 @@ function registerDiscordEvents({
     });
   });
 
+  client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+    await jobs
+      .assignServerBoosterCardForMember(newMember, {
+        previousMember: oldMember,
+      })
+      .catch((err) => {
+        console.error(
+          "[discord] assignServerBoosterCardForMember failed:",
+          err,
+        );
+      });
+  });
+
   client.on(Events.MessageReactionAdd, (r, u) =>
     handleVoteChange(r, u, true, db),
   );

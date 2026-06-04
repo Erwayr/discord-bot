@@ -73,6 +73,8 @@ const config = {
     livePresence: "*/2 * * * *",
     birthdayRefresh: "0 0 * * *",
     assignOldMemberCards: "0 0 * * *",
+    assignServerBoosterCards:
+      process.env.CRON_ASSIGN_SERVER_BOOSTER_CARDS || "0 0 * * *",
     emoteRefresh: "0 */6 * * *",
     weeklyRecap: process.env.CRON_WEEKLY_RECAP || "0 9 * * 1",
     weeklyPlanning: process.env.CRON_WEEKLY_PLANNING || "0 9 * * 1",
