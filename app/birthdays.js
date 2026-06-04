@@ -8,6 +8,11 @@ const { asDiscordId } = require("./textUtils");
 
 const BIRTHDAY_BANNER_FILENAME = "birthday-banner.png";
 const BIRTHDAY_BANNER_ATTACHMENT_URL = `attachment://${BIRTHDAY_BANNER_FILENAME}`;
+const BIRTHDAY_RUBY_REWARD_AMOUNT = 500;
+const BIRTHDAY_RUBY_EMOJI = "♦️";
+const BIRTHDAY_RUBY_TRANSACTION_TYPE = "birthday_reward";
+const BIRTHDAY_RUBY_TRANSACTION_SOURCE = "birthday_discord_announcement";
+const POPS_SCHEMA_VERSION = 1;
 const DEFAULT_BIRTHDAY_BANNER_PATH = path.join(
   __dirname,
   "..",
@@ -92,6 +97,30 @@ function birthdayCountLabel(count) {
   return `${count}x`;
 }
 
+function toSafeCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+}
+
+function normalizePopsWallet(source = {}) {
+  const wallet =
+    source?.pops && typeof source.pops === "object" ? source.pops : source;
+  const balance = toSafeCount(wallet?.balance);
+  const lifetimeEarned = Math.max(balance, toSafeCount(wallet?.lifetimeEarned));
+
+  return {
+    balance,
+    lifetimeEarned,
+    schemaVersion: Number(wallet?.schemaVersion || POPS_SCHEMA_VERSION),
+  };
+}
+
+function birthdayPopsTransactionId(dateKey, login) {
+  const safeDateKey = String(dateKey || "").replace(/[^0-9A-Za-z_-]/g, "_");
+  const safeLogin = normalizeBirthdayLogin(login).replace(/[^0-9a-z_-]/g, "_");
+  return `birthday_${safeDateKey}_${safeLogin || "unknown"}`;
+}
+
 function resolveBirthdayBannerAttachment(
   bannerPath = DEFAULT_BIRTHDAY_BANNER_PATH,
 ) {
@@ -132,16 +161,16 @@ function buildDiscordBirthdayPayload({
     ? [
         `- **Événement rare :** ${birthdayCountLabel(
           count,
-        )} anniversaire dans la communauté Erwayr 🎮`,
+      )} anniversaire dans la communauté Erwayr 🎮`,
         `- ${names} partagent la scène du jour et lancent une party pleine de bougies 🏆`,
-        "- **Buff communautaire activé :** confettis, cadeaux, bonne humeur et XP de fête pour tout le général 🎁",
+        `- **Récompense légendaire :** Une pluie de rubis pour les plus beaux des joyaux : +${BIRTHDAY_RUBY_REWARD_AMOUNT} ${BIRTHDAY_RUBY_EMOJI} chacun ${BIRTHDAY_RUBY_EMOJI}`,
       ].join("\n")
     : [
         `- **Héros du jour :** ${mentionOrDisplay(entries[0], {
           mention: true,
         })} 🏆`,
-        "- **Quête spéciale :** souffler ses bougies avec toute la communauté Erwayr en soutien 🎮",
-        "- **Récompense légendaire :** cadeaux, bons moments, confettis et une pluie de GG dans le général 🎁",
+        "- **Quête spéciale :** souffler ses bougies avec toute la communauté des loulous 🎮",
+        `- **Récompense légendaire :** Une pluie de rubis pour le plus beau des joyaux : +${BIRTHDAY_RUBY_REWARD_AMOUNT} ${BIRTHDAY_RUBY_EMOJI} ${BIRTHDAY_RUBY_EMOJI}`,
       ].join("\n");
 
   const embed = new EmbedBuilder()
@@ -636,6 +665,152 @@ function createBirthdayService({ db, admin, config }) {
     }));
   }
 
+  async function awardBirthdayRubyReward(dateKey, entry) {
+    const birthdayEntry = normalizeBirthdayEntry(entry);
+    const login = normalizeBirthdayLogin(birthdayEntry.login);
+    if (!login) {
+      return { awarded: false, reason: "NO_LOGIN", amount: 0 };
+    }
+
+    const followerRef = db.collection("followers_all_time").doc(login);
+    const transactionId = birthdayPopsTransactionId(dateKey, login);
+    const transactionRef = followerRef
+      .collection("pops_transactions")
+      .doc(transactionId);
+
+    if (typeof db.runTransaction === "function") {
+      return db.runTransaction(async (tx) => {
+        const [followerSnap, transactionSnap] = await Promise.all([
+          tx.get(followerRef),
+          tx.get(transactionRef),
+        ]);
+
+        if (!followerSnap.exists) {
+          return {
+            awarded: false,
+            reason: "FOLLOWER_NOT_FOUND",
+            login,
+            amount: 0,
+            transactionId,
+          };
+        }
+        if (transactionSnap.exists) {
+          return {
+            awarded: false,
+            reason: "ALREADY_AWARDED",
+            login,
+            amount: 0,
+            transactionId,
+          };
+        }
+
+        const currentWallet = normalizePopsWallet(followerSnap.data() || {});
+        const nextWallet = {
+          balance: currentWallet.balance + BIRTHDAY_RUBY_REWARD_AMOUNT,
+          lifetimeEarned:
+            currentWallet.lifetimeEarned + BIRTHDAY_RUBY_REWARD_AMOUNT,
+          schemaVersion: POPS_SCHEMA_VERSION,
+        };
+        const awardedAt = new Date();
+
+        tx.update(followerRef, {
+          "pops.balance": nextWallet.balance,
+          "pops.lifetimeEarned": nextWallet.lifetimeEarned,
+          "pops.updatedAt": awardedAt,
+          "pops.schemaVersion": POPS_SCHEMA_VERSION,
+        });
+        tx.set(transactionRef, {
+          type: BIRTHDAY_RUBY_TRANSACTION_TYPE,
+          source: BIRTHDAY_RUBY_TRANSACTION_SOURCE,
+          amount: BIRTHDAY_RUBY_REWARD_AMOUNT,
+          dateKey,
+          login,
+          display: birthdayEntry.display,
+          createdAt: awardedAt,
+          schemaVersion: POPS_SCHEMA_VERSION,
+          serverAuthoritative: true,
+        });
+
+        return {
+          awarded: true,
+          reason: "AWARDED",
+          login,
+          amount: BIRTHDAY_RUBY_REWARD_AMOUNT,
+          before: currentWallet.balance,
+          after: nextWallet.balance,
+          transactionId,
+        };
+      });
+    }
+
+    const transactionSnap = await transactionRef.get();
+    if (transactionSnap.exists) {
+      return {
+        awarded: false,
+        reason: "ALREADY_AWARDED",
+        login,
+        amount: 0,
+        transactionId,
+      };
+    }
+
+    const followerSnap = await followerRef.get();
+    if (!followerSnap.exists) {
+      return {
+        awarded: false,
+        reason: "FOLLOWER_NOT_FOUND",
+        login,
+        amount: 0,
+        transactionId,
+      };
+    }
+
+    const currentWallet = normalizePopsWallet(followerSnap.data() || {});
+    const nextWallet = {
+      balance: currentWallet.balance + BIRTHDAY_RUBY_REWARD_AMOUNT,
+      lifetimeEarned:
+        currentWallet.lifetimeEarned + BIRTHDAY_RUBY_REWARD_AMOUNT,
+      schemaVersion: POPS_SCHEMA_VERSION,
+    };
+    const awardedAt = new Date();
+
+    await followerRef.update({
+      "pops.balance": nextWallet.balance,
+      "pops.lifetimeEarned": nextWallet.lifetimeEarned,
+      "pops.updatedAt": awardedAt,
+      "pops.schemaVersion": POPS_SCHEMA_VERSION,
+    });
+    await transactionRef.set({
+      type: BIRTHDAY_RUBY_TRANSACTION_TYPE,
+      source: BIRTHDAY_RUBY_TRANSACTION_SOURCE,
+      amount: BIRTHDAY_RUBY_REWARD_AMOUNT,
+      dateKey,
+      login,
+      display: birthdayEntry.display,
+      createdAt: awardedAt,
+      schemaVersion: POPS_SCHEMA_VERSION,
+      serverAuthoritative: true,
+    });
+
+    return {
+      awarded: true,
+      reason: "AWARDED",
+      login,
+      amount: BIRTHDAY_RUBY_REWARD_AMOUNT,
+      before: currentWallet.balance,
+      after: nextWallet.balance,
+      transactionId,
+    };
+  }
+
+  async function awardBirthdayRubyRewards(dateKey, entries) {
+    const rewards = [];
+    for (const entry of entries) {
+      rewards.push(await awardBirthdayRubyReward(dateKey, entry));
+    }
+    return rewards;
+  }
+
   async function claimDiscordBirthdayAnnouncement(dateKey, entries) {
     const ref = db.collection(discordAnnouncementCollection()).doc(dateKey);
     const payload = {
@@ -708,6 +883,7 @@ function createBirthdayService({ db, admin, config }) {
 
     try {
       const payload = buildDiscordBirthdayPayload({ birthdays: entries });
+      const rewardResults = await awardBirthdayRubyRewards(dateKey, entries);
       const channel = await fetchDiscordTextChannel(client, channelId);
       const message = await channel.send(payload);
       await ref.set(
@@ -717,6 +893,8 @@ function createBirthdayService({ db, admin, config }) {
           updatedAt: nowServerTimestamp(),
           channelId,
           messageId: message?.id || "",
+          rubyRewardAmount: BIRTHDAY_RUBY_REWARD_AMOUNT,
+          rubyRewards: rewardResults,
         },
         { merge: true },
       );
@@ -725,6 +903,7 @@ function createBirthdayService({ db, admin, config }) {
         skipped: false,
         count: entries.length,
         messageId: message?.id || "",
+        rubyRewards: rewardResults,
       };
     } catch (e) {
       await ref.set(
