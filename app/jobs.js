@@ -28,6 +28,96 @@ function createJobs({
   let announcedStartedAt = null;
   let offlineStreak = 0;
 
+  function isCommunityLevelRankRefreshEnabled() {
+    return (
+      config.communityLevel?.enabled &&
+      config.communityLevel?.rankCron &&
+      config.communityLevel.rankCron !== "0"
+    );
+  }
+
+  async function runCommunityLevelRankRefresh(source) {
+    if (!isCommunityLevelRankRefreshEnabled()) return null;
+
+    if (communityLevelRankRefreshPromise) {
+      console.log(
+        `[community-level] rank refresh déjà en cours, skip (${source})`,
+      );
+      return communityLevelRankRefreshPromise;
+    }
+
+    communityLevelRankRefreshPromise = (async () => {
+      try {
+        console.log(`[community-level] rank refresh run (${source})`);
+        return await refreshCommunityLevelRanks();
+      } catch (e) {
+        console.error(
+          "[community-level] rank refresh failed:",
+          e?.message || e,
+        );
+        return null;
+      } finally {
+        communityLevelRankRefreshPromise = null;
+      }
+    })();
+
+    return communityLevelRankRefreshPromise;
+  }
+
+  async function startCommunityLevelRankCronDuringLive(streamId) {
+    if (!isCommunityLevelRankRefreshEnabled()) return;
+
+    if (!communityLevelRankTask) {
+      communityLevelRankTask = cron.schedule(
+        config.communityLevel.rankCron,
+        () => runCommunityLevelRankRefresh("live-cron"),
+        {
+          timezone: config.timezone,
+          noOverlap: true,
+        },
+      );
+
+      communityLevelRankTaskStarted = true;
+
+      console.log(
+        `[community-level] rank refresh task created (${config.communityLevel.rankCron}, tz=${config.timezone})`,
+      );
+
+      return;
+    }
+
+    if (!communityLevelRankTaskStarted) {
+      await Promise.resolve(communityLevelRankTask.start?.());
+      communityLevelRankTaskStarted = true;
+
+      console.log(
+        `[community-level] rank refresh cron restarted during live (${streamId})`,
+      );
+    }
+  }
+
+  async function stopCommunityLevelRankCronAndRunFinal(streamId) {
+    if (!isCommunityLevelRankRefreshEnabled()) return;
+
+    if (communityLevelRankTask && communityLevelRankTaskStarted) {
+      await Promise.resolve(communityLevelRankTask.stop?.());
+      communityLevelRankTaskStarted = false;
+
+      console.log(
+        `[community-level] rank refresh cron stopped after live (${streamId})`,
+      );
+    }
+
+    if (communityLevelRankRefreshPromise) {
+      console.log(
+        "[community-level] waiting current rank refresh before final live-end run",
+      );
+      await communityLevelRankRefreshPromise.catch(() => null);
+    }
+
+    await runCommunityLevelRankRefresh("live-end-final");
+  }
+
   async function refreshCommunityLevelRanks() {
     const communityLevelConfig =
       typeof getCommunityLevelConfig === "function"
@@ -247,7 +337,7 @@ function createJobs({
       const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
       const currentId = streamId || null;
 
-      if (currentId) {
+if (currentId) {
         offlineStreak = 0;
 
         if (announcedStreamId !== currentId) {
@@ -259,7 +349,16 @@ function createJobs({
               announcedStartedAt ? announcedStartedAt.toISOString() : "-"
             })`,
           );
+
+          await startCommunityLevelRankCronDuringLive(announcedStreamId).catch(
+            (e) =>
+              console.error(
+                "[community-level] rank cron start failed:",
+                e?.message || e,
+              ),
+          );
         }
+
         return;
       }
 
@@ -268,13 +367,24 @@ function createJobs({
         announcedStreamId &&
         offlineStreak === config.timing.offlineConfirmTicks
       ) {
+        const endedStreamId = announcedStreamId;
+        const endedStartedAt = announcedStartedAt;
+
         console.log(
-          `🔴 [LIVE] end (streamId=${announcedStreamId}, startedAt=${
-            announcedStartedAt ? announcedStartedAt.toISOString() : "-"
+          `🔴 [LIVE] end (streamId=${endedStreamId}, startedAt=${
+            endedStartedAt ? endedStartedAt.toISOString() : "-"
           })`,
         );
+
         announcedStreamId = null;
         announcedStartedAt = null;
+
+        await stopCommunityLevelRankCronAndRunFinal(endedStreamId).catch((e) =>
+          console.error(
+            "[community-level] final rank refresh failed:",
+            e?.message || e,
+          ),
+        );
       }
     });
 
@@ -288,24 +398,6 @@ function createJobs({
     cron.schedule(config.cron.emoteRefresh, () =>
       twitchChat.refreshChannelEmotesThrottled().catch(console.error),
     );
-
-    if (
-      config.communityLevel?.enabled &&
-      config.communityLevel?.rankCron &&
-      config.communityLevel.rankCron !== "0"
-    ) {
-      cron.schedule(
-        config.communityLevel.rankCron,
-        () =>
-          refreshCommunityLevelRanks().catch((e) =>
-            console.error("[community-level] rank refresh failed:", e?.message || e),
-          ),
-        { timezone: config.timezone },
-      );
-      console.log(
-        `[community-level] rank refresh scheduled (${config.communityLevel.rankCron}, tz=${config.timezone})`,
-      );
-    }
   }
 
   async function runClientReadyJobs() {
