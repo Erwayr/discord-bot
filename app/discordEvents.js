@@ -29,6 +29,7 @@ function registerDiscordEvents({
   firestoreListeners,
   sendWeeklyFollowersRecap,
   weeklyPlanningPublisher,
+  birthdays,
 }) {
   client.once(Events.ClientReady, async () => {
     console.log(`✅ Connecté en tant que ${client.user.tag}`);
@@ -89,6 +90,19 @@ function registerDiscordEvents({
       welcomeChannelId: config.discord.generalChannelId,
       autoRoleName: "Nouveau",
     });
+  });
+
+  client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+    await jobs
+      .assignServerBoosterCardForMember(newMember, {
+        previousMember: oldMember,
+      })
+      .catch((err) => {
+        console.error(
+          "[discord] assignServerBoosterCardForMember failed:",
+          err,
+        );
+      });
   });
 
   client.on(Events.MessageReactionAdd, (r, u) =>
@@ -170,7 +184,8 @@ function registerDiscordEvents({
       },
     );
 
-    const command = message.content.trim().toLowerCase();
+    const content = message.content.trim();
+    const command = content.split(/\s+/)[0]?.toLowerCase() || "";
 
     if (command === "!weeklyrecap") {
       const canRun = message.member?.permissions?.has("ManageGuild");
@@ -233,6 +248,54 @@ function registerDiscordEvents({
         console.error("[weekly-planning] command failed:", e?.message || e);
         await message.reply(
           `❌ Impossible de générer le planning: ${
+            e?.message || "erreur inconnue"
+          }`,
+        );
+      }
+      return;
+    }
+
+    if (command === "!annivtest" || command === "!birthdaytest") {
+      if (message.channelId !== config.discord.logChannelId) {
+        await message.reply(
+          "❌ Cette commande de test est disponible uniquement dans le salon logs.",
+        );
+        return;
+      }
+
+      const canRun = message.member?.permissions?.has("ManageGuild");
+      if (!canRun) {
+        await message.reply(
+          "❌ Tu n'as pas la permission pour tester les anniversaires.",
+        );
+        return;
+      }
+
+      if (!birthdays?.sendDiscordBirthdayTest) {
+        await message.reply(
+          "❌ Le module anniversaire Discord n'est pas disponible.",
+        );
+        return;
+      }
+
+      const mentionedMembers = message.mentions?.members
+        ? Array.from(message.mentions.members.values())
+        : [];
+      const members = mentionedMembers.length
+        ? mentionedMembers
+        : [message.member].filter(Boolean);
+
+      try {
+        await birthdays.sendDiscordBirthdayTest({
+          client,
+          channelId: config.discord.logChannelId,
+          members,
+        });
+        await message.react("\u2705").catch(() => {});
+      } catch (e) {
+        console.error("[birthday-discord] test command failed:", e?.message || e);
+        await message.reply(
+          `❌ Impossible de générer le test anniversaire: ${
             e?.message || "erreur inconnue"
           }`,
         );

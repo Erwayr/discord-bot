@@ -4,6 +4,11 @@ const cron = require("node-cron");
 const { commitBatchWithRetry } = require("../helper/firestoreRetry");
 const { recalculateCommunityLevelRanks } = require("../script/communityLevel");
 const { shortText } = require("./textUtils");
+const {
+  ensureServerBoosterCardTemplate,
+  grantServerBoosterCardsByDiscordIds,
+  isServerBoosterMember,
+} = require("../script/serverBoosterCards");
 
 function createJobs({
   db,
@@ -102,6 +107,106 @@ function createJobs({
     }
   }
 
+  async function fetchGuildMembersForJob(guild, label) {
+    try {
+      return await guild.members.fetch({
+        withPresences: false,
+        time: 300_000,
+      });
+    } catch (e) {
+      console.warn(
+        `⚠️ members.fetch (${label}) a échoué, fallback cache:`,
+        e?.code || e?.message || e,
+      );
+      return guild.members.cache;
+    }
+  }
+
+  async function assignServerBoosterCards() {
+    const cardTemplate = await ensureServerBoosterCardTemplate(db);
+    const boosterMembersById = new Map();
+    for (const guild of client.guilds.cache.values()) {
+      let guildBoosterCount = 0;
+      const members = await fetchGuildMembersForJob(
+        guild,
+        "assignServerBoosterCards",
+      );
+      members.forEach((member) => {
+        if (isServerBoosterMember(member)) {
+          boosterMembersById.set(member.id, member);
+          guildBoosterCount += 1;
+        }
+      });
+      console.log(
+        `🔎 [assign-server-booster-cards] ${guild.name}: ${guildBoosterCount} booster(s) détecté(s) sur ${members.size} membre(s) chargé(s).`,
+      );
+    }
+
+    if (boosterMembersById.size === 0) {
+      console.log(
+        "ℹ️ [assign-server-booster-cards] aucun booster Discord détecté.",
+      );
+      return;
+    }
+
+    const result = await grantServerBoosterCardsByDiscordIds({
+      db,
+      admin,
+      discordIds: [...boosterMembersById.keys()],
+      cardTemplate,
+      memberById: boosterMembersById,
+      batchSize: config.batchSize,
+      label: "assign-server-booster-cards",
+    });
+
+    if (result.missing > 0) {
+      console.log(
+        `ℹ️ [assign-server-booster-cards] ${result.missing} booster(s) sans profil Twitch lié.`,
+      );
+    }
+  }
+
+  async function assignServerBoosterCardForMember(
+    member,
+    { previousMember = null } = {},
+  ) {
+    if (!isServerBoosterMember(member)) return;
+    if (previousMember && isServerBoosterMember(previousMember)) return;
+
+    const discordId = String(member?.id || "").trim();
+    if (!discordId) return;
+
+    const cardTemplate = await ensureServerBoosterCardTemplate(db);
+    const result = await grantServerBoosterCardsByDiscordIds({
+      db,
+      admin,
+      discordIds: [discordId],
+      cardTemplate,
+      memberById: new Map([[discordId, member]]),
+      batchSize: 1,
+      label: "guild-member-update-server-booster",
+    });
+
+    if (result.missing > 0) {
+      console.log(
+        `ℹ️ [guild-member-update-server-booster] aucun profil lié pour ${discordId}.`,
+      );
+    }
+  }
+
+  async function refreshAndSendBirthdayAnnouncements() {
+    await birthdays.refreshTodayBirthdays();
+    const result = await birthdays.sendDiscordBirthdayAnnouncements({
+      client,
+      channelId: config.discord.generalChannelId,
+    });
+    if (result?.sent) {
+      console.log(
+        `[birthday-discord] annonce envoyée (${result.count} anniversaire(s)) -> ${config.discord.generalChannelId}`,
+      );
+    }
+  }
+
   function scheduleCoreJobs() {
     cron.schedule(config.cron.pollClips, pollClipsTick);
 
@@ -176,7 +281,7 @@ function createJobs({
     birthdays.refreshTodayBirthdays().catch(console.error);
     cron.schedule(
       config.cron.birthdayRefresh,
-      () => birthdays.refreshTodayBirthdays().catch(console.error),
+      () => refreshAndSendBirthdayAnnouncements().catch(console.error),
       { timezone: config.timezone },
     );
 
@@ -205,9 +310,14 @@ function createJobs({
 
   async function runClientReadyJobs() {
     await assignOldMemberCards().catch(console.error);
+    await assignServerBoosterCards().catch(console.error);
+    await refreshAndSendBirthdayAnnouncements().catch(console.error);
 
     cron.schedule(config.cron.assignOldMemberCards, () =>
       assignOldMemberCards().catch(console.error),
+    );
+    cron.schedule(config.cron.assignServerBoosterCards, () =>
+      assignServerBoosterCards().catch(console.error),
     );
 
     cron.schedule(
@@ -245,6 +355,8 @@ function createJobs({
     scheduleCoreJobs,
     runClientReadyJobs,
     assignOldMemberCards,
+    assignServerBoosterCards,
+    assignServerBoosterCardForMember,
     refreshCommunityLevelRanks,
   };
 }

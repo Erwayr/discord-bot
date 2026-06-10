@@ -72,10 +72,13 @@ const config = {
       process.env.BIRTHDAY_INDEX_COLLECTION || "birthdays_index",
     indexMetaDoc:
       process.env.BIRTHDAY_INDEX_META_DOC || "settings/birthday_index_meta",
+    discordAnnouncementCollection:
+      process.env.BIRTHDAY_DISCORD_ANNOUNCEMENT_COLLECTION ||
+      "birthday_discord_announcements",
     indexMaxAgeHours: Number(process.env.BIRTHDAY_INDEX_MAX_AGE_HOURS || 0),
     indexFallbackScan: process.env.BIRTHDAY_INDEX_FALLBACK_SCAN === "1",
     displayFields: ["display_name", "displayName", "pseudo"],
-    indexVersion: 2,
+    indexVersion: 3,
   },
 
   cron: {
@@ -84,6 +87,8 @@ const config = {
     livePresence: "*/2 * * * *",
     birthdayRefresh: "0 0 * * *",
     assignOldMemberCards: "0 0 * * *",
+    assignServerBoosterCards:
+      process.env.CRON_ASSIGN_SERVER_BOOSTER_CARDS || "0 0 * * *",
     emoteRefresh: "0 */6 * * *",
     weeklyRecap: process.env.CRON_WEEKLY_RECAP || "0 9 * * 1",
     weeklyPlanning: process.env.CRON_WEEKLY_PLANNING || "0 9 * * 1",
