@@ -2,6 +2,17 @@
 
 const { EXCLUDED_USER_NAMES } = require("../helper/excludedUsers");
 
+function numberEnv(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function boolEnv(name, fallback = true) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(raw).trim().toLowerCase());
+}
+
 const config = {
   discord: {
     logChannelId: process.env.LOG_CHANNEL_ID || "1377870229153120257",
@@ -110,6 +121,24 @@ const config = {
         popsReward: Number(process.env.WEEKLY_RECAP_RANK3_POPS || 25),
       },
     ],
+  },
+
+  communityLevel: {
+    enabled: boolEnv("COMMUNITY_LEVEL_ENABLED", true),
+    chatXp: numberEnv("COMMUNITY_LEVEL_CHAT_XP", 1),
+    chatCooldownMs: numberEnv("COMMUNITY_LEVEL_CHAT_COOLDOWN_MS", 60_000),
+    chatXpCapPerStream: numberEnv("COMMUNITY_LEVEL_CHAT_XP_CAP_PER_STREAM", 120),
+    baseXp: numberEnv("COMMUNITY_LEVEL_BASE_XP", 100),
+    growthXp: numberEnv("COMMUNITY_LEVEL_GROWTH_XP", 25),
+    maxLevel: numberEnv("COMMUNITY_LEVEL_MAX_LEVEL", 999),
+    legacyDoubleWrite: boolEnv("COMMUNITY_LEVEL_LEGACY_DOUBLE_WRITE", true),
+    rankCron: process.env.CRON_COMMUNITY_LEVEL_RANKS || "*/10 * * * *",
+    rankBatchSize: numberEnv("COMMUNITY_LEVEL_RANK_BATCH_SIZE", 400),
+  },
+
+  twitchCommands: {
+    userCooldownMs: numberEnv("TWITCH_COMMAND_USER_COOLDOWN_MS", 10_000),
+    globalCooldownMs: numberEnv("TWITCH_COMMAND_GLOBAL_COOLDOWN_MS", 2_000),
   },
 
   planning: {

@@ -2,6 +2,7 @@
 
 const cron = require("node-cron");
 const { commitBatchWithRetry } = require("../helper/firestoreRetry");
+const { recalculateCommunityLevelRanks } = require("../script/communityLevel");
 const { shortText } = require("./textUtils");
 
 function createJobs({
@@ -16,10 +17,23 @@ function createJobs({
   authHealth,
   birthdays,
   twitchChat,
+  getCommunityLevelConfig,
 }) {
   let announcedStreamId = null;
   let announcedStartedAt = null;
   let offlineStreak = 0;
+
+  async function refreshCommunityLevelRanks() {
+    const communityLevelConfig =
+      typeof getCommunityLevelConfig === "function"
+        ? await getCommunityLevelConfig({ refresh: true })
+        : config.communityLevel;
+    const result = await recalculateCommunityLevelRanks(db, communityLevelConfig);
+    if (!result?.skipped) {
+      console.log(`[community-level] ranks refreshed (${result.updated} profils)`);
+    }
+    return result;
+  }
 
   async function assignOldMemberCards() {
     const cardSnap = await db
@@ -169,6 +183,24 @@ function createJobs({
     cron.schedule(config.cron.emoteRefresh, () =>
       twitchChat.refreshChannelEmotesThrottled().catch(console.error),
     );
+
+    if (
+      config.communityLevel?.enabled &&
+      config.communityLevel?.rankCron &&
+      config.communityLevel.rankCron !== "0"
+    ) {
+      cron.schedule(
+        config.communityLevel.rankCron,
+        () =>
+          refreshCommunityLevelRanks().catch((e) =>
+            console.error("[community-level] rank refresh failed:", e?.message || e),
+          ),
+        { timezone: config.timezone },
+      );
+      console.log(
+        `[community-level] rank refresh scheduled (${config.communityLevel.rankCron}, tz=${config.timezone})`,
+      );
+    }
   }
 
   async function runClientReadyJobs() {
@@ -213,6 +245,7 @@ function createJobs({
     scheduleCoreJobs,
     runClientReadyJobs,
     assignOldMemberCards,
+    refreshCommunityLevelRanks,
   };
 }
 

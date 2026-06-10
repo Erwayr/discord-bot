@@ -1,6 +1,7 @@
 "use strict";
 
 const { EmbedBuilder } = require("discord.js");
+const { normalizeCommunityLevel } = require("./communityLevel");
 
 const NUMBER_FMT = new Intl.NumberFormat("fr-FR");
 
@@ -247,9 +248,10 @@ async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
   const ownedCards = cardsArray(data).length;
   const displayName = displayNameFromData(data, targetUser);
   const avatar = avatarFromData(data, targetUser);
-  const rank = Number(data?.wizebotRank || 0);
-  const level = Number(data?.wizebotLevel || 0);
-  const rankName = data?.customRankName || data?.wizebotRankName || "—";
+  const communityLevel = normalizeCommunityLevel(data);
+  const rank = Number(communityLevel.rank || 0);
+  const level = Number(communityLevel.level || 0);
+  const rankName = data?.customRankName || communityLevel.rankName || "—";
   const totalWins = Math.max(
     toNum(data?.totalWinLotterie || 0),
     data?.isAlreadyWinLottery ? 1 : 0,
@@ -272,7 +274,7 @@ async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
         name: "🏆 Rang",
         value:
           `Niveau **${formatNumber(level)}**\n` +
-          `EXP **${formatNumber(data?.wizebotExp || 0)}**`,
+          `EXP **${formatNumber(communityLevel.xpTotal || 0)}**`,
         inline: true,
       },
       {

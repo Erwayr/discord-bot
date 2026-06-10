@@ -1,6 +1,7 @@
 // ./script/manageRedemption.js
 const axios = require("axios");
 const { FieldValue } = require("firebase-admin/firestore");
+const { extractCommunityLevelFields } = require("./communityLevel");
 
 const MAX_IDS = 50;
 
@@ -82,12 +83,12 @@ async function upsertParticipantFromRedemption(db, r) {
     backfill("avatar", "avatar", "avatar_url", "profile_image_url");
     backfill("discord_id", "discord_id");
     backfill("subCheckedAt", "subCheckedAt");
-    backfill("wizebotExp", "wizebotExp");
-    backfill("wizebotLevel", "wizebotLevel");
-    backfill("wizebotRank", "wizebotRank");
-    backfill("wizebotRankName", "wizebotRankName");
-    backfill("wizebotUptime", "wizebotUptime");
-    backfill("wizebotUptimeRank", "wizebotUptimeRank");
+    if (existing.communityLevel == null) {
+      const communityLevelFields = extractCommunityLevelFields(foll);
+      if (communityLevelFields.communityLevel) {
+        update.communityLevel = communityLevelFields.communityLevel;
+      }
+    }
     backfill("customRankLevel", "customRankLevel");
     backfill("customRankName", "customRankName");
 
@@ -137,12 +138,12 @@ async function upsertParticipantFromSubscription(db, e) {
     };
     backfill("avatar", "avatar", "avatar_url", "profile_image_url");
     backfill("discord_id", "discord_id");
-    backfill("wizebotExp", "wizebotExp");
-    backfill("wizebotLevel", "wizebotLevel");
-    backfill("wizebotRank", "wizebotRank");
-    backfill("wizebotRankName", "wizebotRankName");
-    backfill("wizebotUptime", "wizebotUptime");
-    backfill("wizebotUptimeRank", "wizebotUptimeRank");
+    if (existing.communityLevel == null) {
+      const communityLevelFields = extractCommunityLevelFields(foll);
+      if (communityLevelFields.communityLevel) {
+        update.communityLevel = communityLevelFields.communityLevel;
+      }
+    }
     backfill("customRankLevel", "customRankLevel");
     backfill("customRankName", "customRankName");
 

@@ -2,6 +2,10 @@
 "use strict";
 
 const admin = require("firebase-admin");
+const {
+  applyChatMessageLevelProgress,
+  resolveCommunityLevelConfig,
+} = require("./communityLevel");
 const CHAT_MESSAGE_CAP_PER_STREAM = 10;
 const STREAM_RESTART_MERGE_WINDOW_MS = 3 * 60 * 60 * 1000;
 
@@ -173,8 +177,21 @@ function findStreamIndex(streams, streamId) {
  * Helpers pour journaliser les quêtes par STREAM (tableau).
  * @param {import('firebase-admin').firestore.Firestore} db
  */
-function createQuestStorage(db) {
+function createQuestStorage(db, options = {}) {
   const col = db.collection("followers_all_time");
+  const communityLevelConfig = resolveCommunityLevelConfig(options.communityLevel || {});
+
+  async function getCommunityLevelConfig() {
+    if (typeof options.getCommunityLevelConfig !== "function") {
+      return communityLevelConfig;
+    }
+    try {
+      return resolveCommunityLevelConfig(await options.getCommunityLevelConfig());
+    } catch (e) {
+      console.warn("[community-level] config load failed:", e?.message || e);
+      return communityLevelConfig;
+    }
+  }
 
   /**
    * Assure qu'un objet stream existe et le retourne (par index).
@@ -326,6 +343,8 @@ function createQuestStorage(db) {
     const mk = monthKeyUTC();
     const safeInc = Math.max(1, Math.floor(Number(inc) || 1));
     let nextCount = 0;
+    let chatLevelResult = null;
+    const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
 
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
@@ -361,21 +380,46 @@ function createQuestStorage(db) {
         Math.floor(Number(entry.chat_message.count || 0)),
       );
       nextCount = Math.min(CHAT_MESSAGE_CAP_PER_STREAM, beforeCount + safeInc);
+      const levelResult = applyChatMessageLevelProgress({
+        data,
+        entry,
+        streamId,
+        nowMs: Date.now(),
+        rawConfig: effectiveCommunityLevelConfig,
+      });
+      chatLevelResult = levelResult;
 
-      if (nextCount === beforeCount && entry.chat_message.sent) return;
+      if (
+        nextCount === beforeCount &&
+        entry.chat_message.sent &&
+        !levelResult.awarded
+      ) {
+        return;
+      }
 
-      entry.chat_message.sent = true;
-      entry.chat_message.count = nextCount;
-      if (!entry.chat_message.first_at) entry.chat_message.first_at = Date.now();
-      entry.chat_message.last_at = Date.now();
+      if (nextCount !== beforeCount || !entry.chat_message.sent) {
+        entry.chat_message.sent = true;
+        entry.chat_message.count = nextCount;
+        if (!entry.chat_message.first_at) entry.chat_message.first_at = Date.now();
+        entry.chat_message.last_at = Date.now();
+      }
 
       month.last_update_at = Date.now();
-      tx.update(ref, { live_presence: lp });
+      const patch = { live_presence: lp };
+      if (levelResult.awarded) {
+        patch.communityLevel = levelResult.communityLevel;
+        Object.assign(patch, levelResult.legacyFields);
+      }
+      tx.update(ref, patch);
     });
 
     return {
       count: nextCount,
       capped: nextCount >= CHAT_MESSAGE_CAP_PER_STREAM,
+      levelAwarded: !!chatLevelResult?.awarded,
+      levelXp: chatLevelResult?.awardXp || 0,
+      level: chatLevelResult?.level || null,
+      leveledUp: !!chatLevelResult?.leveledUp,
     };
   }
 

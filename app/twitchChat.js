@@ -2,14 +2,18 @@
 
 const axios = require("axios");
 const tmi = require("tmi.js");
+const { isExcludedLogin } = require("../helper/excludedUsers");
+const { createTwitchChatCommands } = require("../script/twitchChatCommands");
 
 function createTwitchChat({
   config,
+  db,
   helix,
   tokenManager,
   questStore,
   livePresenceTick,
   birthdays,
+  getCommunityLevelConfig,
 }) {
   let CHANNEL_EMOTE_IDS = new Set();
   let CHANNEL_EMOTE_NAMES = new Set();
@@ -146,6 +150,13 @@ function createTwitchChat({
     }
   }
 
+  const twitchChatCommands = createTwitchChatCommands({
+    db,
+    config: config.twitchCommands,
+    getCommunityLevelConfig,
+    sendTwitchChatMessage,
+  });
+
   const tmiClient = new tmi.Client({
     options: { debug: false },
     connection: { reconnect: true, secure: true },
@@ -160,6 +171,7 @@ function createTwitchChat({
     if (self) return;
     const login = (tags.username || "").toLowerCase();
     if (!login) return;
+    if (isExcludedLogin(login)) return;
 
     birthdays.maybeSendBirthdayCongrats(login, sendTwitchChatMessage).catch((e) =>
       console.warn("birthday congrats failed:", e?.message || e),
@@ -180,6 +192,18 @@ function createTwitchChat({
       return;
     }
 
+    try {
+      const commandResult = await twitchChatCommands.handleMessage({
+        login,
+        displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        message: msg,
+      });
+      if (commandResult?.handled) return;
+    } catch (e) {
+      console.warn("twitch chat command failed:", e?.message || e);
+      return;
+    }
+
     if (chatQuestStreamId !== streamId) {
       chatQuestStreamId = streamId;
       chatMessageCountsByLogin.clear();
@@ -192,6 +216,11 @@ function createTwitchChat({
         const chatProgress = await questStore.noteChatMessage(login, streamId, 1, {
           startedAt: liveState.startedAt,
         });
+        if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.levelAwarded) {
+          console.log(
+            `[community-level] ${login} +${chatProgress.levelXp} xp -> level ${chatProgress.level}`,
+          );
+        }
         const nextCount = Math.max(
           Number(chatMessageCountsByLogin.get(login) || 0),
           Number(chatProgress?.count || 0),

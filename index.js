@@ -44,13 +44,48 @@ const { admin, db } = createFirebase({
   preferRest: config.firestore.preferRest,
 });
 
+const COMMUNITY_LEVEL_CONFIG_TTL_MS = Number(
+  process.env.COMMUNITY_LEVEL_CONFIG_TTL_MS || 60_000,
+);
+let communityLevelConfigCache = null;
+let communityLevelConfigFetchedAt = 0;
+
+async function getCommunityLevelConfig({ refresh = false } = {}) {
+  const now = Date.now();
+  if (
+    !refresh &&
+    communityLevelConfigCache &&
+    now - communityLevelConfigFetchedAt < COMMUNITY_LEVEL_CONFIG_TTL_MS
+  ) {
+    return communityLevelConfigCache;
+  }
+
+  let firestoreConfig = {};
+  try {
+    const snap = await db.collection("site_config").doc("community_level").get();
+    firestoreConfig = snap.exists ? snap.data() || {} : {};
+  } catch (e) {
+    console.warn("[community-level] Firestore config fallback:", e?.message || e);
+  }
+
+  communityLevelConfigCache = {
+    ...config.communityLevel,
+    ...firestoreConfig,
+  };
+  communityLevelConfigFetchedAt = now;
+  return communityLevelConfigCache;
+}
+
 const client = createDiscordClient();
 const { postDiscord, sendDMOrFallback } = createDiscordMessaging({
   client,
   logChannelId: config.discord.logChannelId,
 });
 
-const questStore = createQuestStorage(db);
+const questStore = createQuestStorage(db, {
+  communityLevel: config.communityLevel,
+  getCommunityLevelConfig,
+});
 const tokenManager = createTokenManager(db, {
   docPath: config.twitch.tokenDocPath,
 });
@@ -105,11 +140,13 @@ const weeklyPlanningPublisher = createWeeklyPlanningPublisher({
 const birthdays = createBirthdayService({ db, admin, config });
 const twitchChat = createTwitchChat({
   config,
+  db,
   helix,
   tokenManager,
   questStore,
   livePresenceTick,
   birthdays,
+  getCommunityLevelConfig,
 });
 
 const authHealth = createAuthHealth({
@@ -141,6 +178,7 @@ const jobs = createJobs({
   authHealth,
   birthdays,
   twitchChat,
+  getCommunityLevelConfig,
 });
 
 const firestoreListeners = createFirestoreListeners({
