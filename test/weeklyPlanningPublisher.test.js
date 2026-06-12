@@ -216,6 +216,26 @@ test("builds current week key and formatted content", () => {
   assert.match(draft.content, /Mercredi/);
   assert.match(draft.content, /Jeu commu/);
   assert.match(draft.content, /Tirage mensuel/);
+  assert.match(draft.title, /Regarde ce qu'on va faire cette semaine/);
+  assert.match(draft.fields[0].name, /Mercredi 27\/05/);
+  assert.doesNotMatch(draft.fields[0].name, /^🎮/);
+  assert.match(draft.fields[0].name, /🎮$/);
+});
+
+test("hides the draw date outside the published week", () => {
+  const draft = buildPlanningDraft(
+    {
+      timezone: "UTC",
+      days: {
+        wednesday: [{ startTime: "20:00", title: "Jeu commu" }],
+      },
+      monthlyDrawDate: "2026-06-30",
+    },
+    { now: new Date("2026-05-27T10:00:00.000Z"), timeZone: "UTC" },
+  );
+
+  assert.equal(draft.weekKey, "2026-05-25_2026-05-31");
+  assert.doesNotMatch(draft.content, /Tirage mensuel/);
 });
 
 test("test payload is marked non published and has no buttons", () => {

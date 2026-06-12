@@ -19,6 +19,9 @@ const WEEKLY_PLANNING_MAX_SLOTS_PER_DAY = 8;
 const WEEKLY_PLANNING_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const WEEKLY_PLANNING_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 const PLANNING_BUTTON_PREFIX = "weekly_planning";
+const WEEKLY_PLANNING_PUBLIC_TITLE =
+  "Regarde ce qu'on va faire cette semaine";
+const WEEKLY_PLANNING_CALENDAR_ICON = "🗓️";
 
 const WEEKLY_PLANNING_DAY_ORDER = Object.freeze([
   "monday",
@@ -178,6 +181,17 @@ function normalizePlanningDate(value) {
     return null;
   }
   return raw;
+}
+
+function isPlanningDateInRange(value, range) {
+  const dateKey = normalizePlanningDate(value);
+  return Boolean(
+    dateKey &&
+      range?.startKey &&
+      range?.endKey &&
+      dateKey >= range.startKey &&
+      dateKey <= range.endKey,
+  );
 }
 
 function minutesInTimezone(date, timeZone) {
@@ -349,7 +363,7 @@ function buildPlanningFields(planning, range) {
       .join("\n");
 
     fields.push({
-      name: `${emoji} ${dayLabel} ${formatShortDateLabel(dayDate, planning.timezone)}`,
+      name: `${dayLabel} ${formatShortDateLabel(dayDate, planning.timezone)} ${emoji}`,
       value: truncateText(value || "Jour off.", 1024),
       inline: false,
     });
@@ -388,11 +402,11 @@ function buildPlanningDescription(planning, range, { now = new Date() } = {}) {
     );
   }
 
-  if (planning?.monthlyDrawDate) {
+  if (isPlanningDateInRange(planning?.monthlyDrawDate, range)) {
     const drawLabel = formatPlanningDateLabel(planning.monthlyDrawDate);
     if (drawLabel) {
       lines.push("");
-      lines.push(`🎁 Tirage mensuel : **${drawLabel} à 19h**`);
+      lines.push(`Tirage mensuel : **${drawLabel} à 19h** 🎁`);
     }
   }
 
@@ -406,7 +420,7 @@ function buildPlanningDraft(rawPlanning, { now = new Date(), timeZone } = {}) {
   const planningHash = hashWeeklyPlanning(planning);
   const description = buildPlanningDescription(planning, range, { now });
   const fields = buildPlanningFields(planning, range);
-  const title = "🗓️ Planning de la semaine";
+  const title = `${WEEKLY_PLANNING_PUBLIC_TITLE} ${WEEKLY_PLANNING_CALENDAR_ICON}`;
   const content = `${title}\n\n${description}`;
 
   return {
@@ -474,7 +488,7 @@ function buildPlanningMessagePayload(
   { test = false, review = false, disabled = false } = {},
 ) {
   const embed = new EmbedBuilder()
-    .setTitle(test ? "🧪 TEST - Planning de la semaine" : draft.title)
+    .setTitle(test ? `TEST - ${WEEKLY_PLANNING_PUBLIC_TITLE} 🧪` : draft.title)
     .setDescription(draft.description)
     .setColor(test ? 0xf59e0b : review ? 0x60a5fa : 0x8b5cf6)
     .setFooter({
@@ -486,10 +500,10 @@ function buildPlanningMessagePayload(
   }
 
   const content = test
-    ? "🧪 **TEST - non publié**\nVoici le rendu qui serait envoyé dans le canal annonces."
+    ? "**TEST - non publié** 🧪\nVoici le rendu qui serait envoyé dans le canal annonces."
     : review
-      ? "📝 **Brouillon planning à valider**\nClique sur **Valider** pour publier, ou **Refuser** si tu veux modifier le site avant."
-      : "🗓️ **Planning de la semaine d'Erwayr**";
+      ? "**Brouillon planning à valider** 📝\nClique sur **Valider** pour publier, ou **Refuser** si tu veux modifier le site avant."
+      : `**${WEEKLY_PLANNING_PUBLIC_TITLE}** ${WEEKLY_PLANNING_CALENDAR_ICON}`;
 
   return {
     content,
