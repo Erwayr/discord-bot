@@ -18,9 +18,13 @@ const DEFAULT_RANK_TITLES = Object.freeze([
 
 const DEFAULT_CONFIG = Object.freeze({
   enabled: true,
-  chatXp: 1,
+  chatXp: 10,
   chatCooldownMs: 60_000,
-  chatXpCapPerStream: 120,
+  chatXpCapPerStream: 1200,
+  presenceXp: 200,
+  presenceXpCapPerStream: 200,
+  channelPointsXp: 5,
+  channelPointsXpCapPerStream: 50,
   baseXp: 100,
   growthXp: 25,
   maxLevel: 999,
@@ -173,6 +177,19 @@ function resolveCommunityLevelConfig(raw = {}) {
       raw.chatXpCapPerStream,
       DEFAULT_CONFIG.chatXpCapPerStream,
     ),
+    presenceXp: nonNegativeInt(raw.presenceXp, DEFAULT_CONFIG.presenceXp),
+    presenceXpCapPerStream: nonNegativeInt(
+      raw.presenceXpCapPerStream,
+      DEFAULT_CONFIG.presenceXpCapPerStream,
+    ),
+    channelPointsXp: nonNegativeInt(
+      raw.channelPointsXp,
+      DEFAULT_CONFIG.channelPointsXp,
+    ),
+    channelPointsXpCapPerStream: nonNegativeInt(
+      raw.channelPointsXpCapPerStream,
+      DEFAULT_CONFIG.channelPointsXpCapPerStream,
+    ),
     baseXp: positiveInt(raw.baseXp, DEFAULT_CONFIG.baseXp),
     growthXp: nonNegativeInt(raw.growthXp, DEFAULT_CONFIG.growthXp),
     maxLevel: positiveInt(raw.maxLevel, DEFAULT_CONFIG.maxLevel),
@@ -234,6 +251,10 @@ function normalizeCommunityLevel(source = {}, rawConfig = {}) {
     ),
     chatMessages: toInt(firstDefined(community.chatMessages), 0),
     chatXpTotal: toInt(firstDefined(community.chatXpTotal), 0),
+    presenceStreams: toInt(firstDefined(community.presenceStreams), 0),
+    presenceXpTotal: toInt(firstDefined(community.presenceXpTotal), 0),
+    channelPointsRedemptions: toInt(firstDefined(community.channelPointsRedemptions), 0),
+    channelPointsXpTotal: toInt(firstDefined(community.channelPointsXpTotal), 0),
     source: firstText(community.source, source.wizebotSource),
     updatedAt: firstDefined(community.updatedAt, source.communityLevelUpdatedAt, source.wizebotUpdatedAt),
   };
@@ -284,6 +305,10 @@ function extractCommunityLevelFields(source = {}, rawConfig = {}) {
       uptimeRank: normalized.uptimeRank,
       chatMessages: normalized.chatMessages,
       chatXpTotal: normalized.chatXpTotal,
+      presenceStreams: normalized.presenceStreams,
+      presenceXpTotal: normalized.presenceXpTotal,
+      channelPointsRedemptions: normalized.channelPointsRedemptions,
+      channelPointsXpTotal: normalized.channelPointsXpTotal,
     },
   };
   if (normalized.source) next.communityLevel.source = normalized.source;
@@ -291,44 +316,89 @@ function extractCommunityLevelFields(source = {}, rawConfig = {}) {
   return next;
 }
 
-function applyChatMessageLevelProgress({
-  data = {},
+const XP_SOURCE_DEFINITIONS = Object.freeze({
+  chat: Object.freeze({
+    xpKey: "chatXp",
+    capKey: "chatXpCapPerStream",
+    streamXpKey: "chat_xp",
+    countKey: "messages",
+    firstAtKey: "first_xp_at",
+    lastAtKey: "last_xp_at",
+    totalXpKey: "chatXpTotal",
+    totalCountKey: "chatMessages",
+    communityLastAtKey: "lastChatXpAt",
+    cooldownKey: "chatCooldownMs",
+    sourceLabel: "twitch_chat",
+  }),
+  presence: Object.freeze({
+    xpKey: "presenceXp",
+    capKey: "presenceXpCapPerStream",
+    streamXpKey: "presence_xp",
+    countKey: "presence_awards",
+    firstAtKey: "presence_first_xp_at",
+    lastAtKey: "presence_last_xp_at",
+    totalXpKey: "presenceXpTotal",
+    totalCountKey: "presenceStreams",
+    communityLastAtKey: "lastPresenceXpAt",
+    sourceLabel: "twitch_presence",
+  }),
+  channel_points: Object.freeze({
+    xpKey: "channelPointsXp",
+    capKey: "channelPointsXpCapPerStream",
+    streamXpKey: "channel_points_xp",
+    countKey: "channel_points_awards",
+    firstAtKey: "channel_points_first_xp_at",
+    lastAtKey: "channel_points_last_xp_at",
+    totalXpKey: "channelPointsXpTotal",
+    totalCountKey: "channelPointsRedemptions",
+    communityLastAtKey: "lastChannelPointsXpAt",
+    sourceLabel: "twitch_channel_points",
+  }),
+});
+
+function ensureEntryCommunityLevel(entry) {
+  const current = isObject(entry.community_level) ? entry.community_level : {};
+  entry.community_level = { ...current };
+  const community = entry.community_level;
+
+  if (community.chat_xp == null) {
+    community.chat_xp = Math.max(0, toInt(community.xp, 0));
+  }
+  for (const key of ["presence_xp", "channel_points_xp"]) {
+    if (community[key] == null) community[key] = 0;
+  }
+  for (const key of ["messages", "presence_awards", "channel_points_awards"]) {
+    if (community[key] == null) community[key] = 0;
+  }
+  if (!community.first_xp_at) community.first_xp_at = null;
+  if (!community.last_xp_at) community.last_xp_at = null;
+  if (!community.presence_first_xp_at) community.presence_first_xp_at = null;
+  if (!community.presence_last_xp_at) community.presence_last_xp_at = null;
+  if (!community.channel_points_first_xp_at) {
+    community.channel_points_first_xp_at = null;
+  }
+  if (!community.channel_points_last_xp_at) {
+    community.channel_points_last_xp_at = null;
+  }
+  community.xp =
+    Math.max(0, toInt(community.chat_xp, 0)) +
+    Math.max(0, toInt(community.presence_xp, 0)) +
+    Math.max(0, toInt(community.channel_points_xp, 0));
+
+  return community;
+}
+
+function buildLevelAwardResult({
+  data,
+  config,
   entry,
+  definition,
+  source,
   streamId,
-  nowMs = Date.now(),
-  rawConfig = {},
-} = {}) {
-  const config = resolveCommunityLevelConfig(rawConfig);
-  if (!config.enabled) return { awarded: false, reason: "disabled" };
-  if (!entry || typeof entry !== "object") return { awarded: false, reason: "missing_entry" };
-
-  entry.community_level = {
-    xp: 0,
-    messages: 0,
-    first_xp_at: null,
-    last_xp_at: null,
-    ...(entry.community_level || {}),
-  };
-
-  const lastAwardMs = Math.max(
-    toMillis(entry.community_level.last_xp_at),
-    toMillis(data?.communityLevel?.lastChatXpAt),
-  );
-  if (config.chatCooldownMs > 0 && lastAwardMs > 0 && nowMs - lastAwardMs < config.chatCooldownMs) {
-    return { awarded: false, reason: "cooldown" };
-  }
-
-  const streamXpBefore = Math.max(0, toInt(entry.community_level.xp, 0));
-  if (config.chatXpCapPerStream > 0 && streamXpBefore >= config.chatXpCapPerStream) {
-    return { awarded: false, reason: "stream_cap" };
-  }
-
-  const awardXp =
-    config.chatXpCapPerStream > 0
-      ? Math.min(config.chatXp, config.chatXpCapPerStream - streamXpBefore)
-      : config.chatXp;
-  if (awardXp <= 0) return { awarded: false, reason: "no_xp" };
-
+  nowMs,
+  awardXp,
+  countIncrement,
+}) {
   const existingCommunity = isObject(data.communityLevel) ? data.communityLevel : {};
   const current = normalizeCommunityLevel(data, config);
   let level = Math.max(1, current.level || 1);
@@ -357,18 +427,44 @@ function applyChatMessageLevelProgress({
     uptimeText: current.uptimeText,
     uptimeMinutes: current.uptimeMinutes,
     uptimeRank: current.uptimeRank,
-    chatMessages: Math.max(0, toInt(existingCommunity.chatMessages, current.chatMessages)) + 1,
-    chatXpTotal: Math.max(0, toInt(existingCommunity.chatXpTotal, current.chatXpTotal)) + awardXp,
-    lastChatXpAt: nowMs,
+    [definition.totalXpKey]:
+      Math.max(
+        0,
+        toInt(
+          firstDefined(
+            existingCommunity[definition.totalXpKey],
+            current[definition.totalXpKey],
+          ),
+          0,
+        ),
+      ) + awardXp,
+    [definition.totalCountKey]:
+      Math.max(
+        0,
+        toInt(
+          firstDefined(
+            existingCommunity[definition.totalCountKey],
+            current[definition.totalCountKey],
+          ),
+          0,
+        ),
+      ) + countIncrement,
+    [definition.communityLastAtKey]: nowMs,
     lastStreamId: streamId || existingCommunity.lastStreamId || null,
-    source: "twitch_chat",
+    source: definition.sourceLabel,
     updatedAt: nowMs,
   };
 
-  entry.community_level.xp = streamXpBefore + awardXp;
-  entry.community_level.messages = Math.max(0, toInt(entry.community_level.messages, 0)) + 1;
-  if (!entry.community_level.first_xp_at) entry.community_level.first_xp_at = nowMs;
-  entry.community_level.last_xp_at = nowMs;
+  entry[definition.streamXpKey] =
+    Math.max(0, toInt(entry[definition.streamXpKey], 0)) + awardXp;
+  entry[definition.countKey] =
+    Math.max(0, toInt(entry[definition.countKey], 0)) + countIncrement;
+  if (!entry[definition.firstAtKey]) entry[definition.firstAtKey] = nowMs;
+  entry[definition.lastAtKey] = nowMs;
+  entry.xp =
+    Math.max(0, toInt(entry.chat_xp, 0)) +
+    Math.max(0, toInt(entry.presence_xp, 0)) +
+    Math.max(0, toInt(entry.channel_points_xp, 0));
 
   const legacyFields = config.legacyDoubleWrite
     ? {
@@ -378,10 +474,13 @@ function applyChatMessageLevelProgress({
         wizebotUpdatedAt: nowMs,
       }
     : {};
-  if (config.legacyDoubleWrite && current.rank > 0) legacyFields.wizebotRank = current.rank;
+  if (config.legacyDoubleWrite && current.rank > 0) {
+    legacyFields.wizebotRank = current.rank;
+  }
 
   return {
     awarded: true,
+    source,
     awardXp,
     level,
     xpTotal,
@@ -391,6 +490,77 @@ function applyChatMessageLevelProgress({
     communityLevel: nextCommunityLevel,
     legacyFields,
   };
+}
+
+function applyCommunityLevelXpProgress({
+  data = {},
+  entry,
+  streamId,
+  nowMs = Date.now(),
+  rawConfig = {},
+  source = "chat",
+  eventCount = 1,
+} = {}) {
+  const config = resolveCommunityLevelConfig(rawConfig);
+  const definition = XP_SOURCE_DEFINITIONS[source];
+  if (!config.enabled) return { awarded: false, reason: "disabled", source };
+  if (!definition) return { awarded: false, reason: "unknown_source", source };
+  if (!entry || typeof entry !== "object") {
+    return { awarded: false, reason: "missing_entry", source };
+  }
+
+  const community = ensureEntryCommunityLevel(entry);
+  const countIncrement = Math.max(1, toInt(eventCount, 1));
+  const perEventXp = Math.max(0, toInt(config[definition.xpKey], 0));
+  if (perEventXp <= 0) return { awarded: false, reason: "no_xp", source };
+
+  const lastAwardMs = Math.max(
+    toMillis(community[definition.lastAtKey]),
+    toMillis(data?.communityLevel?.[definition.communityLastAtKey]),
+  );
+  const cooldownMs = Math.max(0, toInt(config[definition.cooldownKey], 0));
+  if (cooldownMs > 0 && lastAwardMs > 0 && nowMs - lastAwardMs < cooldownMs) {
+    return { awarded: false, reason: "cooldown", source };
+  }
+
+  const streamSourceXpBefore = Math.max(
+    0,
+    toInt(community[definition.streamXpKey], 0),
+  );
+  const capPerStream = Math.max(0, toInt(config[definition.capKey], 0));
+  if (capPerStream > 0 && streamSourceXpBefore >= capPerStream) {
+    return { awarded: false, reason: "stream_cap", source };
+  }
+
+  const requestedXp = perEventXp * countIncrement;
+  const awardXp =
+    capPerStream > 0
+      ? Math.min(requestedXp, capPerStream - streamSourceXpBefore)
+      : requestedXp;
+  if (awardXp <= 0) return { awarded: false, reason: "stream_cap", source };
+  const awardedCountIncrement = Math.min(
+    countIncrement,
+    Math.max(1, Math.ceil(awardXp / perEventXp)),
+  );
+
+  return buildLevelAwardResult({
+    data,
+    config,
+    entry: community,
+    definition,
+    source,
+    streamId,
+    nowMs,
+    awardXp,
+    countIncrement: awardedCountIncrement,
+  });
+}
+
+function applyChatMessageLevelProgress(options = {}) {
+  return applyCommunityLevelXpProgress({
+    ...options,
+    source: "chat",
+  });
 }
 
 async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
@@ -473,6 +643,7 @@ module.exports = {
   normalizeCommunityLevel,
   extractCommunityLevelFields,
   xpRequiredForNextLevel,
+  applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
   recalculateCommunityLevelRanks,
 };

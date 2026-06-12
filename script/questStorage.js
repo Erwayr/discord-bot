@@ -3,6 +3,7 @@
 
 const admin = require("firebase-admin");
 const {
+  applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
   resolveCommunityLevelConfig,
 } = require("./communityLevel");
@@ -244,6 +245,9 @@ function createQuestStorage(db, options = {}) {
 
   async function notePresence(login, streamId, { startedAt, context } = {}) {
     const ref = col.doc(login);
+    let presenceLevelResult = null;
+    const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
+
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) return;
@@ -265,17 +269,39 @@ function createQuestStorage(db, options = {}) {
 
       const wasSeen = !!entry.presence.seen;
       entry.presence.seen = true;
-      if (!entry.presence.first_at) entry.presence.first_at = Date.now();
-      entry.presence.last_at = Date.now();
+      const nowMs = Date.now();
+      if (!entry.presence.first_at) entry.presence.first_at = nowMs;
+      entry.presence.last_at = nowMs;
 
       // compteur mensuel optionnel
       if (!wasSeen) {
         month.count = (month.count || 0) + 1;
+        presenceLevelResult = applyCommunityLevelXpProgress({
+          data,
+          entry,
+          streamId,
+          nowMs,
+          rawConfig: effectiveCommunityLevelConfig,
+          source: "presence",
+        });
       }
 
-      month.last_update_at = Date.now();
-      tx.update(ref, { live_presence: lp });
+      month.last_update_at = nowMs;
+      const patch = { live_presence: lp };
+      if (presenceLevelResult?.awarded) {
+        patch.communityLevel = presenceLevelResult.communityLevel;
+        Object.assign(patch, presenceLevelResult.legacyFields);
+      }
+      tx.update(ref, patch);
     });
+
+    return {
+      levelAwarded: !!presenceLevelResult?.awarded,
+      levelXp: presenceLevelResult?.awardXp || 0,
+      level: presenceLevelResult?.level || null,
+      leveledUp: !!presenceLevelResult?.leveledUp,
+      reason: presenceLevelResult?.reason || null,
+    };
   }
 
   async function noteEmoteUsage(login, streamId, inc = 1, { startedAt } = {}) {
@@ -386,6 +412,7 @@ function createQuestStorage(db, options = {}) {
         streamId,
         nowMs: Date.now(),
         rawConfig: effectiveCommunityLevelConfig,
+        eventCount: safeInc,
       });
       chatLevelResult = levelResult;
 
@@ -463,7 +490,11 @@ function createQuestStorage(db, options = {}) {
     redemptionsInc = 1,
     { startedAt } = {}
   ) {
-    const ref = col.doc(login.toLowerCase());
+    const docId = login.toLowerCase();
+    const ref = col.doc(docId);
+    const safeInc = Math.max(1, Math.floor(Number(redemptionsInc) || 1));
+    let channelPointsLevelResult = null;
+    const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
 
@@ -471,7 +502,7 @@ function createQuestStorage(db, options = {}) {
       if (!snap.exists) {
         tx.set(
           ref,
-          { pseudo: login.toLowerCase(), live_presence: {} },
+          { pseudo: docId, live_presence: {} },
           { merge: true }
         );
       }
@@ -492,12 +523,35 @@ function createQuestStorage(db, options = {}) {
 
       entry.channel_points.used = true;
       entry.channel_points.redemptions =
-        (entry.channel_points.redemptions || 0) + Math.max(1, redemptionsInc);
-      entry.channel_points.last_at = Date.now();
+        (entry.channel_points.redemptions || 0) + safeInc;
+      const nowMs = Date.now();
+      entry.channel_points.last_at = nowMs;
+      channelPointsLevelResult = applyCommunityLevelXpProgress({
+        data,
+        entry,
+        streamId,
+        nowMs,
+        rawConfig: effectiveCommunityLevelConfig,
+        source: "channel_points",
+        eventCount: safeInc,
+      });
 
-      month.last_update_at = Date.now();
-      tx.update(ref, { live_presence: lp });
+      month.last_update_at = nowMs;
+      const patch = { live_presence: lp };
+      if (channelPointsLevelResult.awarded) {
+        patch.communityLevel = channelPointsLevelResult.communityLevel;
+        Object.assign(patch, channelPointsLevelResult.legacyFields);
+      }
+      tx.update(ref, patch);
     });
+
+    return {
+      levelAwarded: !!channelPointsLevelResult?.awarded,
+      levelXp: channelPointsLevelResult?.awardXp || 0,
+      level: channelPointsLevelResult?.level || null,
+      leveledUp: !!channelPointsLevelResult?.leveledUp,
+      reason: channelPointsLevelResult?.reason || null,
+    };
   }
 
   async function noteRaidParticipation(login, streamId, { startedAt } = {}) {

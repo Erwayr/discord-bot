@@ -130,9 +130,19 @@ const config = {
 
   communityLevel: {
     enabled: boolEnv("COMMUNITY_LEVEL_ENABLED", true),
-    chatXp: numberEnv("COMMUNITY_LEVEL_CHAT_XP", 1),
+    chatXp: numberEnv("COMMUNITY_LEVEL_CHAT_XP", 10),
     chatCooldownMs: numberEnv("COMMUNITY_LEVEL_CHAT_COOLDOWN_MS", 60_000),
-    chatXpCapPerStream: numberEnv("COMMUNITY_LEVEL_CHAT_XP_CAP_PER_STREAM", 120),
+    chatXpCapPerStream: numberEnv("COMMUNITY_LEVEL_CHAT_XP_CAP_PER_STREAM", 1200),
+    presenceXp: numberEnv("COMMUNITY_LEVEL_PRESENCE_XP", 200),
+    presenceXpCapPerStream: numberEnv(
+      "COMMUNITY_LEVEL_PRESENCE_XP_CAP_PER_STREAM",
+      200,
+    ),
+    channelPointsXp: numberEnv("COMMUNITY_LEVEL_CHANNEL_POINTS_XP", 5),
+    channelPointsXpCapPerStream: numberEnv(
+      "COMMUNITY_LEVEL_CHANNEL_POINTS_XP_CAP_PER_STREAM",
+      50,
+    ),
     baseXp: numberEnv("COMMUNITY_LEVEL_BASE_XP", 100),
     growthXp: numberEnv("COMMUNITY_LEVEL_GROWTH_XP", 25),
     maxLevel: numberEnv("COMMUNITY_LEVEL_MAX_LEVEL", 999),

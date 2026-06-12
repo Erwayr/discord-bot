@@ -226,7 +226,10 @@ test("buildDiscordBirthdayPayload attaches birthday banner when asset exists", (
 
   assert.equal(payload.files.length, 1);
   assert.equal(payload.files[0].name, "birthday-banner.png");
-  assert.match(payload.files[0].attachment, /assets\/birthday-banner\.png$/);
+  assert.match(
+    payload.files[0].attachment.replace(/\\/g, "/"),
+    /assets\/birthday-banner\.png$/,
+  );
   assert.equal(
     payload.embeds[0].data.image.url,
     "attachment://birthday-banner.png",

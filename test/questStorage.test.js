@@ -150,6 +150,158 @@ test("new stream_id after 3h or more creates a second stream", async () => {
   assert.equal(month.streams[0].day_key, month.streams[1].day_key);
 });
 
+test("default chat level awards 10 xp per eligible message", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db);
+
+  const result = await withDateNow(Date.parse("2026-05-16T11:00:00.000Z"), () =>
+    store.noteChatMessage("alice", "stream-1", 1, {
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    }),
+  );
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(result.levelAwarded, true);
+  assert.equal(result.levelXp, 10);
+  assert.equal(doc.communityLevel.xpTotal, 10);
+  assert.equal(doc.communityLevel.chatXpTotal, 10);
+  assert.equal(stream.community_level.chat_xp, 10);
+  assert.equal(stream.community_level.xp, 10);
+});
+
+test("default chat level caps at 1200 xp per live", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatCooldownMs: 0,
+    },
+  });
+
+  const result = await withDateNow(Date.parse("2026-05-16T11:00:00.000Z"), () =>
+    store.noteChatMessage("alice", "stream-1", 130, {
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    }),
+  );
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(result.levelAwarded, true);
+  assert.equal(result.levelXp, 1200);
+  assert.equal(doc.communityLevel.xpTotal, 1200);
+  assert.equal(doc.communityLevel.chatXpTotal, 1200);
+  assert.equal(doc.communityLevel.chatMessages, 120);
+  assert.equal(stream.community_level.chat_xp, 1200);
+  assert.equal(stream.community_level.xp, 1200);
+});
+
+test("presence level awards 200 xp once per live", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db);
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+
+  const first = await withDateNow(Date.parse("2026-05-16T11:00:00.000Z"), () =>
+    store.notePresence("alice", "stream-1", { startedAt }),
+  );
+  const second = await withDateNow(Date.parse("2026-05-16T11:10:00.000Z"), () =>
+    store.notePresence("alice", "stream-1", { startedAt }),
+  );
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(first.levelAwarded, true);
+  assert.equal(first.levelXp, 200);
+  assert.equal(second.levelAwarded, false);
+  assert.equal(doc.communityLevel.xpTotal, 200);
+  assert.equal(doc.communityLevel.presenceXpTotal, 200);
+  assert.equal(doc.communityLevel.presenceStreams, 1);
+  assert.equal(stream.community_level.presence_xp, 200);
+  assert.equal(stream.community_level.xp, 200);
+});
+
+test("presence level awards again on a new live", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db);
+
+  await withDateNow(Date.parse("2026-05-16T11:00:00.000Z"), () =>
+    store.notePresence("alice", "stream-1", {
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    }),
+  );
+  const secondLive = await withDateNow(
+    Date.parse("2026-05-16T16:00:00.000Z"),
+    () =>
+      store.notePresence("alice", "stream-2", {
+        startedAt: new Date("2026-05-16T15:00:00.000Z"),
+      }),
+  );
+
+  const doc = db.doc("alice");
+  const month = monthNodeFor(db, "alice");
+  assert.equal(secondLive.levelAwarded, true);
+  assert.equal(secondLive.levelXp, 200);
+  assert.equal(doc.communityLevel.xpTotal, 400);
+  assert.equal(doc.communityLevel.presenceXpTotal, 400);
+  assert.equal(doc.communityLevel.presenceStreams, 2);
+  assert.equal(month.streams.length, 2);
+});
+
+test("channel points level awards 5 xp per redemption and caps at 50 per live", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db);
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+  let last;
+
+  for (let i = 0; i < 11; i += 1) {
+    last = await withDateNow(
+      Date.parse("2026-05-16T11:00:00.000Z") + i * 1000,
+      () => store.noteChannelPoints("alice", "stream-1", 1, { startedAt }),
+    );
+  }
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(last.levelAwarded, false);
+  assert.equal(last.reason, "stream_cap");
+  assert.equal(doc.communityLevel.xpTotal, 50);
+  assert.equal(doc.communityLevel.channelPointsXpTotal, 50);
+  assert.equal(doc.communityLevel.channelPointsRedemptions, 10);
+  assert.equal(stream.channel_points.redemptions, 11);
+  assert.equal(stream.community_level.channel_points_xp, 50);
+  assert.equal(stream.community_level.xp, 50);
+});
+
+test("chat presence and channel points xp add up on the same live", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatCooldownMs: 0,
+    },
+  });
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+
+  await withDateNow(Date.parse("2026-05-16T11:00:00.000Z"), () =>
+    store.notePresence("alice", "stream-1", { startedAt }),
+  );
+  await withDateNow(Date.parse("2026-05-16T11:01:00.000Z"), () =>
+    store.noteChatMessage("alice", "stream-1", 1, { startedAt }),
+  );
+  await withDateNow(Date.parse("2026-05-16T11:02:00.000Z"), () =>
+    store.noteChannelPoints("alice", "stream-1", 1, { startedAt }),
+  );
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(doc.communityLevel.xpTotal, 215);
+  assert.equal(doc.communityLevel.presenceXpTotal, 200);
+  assert.equal(doc.communityLevel.chatXpTotal, 10);
+  assert.equal(doc.communityLevel.channelPointsXpTotal, 5);
+  assert.equal(stream.community_level.presence_xp, 200);
+  assert.equal(stream.community_level.chat_xp, 10);
+  assert.equal(stream.community_level.channel_points_xp, 5);
+  assert.equal(stream.community_level.xp, 215);
+});
+
 test("chat message during live awards community level xp from legacy floor", async () => {
   const db = new FakeDb({
     alice: {
