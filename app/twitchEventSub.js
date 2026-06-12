@@ -8,6 +8,9 @@ const {
   upsertParticipantFromSubscription,
   upsertFollowerMonthsFromSub,
 } = require("../script/manageRedemption");
+const {
+  buildCommunityLevelUpMessage,
+} = require("../script/twitchLevelAnnouncements");
 
 function createTwitchEventSub({
   db,
@@ -17,6 +20,7 @@ function createTwitchEventSub({
   questStore,
   livePresenceTick,
   postDiscord,
+  sendTwitchChatMessage,
 }) {
   const seenDeliveries = new Map();
   const subTimers = new Map();
@@ -205,7 +209,28 @@ function createTwitchEventSub({
         const login = (r.user_login || r.user_name || "").toLowerCase();
         const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
         if (login && streamId) {
-          await questStore.noteChannelPoints(login, streamId, 1, { startedAt });
+          const channelPointsProgress = await questStore.noteChannelPoints(
+            login,
+            streamId,
+            1,
+            { startedAt },
+          );
+          if (
+            channelPointsProgress?.leveledUp &&
+            typeof sendTwitchChatMessage === "function"
+          ) {
+            const levelUpMessage = buildCommunityLevelUpMessage({
+              displayName: r.user_name || login,
+              login,
+              level: channelPointsProgress.level,
+              rankName: channelPointsProgress.rankName,
+            });
+            if (levelUpMessage) {
+              await sendTwitchChatMessage(levelUpMessage).catch((e) =>
+                console.warn("level-up chat message failed:", e?.message || e),
+              );
+            }
+          }
           console.log(`✅ ChannelPoints +1 → ${login} (stream ${streamId})`);
         } else {
           console.log(

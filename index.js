@@ -164,6 +164,7 @@ const twitchEventSub = createTwitchEventSub({
   questStore,
   livePresenceTick,
   postDiscord,
+  sendTwitchChatMessage: twitchChat.sendTwitchChatMessage,
 });
 
 const jobs = createJobs({

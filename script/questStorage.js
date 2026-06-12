@@ -299,6 +299,7 @@ function createQuestStorage(db, options = {}) {
       levelAwarded: !!presenceLevelResult?.awarded,
       levelXp: presenceLevelResult?.awardXp || 0,
       level: presenceLevelResult?.level || null,
+      rankName: presenceLevelResult?.communityLevel?.rankName || "",
       leveledUp: !!presenceLevelResult?.leveledUp,
       reason: presenceLevelResult?.reason || null,
     };
@@ -446,6 +447,7 @@ function createQuestStorage(db, options = {}) {
       levelAwarded: !!chatLevelResult?.awarded,
       levelXp: chatLevelResult?.awardXp || 0,
       level: chatLevelResult?.level || null,
+      rankName: chatLevelResult?.communityLevel?.rankName || "",
       leveledUp: !!chatLevelResult?.leveledUp,
     };
   }
@@ -549,6 +551,7 @@ function createQuestStorage(db, options = {}) {
       levelAwarded: !!channelPointsLevelResult?.awarded,
       levelXp: channelPointsLevelResult?.awardXp || 0,
       level: channelPointsLevelResult?.level || null,
+      rankName: channelPointsLevelResult?.communityLevel?.rankName || "",
       leveledUp: !!channelPointsLevelResult?.leveledUp,
       reason: channelPointsLevelResult?.reason || null,
     };

@@ -4,6 +4,9 @@ const axios = require("axios");
 const tmi = require("tmi.js");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
+const {
+  buildCommunityLevelUpMessage,
+} = require("../script/twitchLevelAnnouncements");
 
 function createTwitchChat({
   config,
@@ -20,9 +23,6 @@ function createTwitchChat({
   let lastEmoteRefreshAt = 0;
   let lastLiveStateFetchAt = 0;
   let liveStreamStateCache = { streamId: null, startedAt: null, cachedAt: 0 };
-  let chatQuestStreamId = null;
-  const CHAT_MESSAGE_SCORE_CAP_PER_STREAM = 10;
-  const chatMessageCountsByLogin = new Map();
 
   function buildTwitchHeaders(accessToken, { includeContentType = true } = {}) {
     const headers = {
@@ -204,34 +204,33 @@ function createTwitchChat({
       return;
     }
 
-    if (chatQuestStreamId !== streamId) {
-      chatQuestStreamId = streamId;
-      chatMessageCountsByLogin.clear();
-    }
-    if (
-      (chatMessageCountsByLogin.get(login) || 0) <
-      CHAT_MESSAGE_SCORE_CAP_PER_STREAM
-    ) {
-      try {
-        const chatProgress = await questStore.noteChatMessage(login, streamId, 1, {
-          startedAt: liveState.startedAt,
-        });
-        if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.levelAwarded) {
-          console.log(
-            `[community-level] ${login} +${chatProgress.levelXp} xp -> level ${chatProgress.level}`,
-          );
-        }
-        const nextCount = Math.max(
-          Number(chatMessageCountsByLogin.get(login) || 0),
-          Number(chatProgress?.count || 0),
+    try {
+      const chatProgress = await questStore.noteChatMessage(login, streamId, 1, {
+        startedAt: liveState.startedAt,
+      });
+      if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.levelAwarded) {
+        console.log(
+          `[community-level] ${login} +${chatProgress.levelXp} xp -> level ${chatProgress.level}`,
         );
-        chatMessageCountsByLogin.set(
-          login,
-          Math.min(CHAT_MESSAGE_SCORE_CAP_PER_STREAM, nextCount),
-        );
-      } catch (e) {
-        console.warn("noteChatMessage failed:", e?.message || e);
       }
+      if (chatProgress?.leveledUp) {
+        const levelUpMessage = buildCommunityLevelUpMessage({
+          displayName:
+            tags["display-name"] || tags.displayName || tags.username || login,
+          login,
+          level: chatProgress.level,
+          rankName: chatProgress.rankName,
+        });
+        if (levelUpMessage) {
+          try {
+            await sendTwitchChatMessage(levelUpMessage);
+          } catch (e) {
+            console.warn("level-up chat message failed:", e?.message || e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("noteChatMessage failed:", e?.message || e);
     }
 
     const emotesObj = tags.emotes || null;

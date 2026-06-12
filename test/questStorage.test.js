@@ -195,6 +195,35 @@ test("default chat level caps at 1200 xp per live", async () => {
   assert.equal(stream.community_level.xp, 1200);
 });
 
+test("chat level xp continues after quest chat count cap", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatCooldownMs: 0,
+    },
+  });
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+  let last;
+
+  for (let i = 0; i < 11; i += 1) {
+    last = await withDateNow(
+      Date.parse("2026-05-16T11:00:00.000Z") + i * 1000,
+      () => store.noteChatMessage("alice", "stream-1", 1, { startedAt }),
+    );
+  }
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(last.count, 10);
+  assert.equal(last.capped, true);
+  assert.equal(doc.communityLevel.xpTotal, 110);
+  assert.equal(doc.communityLevel.chatXpTotal, 110);
+  assert.equal(doc.communityLevel.chatMessages, 11);
+  assert.equal(stream.chat_message.count, 10);
+  assert.equal(stream.community_level.messages, 11);
+  assert.equal(stream.community_level.chat_xp, 110);
+});
+
 test("presence level awards 200 xp once per live", async () => {
   const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
   const store = createQuestStorage(db);
