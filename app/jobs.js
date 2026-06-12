@@ -27,6 +27,9 @@ function createJobs({
   let announcedStreamId = null;
   let announcedStartedAt = null;
   let offlineStreak = 0;
+  let communityLevelRankTask = null;
+  let communityLevelRankTaskStarted = false;
+  let communityLevelRankRefreshPromise = null;
 
   function isCommunityLevelRankRefreshEnabled() {
     return (
