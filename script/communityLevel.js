@@ -28,7 +28,7 @@ const DEFAULT_CONFIG = Object.freeze({
   baseXp: 100,
   growthXp: 25,
   maxLevel: 999,
-  legacyDoubleWrite: true,
+  legacyDoubleWrite: false,
   rankBatchSize: 400,
 });
 
@@ -193,7 +193,7 @@ function resolveCommunityLevelConfig(raw = {}) {
     baseXp: positiveInt(raw.baseXp, DEFAULT_CONFIG.baseXp),
     growthXp: nonNegativeInt(raw.growthXp, DEFAULT_CONFIG.growthXp),
     maxLevel: positiveInt(raw.maxLevel, DEFAULT_CONFIG.maxLevel),
-    legacyDoubleWrite: raw.legacyDoubleWrite !== false,
+    legacyDoubleWrite: raw.legacyDoubleWrite === true,
     rankBatchSize: positiveInt(raw.rankBatchSize, DEFAULT_CONFIG.rankBatchSize),
     rankTitles,
   };

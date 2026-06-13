@@ -146,7 +146,7 @@ const config = {
     baseXp: numberEnv("COMMUNITY_LEVEL_BASE_XP", 100),
     growthXp: numberEnv("COMMUNITY_LEVEL_GROWTH_XP", 25),
     maxLevel: numberEnv("COMMUNITY_LEVEL_MAX_LEVEL", 999),
-    legacyDoubleWrite: boolEnv("COMMUNITY_LEVEL_LEGACY_DOUBLE_WRITE", true),
+    legacyDoubleWrite: boolEnv("COMMUNITY_LEVEL_LEGACY_DOUBLE_WRITE", false),
     rankCron: process.env.CRON_COMMUNITY_LEVEL_RANKS || "*/10 * * * *",
     rankBatchSize: numberEnv("COMMUNITY_LEVEL_RANK_BATCH_SIZE", 400),
   },

@@ -365,6 +365,40 @@ test("chat message during live awards community level xp from legacy floor", asy
   assert.equal(doc.communityLevel.xpInLevel, 5);
   assert.equal(doc.communityLevel.rankName, "Destructeur d' ASMR");
   assert.equal(doc.wizebotLevel, 42);
+  assert.equal(doc.wizebotExp, 1000);
+  assert.equal(doc.wizebotRankName, "Ancien legacy");
+});
+
+test("chat level legacy double-write is opt-in", async () => {
+  const db = new FakeDb({
+    alice: {
+      pseudo: "alice",
+      communityLevel: {
+        level: 42,
+        xpTotal: 1000,
+      },
+      live_presence: {},
+    },
+  });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      legacyDoubleWrite: true,
+      chatXp: 5,
+      chatCooldownMs: 0,
+      chatXpCapPerStream: 10,
+      baseXp: 10,
+      growthXp: 0,
+    },
+  });
+
+  await withDateNow(Date.parse("2026-05-16T11:00:00.000Z"), () =>
+    store.noteChatMessage("alice", "stream-1", 1, {
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    }),
+  );
+
+  const doc = db.doc("alice");
+  assert.equal(doc.wizebotLevel, 42);
   assert.equal(doc.wizebotExp, 1005);
   assert.equal(doc.wizebotRankName, "Destructeur d' ASMR");
 });
@@ -384,6 +418,7 @@ test("chat level stores rank name from configured rank title catalog", async () 
   });
   const store = createQuestStorage(db, {
     communityLevel: {
+      legacyDoubleWrite: true,
       chatXp: 1,
       chatCooldownMs: 0,
       chatXpCapPerStream: 10,
