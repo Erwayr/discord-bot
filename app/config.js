@@ -64,6 +64,19 @@ const config = {
     preferRest: process.env.FIRESTORE_PREFER_REST !== "0",
   },
 
+  overlay: {
+    eventsCollection: process.env.OVERLAY_EVENTS_COLLECTION || "overlay_events",
+    cardEventType: process.env.OVERLAY_CARD_EVENT_TYPE || "reward_ma_carte",
+    cardRewardId:
+      process.env.OVERLAY_CARD_REWARD_ID ||
+      process.env.MA_CARTE_REWARD_ID ||
+      "",
+    cardRewardTitle:
+      process.env.OVERLAY_CARD_REWARD_TITLE ||
+      process.env.MA_CARTE_REWARD_TITLE ||
+      "ma carte",
+  },
+
   timezone: process.env.TIMEZONE || "Europe/Warsaw",
 
   birthdays: {

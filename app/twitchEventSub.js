@@ -12,6 +12,61 @@ const {
   buildCommunityLevelUpMessage,
 } = require("../script/twitchLevelAnnouncements");
 
+function normalizeRewardText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\u2019\u2018\u0060\u00b4]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function safeOverlayEventDocId(value) {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 140);
+  return cleaned || `event_${Date.now()}`;
+}
+
+function redemptionEventMs(redemption) {
+  const parsed = Date.parse(redemption?.redeemed_at || "");
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function isOverlayCardRedemption(redemption, overlayConfig = {}) {
+  const reward = redemption?.reward || {};
+  const rewardId = String(reward.id || "").trim();
+  const expectedId = String(overlayConfig.cardRewardId || "").trim();
+  if (expectedId) return rewardId === expectedId;
+
+  const expectedTitle = normalizeRewardText(
+    overlayConfig.cardRewardTitle || "ma carte",
+  );
+  const rewardTitle = normalizeRewardText(reward.title || "");
+  return !!expectedTitle && rewardTitle.includes(expectedTitle);
+}
+
+function buildOverlayCardRedemptionEvent(redemption, overlayConfig = {}) {
+  const eventMs = redemptionEventMs(redemption);
+  const login = String(
+    redemption?.user_login || redemption?.user_name || "",
+  ).toLowerCase();
+  return {
+    type: overlayConfig.cardEventType || "reward_ma_carte",
+    eventMs,
+    createdAtMs: Date.now(),
+    redeemedAt: redemption?.redeemed_at || null,
+    source: "twitch_eventsub",
+    login,
+    displayName: redemption?.user_name || login,
+    rewardId: redemption?.reward?.id || "",
+    rewardTitle: redemption?.reward?.title || "",
+  };
+}
+
 function createTwitchEventSub({
   db,
   client,
@@ -122,6 +177,23 @@ function createTwitchEventSub({
     return e?.user_name || e?.user?.name || fallbackLogin;
   }
 
+  async function publishOverlayCardRedemptionEvent(redemption) {
+    const overlayConfig = config.overlay || {};
+    if (!isOverlayCardRedemption(redemption, overlayConfig)) return false;
+
+    const payload = buildOverlayCardRedemptionEvent(redemption, overlayConfig);
+    if (!payload.login) return false;
+
+    const collectionName = overlayConfig.eventsCollection || "overlay_events";
+    const redemptionId = safeOverlayEventDocId(redemption?.id || "");
+    const docId = `${payload.type}_${redemptionId}`;
+    await db.collection(collectionName).doc(docId).set(payload, { merge: true });
+    console.log(
+      `[overlay] Ma carte event published: login=${payload.login} doc=${docId}`,
+    );
+    return true;
+  }
+
   async function buildSubMention(login, display) {
     try {
       const snap = await db.collection("participants").doc(login).get();
@@ -173,6 +245,12 @@ function createTwitchEventSub({
       console.log(
         `🎯 Redemption: user=${r.user_login} rewardId=${r.reward?.id} title="${r.reward?.title}" isTicket=${isTicket}`,
       );
+
+      try {
+        await publishOverlayCardRedemptionEvent(r);
+      } catch (e) {
+        console.warn("overlay card event publish failed:", e?.message || e);
+      }
 
       if (isTicket) {
         try {
@@ -441,6 +519,7 @@ function createTwitchEventSub({
     const payload = {
       type: "channel.channel_points_custom_reward_redemption.add",
       version: "1",
+      condition: { broadcaster_user_id: config.twitch.channelId },
       transport: {
         method: "webhook",
         callback: config.twitch.eventsubCallback,
@@ -505,4 +584,12 @@ function createTwitchEventSub({
   };
 }
 
-module.exports = { createTwitchEventSub };
+module.exports = {
+  createTwitchEventSub,
+  _test: {
+    buildOverlayCardRedemptionEvent,
+    isOverlayCardRedemption,
+    normalizeRewardText,
+    safeOverlayEventDocId,
+  },
+};
