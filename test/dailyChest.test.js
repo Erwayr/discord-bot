@@ -699,6 +699,7 @@ test("daily chest real embed includes compact user stats", () => {
   assert.match(embed.description, /287 \u2666\uFE0F POPS/);
   assert.match(embed.description, /200 \u2728 EXP/);
   assert.match(embed.description, /\+11% \uD83C\uDF40/);
+  assert.equal(embed.footer, undefined);
 });
 
 test("daily chest embed uses distinct visual frames by reward tier", () => {

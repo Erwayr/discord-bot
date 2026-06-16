@@ -1099,8 +1099,7 @@ function buildDailyChestEmbed(result, user) {
   const embed = new EmbedBuilder()
     .setColor(rewardColor(reward))
     .setTitle(`${REWARD_ICONS.chest} Coffre ouvert !`)
-    .setDescription(lines.join("\n"))
-    .setFooter({ text: `Reset quotidien: ${result?.dayKey || "demain"}` });
+    .setDescription(lines.join("\n"));
 
   if (result?.testMode) {
     embed
