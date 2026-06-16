@@ -20,6 +20,7 @@ const REWARD_ICONS = Object.freeze({
   lock: "\uD83D\uDD10",
   unlock: "\uD83D\uDD13",
   spark: "\u2728",
+  laugh: "\uD83D\uDE02",
 });
 
 const SLOT_SYMBOLS = Object.freeze([
@@ -33,7 +34,7 @@ const SLOT_SYMBOLS = Object.freeze([
 ]);
 
 const TIER_LABELS = Object.freeze({
-  common: "Commun",
+  common: "",
   small: "Petit gain",
   rare: "Rare",
   legendary: "Legendaire",
@@ -235,7 +236,10 @@ function rewardIcon(rewardOrType) {
 }
 
 function rewardTierLabel(reward) {
-  return TIER_LABELS[reward?.tier] || TIER_LABELS.custom;
+  if (Object.prototype.hasOwnProperty.call(TIER_LABELS, reward?.tier)) {
+    return TIER_LABELS[reward.tier];
+  }
+  return TIER_LABELS.custom;
 }
 
 function padPanelCell(value, width) {
@@ -266,12 +270,17 @@ function rewardJackpotLabel(reward) {
   return "";
 }
 
+function rewardPanelTitle(reward) {
+  const tier = rewardTierLabel(reward);
+  return tier ? `COFFRE ${tier.toUpperCase()}` : "COFFRE";
+}
+
 function buildDailyChestResultPanel(reward) {
   const jackpot = rewardJackpotLabel(reward);
   const lines = [
     "```text",
     "+------------------------------+",
-    fullPanelRow("RESULTAT COFFRE"),
+    fullPanelRow(rewardPanelTitle(reward)),
   ];
 
   if (jackpot) {
@@ -281,7 +290,6 @@ function buildDailyChestResultPanel(reward) {
   lines.push(
     "+--------------+---------------+",
     splitPanelRow("GAIN", rewardValueText(reward)),
-    splitPanelRow("TIRAGE", rewardTierLabel(reward)),
     "+--------------+---------------+",
     "```",
   );
@@ -602,7 +610,7 @@ function buildDailyChestEmbed(result, user) {
   const lines = [buildDailyChestResultPanel(reward)];
 
   if (reward.type === "nothing" && reward.message) {
-    lines.push(reward.message);
+    lines.push(`${reward.message} ${REWARD_ICONS.laugh}`);
   }
 
   const embed = new EmbedBuilder()

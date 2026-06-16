@@ -297,8 +297,10 @@ test("daily chest POPS embed uses casino panel and ruby icon", () => {
   const fields = embed.fields || [];
   assert.match(embed.description, /```text/);
   assert.match(embed.description, /\+------------------------------\+/);
+  assert.match(embed.description, /COFFRE PETIT GAIN/);
   assert.match(embed.description, /\| GAIN\s+\|/);
-  assert.match(embed.description, /\| TIRAGE\s+\|/);
+  assert.doesNotMatch(embed.description, /TIRAGE/);
+  assert.doesNotMatch(embed.description, /RARET/);
   assert.match(embed.description, /\+37/);
   assert.match(embed.description, /\u2666/);
   assert.doesNotMatch(embed.description, /POPS/);
@@ -318,6 +320,26 @@ test("daily chest animation frames do not include player draw title", () => {
 
   assert.ok(frames.length >= 5);
   assert.doesNotMatch(frames.join("\n"), /Tirage de/);
+});
+
+test("daily chest nothing embed appends laughing emoji to funny message", () => {
+  const embed = buildDailyChestEmbed(
+    {
+      dayKey: "2026-06-16",
+      reward: {
+        type: "nothing",
+        tier: "common",
+        amount: 0,
+        message: "Rien, mais avec panache.",
+      },
+    },
+    { username: "Alice" },
+  ).toJSON();
+
+  assert.match(embed.description, /Rien, mais avec panache\. \uD83D\uDE02$/);
+  assert.match(embed.description, /\|\s+COFFRE\s+\|/);
+  assert.doesNotMatch(embed.description, /Commun/);
+  assert.doesNotMatch(embed.description, /TIRAGE/);
 });
 
 test("daily chest does not double credit the same day", async () => {
@@ -475,7 +497,9 @@ test("daily chest test message renders preview without Firestore dependencies", 
   assert.equal(finalEdit.embeds.length, 1);
   assert.match(finalEmbed.description, /```text/);
   assert.match(finalEmbed.description, /\| GAIN\s+\|/);
-  assert.match(finalEmbed.description, /\| TIRAGE\s+\|/);
+  assert.doesNotMatch(finalEmbed.description, /TIRAGE/);
+  assert.doesNotMatch(finalEmbed.description, /RARET/);
+  assert.doesNotMatch(finalEmbed.description, /Commun/);
   assert.equal((finalEmbed.fields || []).length, 0);
   assert.ok(sentMessages[0].edits.length >= 5);
 });
