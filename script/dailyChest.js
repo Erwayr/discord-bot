@@ -10,14 +10,35 @@ const DAILY_CHEST_TRANSACTION_SOURCE = "discord_daily_chest";
 const DEFAULT_TIMEZONE = "Europe/Warsaw";
 const DEFAULT_ANIMATION_DELAY_MS = 650;
 
+const REWARD_ICONS = Object.freeze({
+  pops: "\u2666\uFE0F",
+  exp: "\u2728",
+  quest_bonus: "\uD83C\uDF40",
+  nothing: "\uD83D\uDCA8",
+  chest: "\uD83C\uDF81",
+  slot: "\uD83C\uDFB0",
+  lock: "\uD83D\uDD10",
+  unlock: "\uD83D\uDD13",
+  spark: "\u2728",
+});
+
 const SLOT_SYMBOLS = Object.freeze([
-  "\uD83C\uDF81",
-  "\uD83D\uDC8E",
-  "\u2728",
-  "\uD83C\uDF40",
+  REWARD_ICONS.chest,
+  REWARD_ICONS.pops,
+  REWARD_ICONS.exp,
+  REWARD_ICONS.quest_bonus,
+  REWARD_ICONS.nothing,
   "\uD83D\uDCB0",
   "\uD83D\uDD25",
 ]);
+
+const TIER_LABELS = Object.freeze({
+  common: "Commun",
+  small: "Petit gain",
+  rare: "Rare",
+  legendary: "Legendaire",
+  custom: "Test",
+});
 
 const NOTHING_MESSAGES = Object.freeze([
   "Le coffre etait rempli d'air premium. Tres rare, mais invendable.",
@@ -199,10 +220,42 @@ function rewardSummary(reward) {
 
 function rewardValueText(reward) {
   const amount = toSafeCount(reward?.amount);
-  if (reward?.type === "pops") return `+${amount} POPS`;
-  if (reward?.type === "exp") return `+${amount} EXP`;
-  if (reward?.type === "quest_bonus") return `+${amount}% quetes mensuelles`;
-  return "Rien";
+  if (reward?.type === "pops") return `+${amount} ${REWARD_ICONS.pops}`;
+  if (reward?.type === "exp") return `+${amount} ${REWARD_ICONS.exp} EXP`;
+  if (reward?.type === "quest_bonus") {
+    return `+${amount}% ${REWARD_ICONS.quest_bonus}`;
+  }
+  return `${REWARD_ICONS.nothing} Rien`;
+}
+
+function rewardIcon(rewardOrType) {
+  const type =
+    typeof rewardOrType === "string" ? rewardOrType : rewardOrType?.type;
+  return REWARD_ICONS[type] || REWARD_ICONS.chest;
+}
+
+function rewardTierLabel(reward) {
+  return TIER_LABELS[reward?.tier] || TIER_LABELS.custom;
+}
+
+function rewardImpactText(result) {
+  const reward = result?.reward || {};
+  if (reward.type === "pops") return "Ajoute au portefeuille POPS.";
+  if (reward.type === "exp") {
+    const levelResult = result?.rewardResult?.levelResult;
+    if (levelResult?.leveledUp) {
+      return `Niveau communautaire atteint : ${levelResult.level}.`;
+    }
+    return "Ajoute au niveau communautaire.";
+  }
+  if (reward.type === "quest_bonus") {
+    const questBonus = result?.rewardResult?.questBonus;
+    if (!questBonus) return "Bonus ajoute au tirage du mois.";
+    return `Progression tirage : ${Math.round(
+      questBonus.before,
+    )}% -> ${Math.round(questBonus.after)}%.`;
+  }
+  return reward.message || "Le coffre garde son meilleur tresor pour demain.";
 }
 
 function applyRewardPatch({
@@ -431,28 +484,64 @@ async function openDailyChest(
   return txResult || { status: "error", dayKey, monthKey };
 }
 
-function buildSlotLine(rng = Math.random) {
-  return `[ ${pickRandom(SLOT_SYMBOLS, rng)} | ${pickRandom(
-    SLOT_SYMBOLS,
-    rng,
-  )} | ${pickRandom(SLOT_SYMBOLS, rng)} ]`;
+function buildSlotLine(rng = Math.random, middleIcon = null) {
+  const left = pickRandom(SLOT_SYMBOLS, rng);
+  const middle = middleIcon || pickRandom(SLOT_SYMBOLS, rng);
+  const right = pickRandom(SLOT_SYMBOLS, rng);
+  return `|  ${left}  |  ${middle}  |  ${right}  |`;
 }
 
-function buildDailyChestAnimationFrames({ rng = Math.random } = {}) {
+function buildSlotPanel(lines) {
   return [
-    "\uD83C\uDFB0 **Coffre quotidien**\n```" +
-      `\n${buildSlotLine(rng)}\n` +
-      "```\nLe coffre se reveille...",
-    "\uD83C\uDFB0 **Coffre quotidien**\n```" +
-      `\n${buildSlotLine(rng)}\n${buildSlotLine(rng)}\n` +
-      "```\nLes rouleaux chauffent.",
-    "\uD83C\uDFB0 **Coffre quotidien**\n```" +
-      `\n${buildSlotLine(rng)}\n${buildSlotLine(rng)}\n${buildSlotLine(rng)}\n` +
-      "```\nPresque...",
-    "\uD83C\uDFB0 **Coffre quotidien**\n```" +
-      `\n${buildSlotLine(rng)}\n${buildSlotLine(rng)}\n${buildSlotLine(rng)}\n` +
-      "```\nLe verrou saute.",
-    "\u2728 **Resultat du coffre...**",
+    "```text",
+    "+----------------------+",
+    ...lines,
+    "+----------------------+",
+    "```",
+  ].join("\n");
+}
+
+function buildRandomSlotPanel(rng = Math.random, middleIcon = null) {
+  return buildSlotPanel([
+    buildSlotLine(rng),
+    buildSlotLine(rng, middleIcon),
+    buildSlotLine(rng),
+  ]);
+}
+
+function buildDailyChestAnimationFrames({
+  rng = Math.random,
+  reward = null,
+  displayName = "Membre",
+} = {}) {
+  const lockedIcon = reward ? rewardIcon(reward) : pickRandom(SLOT_SYMBOLS, rng);
+  return [
+    `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
+      `Tirage de **${displayName}**\n` +
+      buildRandomSlotPanel(rng) +
+      `\n${REWARD_ICONS.lock} Le coffre se charge...`,
+    `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
+      `Tirage de **${displayName}**\n` +
+      buildRandomSlotPanel(rng) +
+      `\n${REWARD_ICONS.spark} Les rouleaux accelerent.`,
+    `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
+      `Tirage de **${displayName}**\n` +
+      buildRandomSlotPanel(rng, lockedIcon) +
+      `\n${REWARD_ICONS.lock} Un symbole accroche...`,
+    `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
+      `Tirage de **${displayName}**\n` +
+      buildSlotPanel([
+        buildSlotLine(rng, lockedIcon),
+        buildSlotLine(rng, lockedIcon),
+        buildSlotLine(rng, lockedIcon),
+      ]) +
+      `\n${REWARD_ICONS.unlock} Le coffre s'ouvre.`,
+    `${REWARD_ICONS.spark} **Resultat du coffre...**\n` +
+      buildSlotPanel([
+        `|      |  ${lockedIcon}  |      |`,
+        `|  ${lockedIcon}  |  ${lockedIcon}  |  ${lockedIcon}  |`,
+        `|      |  ${lockedIcon}  |      |`,
+      ]),
   ];
 }
 
@@ -462,9 +551,14 @@ function sleep(ms) {
 
 async function playDailyChestAnimation(
   interaction,
-  { rng = Math.random, delayMs = DEFAULT_ANIMATION_DELAY_MS } = {},
+  {
+    rng = Math.random,
+    delayMs = DEFAULT_ANIMATION_DELAY_MS,
+    reward = null,
+    displayName = "Membre",
+  } = {},
 ) {
-  const frames = buildDailyChestAnimationFrames({ rng });
+  const frames = buildDailyChestAnimationFrames({ rng, reward, displayName });
   for (const frame of frames) {
     await interaction.editReply({ content: frame, embeds: [] });
     if (delayMs > 0) await sleep(delayMs);
@@ -483,37 +577,34 @@ function buildDailyChestEmbed(result, user) {
   const displayName =
     result?.profile?.displayName || user?.globalName || user?.username || "Membre";
   const value = rewardValueText(reward);
-  const lines = [
-    `**${displayName}**`,
-    "",
-    "Tu gagnes :",
-    `**${value}**`,
-  ];
+  const icon = rewardIcon(reward);
+  const lines = [`${REWARD_ICONS.slot} Tirage de **${displayName}**`];
 
   if (reward.type === "nothing" && reward.message) {
     lines.push("", reward.message);
   }
 
-  if (result?.rewardResult?.levelResult?.leveledUp) {
-    lines.push(
-      "",
-      `Niveau atteint : **${result.rewardResult.levelResult.level}**`,
-    );
-  }
-
-  if (result?.rewardResult?.questBonus) {
-    lines.push(
-      "",
-      `Progression tirage : **${Math.round(
-        result.rewardResult.questBonus.before,
-      )}% -> ${Math.round(result.rewardResult.questBonus.after)}%**`,
-    );
-  }
-
   const embed = new EmbedBuilder()
     .setColor(rewardColor(reward))
-    .setTitle("\uD83C\uDF81 Coffre ouvert !")
+    .setTitle(`${REWARD_ICONS.chest} Coffre ouvert !`)
     .setDescription(lines.join("\n"))
+    .addFields(
+      {
+        name: `${icon} Gain`,
+        value: `**${value}**`,
+        inline: true,
+      },
+      {
+        name: "\uD83D\uDCCA Impact",
+        value: rewardImpactText(result),
+        inline: true,
+      },
+      {
+        name: "\uD83C\uDFF7\uFE0F Tirage",
+        value: rewardTierLabel(reward),
+        inline: true,
+      },
+    )
     .setFooter({ text: `Reset quotidien: ${result?.dayKey || "demain"}` });
 
   if (result?.testMode) {
@@ -571,6 +662,12 @@ async function handleDailyChestInteraction(
     try {
       await playDailyChestAnimation(interaction, {
         rng,
+        reward: result.reward,
+        displayName:
+          result.profile?.displayName ||
+          interaction.user?.globalName ||
+          interaction.user?.username ||
+          "Membre",
         delayMs:
           animationDelayMs == null
             ? DEFAULT_ANIMATION_DELAY_MS
@@ -632,7 +729,11 @@ async function sendDailyChestTestMessage(
     },
   };
 
-  const frames = buildDailyChestAnimationFrames({ rng });
+  const frames = buildDailyChestAnimationFrames({
+    rng,
+    reward,
+    displayName: result.profile.displayName,
+  });
   const sent = await message.channel.send(frames[0]);
   for (const frame of frames.slice(1)) {
     if (animationDelayMs > 0) await sleep(animationDelayMs);

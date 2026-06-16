@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const {
+  buildDailyChestEmbed,
   openDailyChest,
   sendDailyChestTestMessage,
 } = require("../script/dailyChest");
@@ -277,6 +278,25 @@ test("daily chest credits POPS and writes an idempotent ledger entry", async () 
     ).type,
     "daily_chest",
   );
+});
+
+test("daily chest POPS embed uses ruby icon instead of POPS text", () => {
+  const embed = buildDailyChestEmbed(
+    {
+      dayKey: "2026-06-16",
+      profile: { displayName: "Alice" },
+      reward: { type: "pops", tier: "small", amount: 37 },
+      rewardResult: {
+        reward: { type: "pops", tier: "small", amount: 37 },
+      },
+    },
+    { username: "Alice" },
+  ).toJSON();
+
+  const gain = embed.fields.find((field) => field.name.includes("Gain"));
+  assert.match(gain.value, /\+37/);
+  assert.match(gain.value, /\u2666/);
+  assert.doesNotMatch(gain.value, /POPS/);
 });
 
 test("daily chest does not double credit the same day", async () => {
