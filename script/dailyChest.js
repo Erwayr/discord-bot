@@ -55,6 +55,10 @@ const TEST_REWARD_AMOUNTS = Object.freeze({
   quest_bonus: { small: 1, legendary: 10 },
 });
 
+const RARE_EXTRA_QUEST_BONUS_AMOUNT = 1;
+const LEGENDARY_EXTRA_POPS_AMOUNT = 250;
+const LEGENDARY_EXTRA_EXP_AMOUNT = 200;
+
 const REWARD_TABLE = Object.freeze([
   { type: "nothing", tier: "common", weight: 34, min: 0, max: 0 },
   { type: "pops", tier: "small", weight: 28, min: 5, max: 25 },
@@ -181,6 +185,58 @@ function normalizeReward(reward, rng = Math.random) {
   };
 }
 
+function normalizeRewardList(rewards, rng = Math.random) {
+  if (!Array.isArray(rewards)) return [];
+  return rewards
+    .filter((reward) => reward && typeof reward === "object")
+    .map((reward) => normalizeReward(reward, rng));
+}
+
+function expandDailyChestRewards(reward, rng = Math.random) {
+  const primary = normalizeReward(reward, rng);
+
+  if (primary.tier === "legendary") {
+    return [
+      primary,
+      normalizeReward(
+        {
+          type: "pops",
+          tier: "legendary",
+          amount: LEGENDARY_EXTRA_POPS_AMOUNT,
+        },
+        rng,
+      ),
+      normalizeReward(
+        {
+          type: "exp",
+          tier: "legendary",
+          amount: LEGENDARY_EXTRA_EXP_AMOUNT,
+        },
+        rng,
+      ),
+    ];
+  }
+
+  if (
+    primary.tier === "rare" &&
+    (primary.type === "pops" || primary.type === "exp")
+  ) {
+    return [
+      primary,
+      normalizeReward(
+        {
+          type: "quest_bonus",
+          tier: "rare",
+          amount: RARE_EXTRA_QUEST_BONUS_AMOUNT,
+        },
+        rng,
+      ),
+    ];
+  }
+
+  return [primary];
+}
+
 function normalizeTestToken(value) {
   return String(value || "")
     .normalize("NFD")
@@ -286,6 +342,33 @@ function rewardSummary(reward) {
   };
 }
 
+function rewardSummaries(rewards) {
+  return normalizeRewardList(rewards).map((reward) => rewardSummary(reward));
+}
+
+function rewardsForDisplay(result) {
+  return rewardsOrSingle(result?.rewards, result?.reward);
+}
+
+function rewardsOrSingle(rewards, reward) {
+  if (Array.isArray(rewards) && rewards.length) return rewards;
+  return reward ? [reward] : [];
+}
+
+function rewardTotals(rewards) {
+  return normalizeRewardList(rewards).reduce(
+    (totals, reward) => {
+      if (reward.type === "pops") totals.pops += toSafeCount(reward.amount);
+      if (reward.type === "exp") totals.exp += toSafeCount(reward.amount);
+      if (reward.type === "quest_bonus") {
+        totals.questBonus += toSafeCount(reward.amount);
+      }
+      return totals;
+    },
+    { pops: 0, exp: 0, questBonus: 0 },
+  );
+}
+
 function rewardValueText(reward) {
   const amount = toSafeCount(reward?.amount);
   if (reward?.type === "pops") return `+${amount} ${REWARD_ICONS.pops} POPS`;
@@ -384,14 +467,18 @@ function panelDivider(char) {
   return `+${fill.repeat(14)}+${fill.repeat(15)}+`;
 }
 
-function buildDailyChestResultPanel(reward) {
+function buildDailyChestResultPanel(reward, rewards = null) {
   const theme = rewardVisualTheme(reward);
+  const displayRewards =
+    Array.isArray(rewards) && rewards.length ? rewards : [reward];
   const lines = [
     "```text",
     panelBorder(theme.border),
     fullPanelRow(theme.title),
     panelDivider(theme.divider),
-    splitPanelRow("GAIN", rewardValueText(reward)),
+    ...displayRewards.map((entry) =>
+      splitPanelRow("GAIN", rewardValueText(entry)),
+    ),
     panelBorder(theme.border),
     "```",
   ];
@@ -402,23 +489,32 @@ function buildDailyChestResultPanel(reward) {
 function applyRewardPatch({
   data,
   reward,
+  rewards,
   dayKey,
   monthKey,
   now,
   nowMs,
   communityLevelConfig,
 }) {
+  const appliedRewards =
+    Array.isArray(rewards) && rewards.length
+      ? normalizeRewardList(rewards)
+      : expandDailyChestRewards(reward);
+  const primaryReward = appliedRewards[0] || normalizeReward(reward);
+  const rewardListSummary = rewardSummaries(appliedRewards);
+  const totals = rewardTotals(appliedRewards);
   const patch = {};
   const result = {
-    reward: rewardSummary(reward),
+    reward: rewardSummary(primaryReward),
+    rewards: rewardListSummary,
     transaction: null,
     participantPatch: null,
     levelResult: null,
     questBonus: null,
   };
 
-  if (reward.type === "pops") {
-    const amount = toSafeCount(reward.amount);
+  if (totals.pops > 0) {
+    const amount = totals.pops;
     const wallet = normalizePopsWallet(data);
     const nextWallet = {
       balance: wallet.balance + amount,
@@ -437,7 +533,8 @@ function applyRewardPatch({
       amount,
       dayKey,
       monthKey,
-      reward: rewardSummary(reward),
+      reward: result.reward,
+      rewards: rewardListSummary,
       balanceBefore: wallet.balance,
       balanceAfter: nextWallet.balance,
       createdAt: now,
@@ -447,10 +544,10 @@ function applyRewardPatch({
     };
   }
 
-  if (reward.type === "exp") {
+  if (totals.exp > 0) {
     const levelResult = applyFlatCommunityLevelXp({
       data,
-      awardXp: reward.amount,
+      awardXp: totals.exp,
       nowMs,
       rawConfig: communityLevelConfig,
       sourceLabel: DAILY_CHEST_TRANSACTION_SOURCE,
@@ -463,8 +560,8 @@ function applyRewardPatch({
     }
   }
 
-  if (reward.type === "quest_bonus") {
-    const amount = toSafeCount(reward.amount);
+  if (totals.questBonus > 0) {
+    const amount = totals.questBonus;
     const before = clampPct(data?.live_presence?.[monthKey]?.progress_pct || 0);
     const after = clampPct(before + amount);
     patch[`live_presence.${monthKey}.progress_pct`] = after;
@@ -487,7 +584,8 @@ function applyRewardPatch({
     lastOpenedDay: dayKey,
     lastOpenedAt: now,
     lastOpenedAtMs: nowMs,
-    lastReward: rewardSummary(reward),
+    lastReward: result.reward,
+    lastRewards: rewardListSummary,
     totalOpenings: toSafeCount(data?.dailyChest?.totalOpenings) + 1,
     schemaVersion: DAILY_CHEST_SCHEMA_VERSION,
   };
@@ -530,8 +628,9 @@ async function openDailyChest(
   }
 
   const plannedReward = normalizeReward(reward, rng);
+  const plannedRewards = expandDailyChestRewards(plannedReward, rng);
   const communityLevelConfig =
-    plannedReward.type === "exp"
+    plannedRewards.some((entry) => entry.type === "exp")
       ? await resolveCommunityLevelConfig(config, getCommunityLevelConfig)
       : config.communityLevel || {};
   const claimRef = profile.ref.collection("daily_chest_claims").doc(dayKey);
@@ -562,6 +661,7 @@ async function openDailyChest(
         },
         claim,
         reward: claim.reward || null,
+        rewards: rewardsOrSingle(claim.rewards, claim.reward),
       };
       return;
     }
@@ -570,6 +670,7 @@ async function openDailyChest(
     const rewardPatch = applyRewardPatch({
       data,
       reward: plannedReward,
+      rewards: plannedRewards,
       dayKey,
       monthKey,
       now,
@@ -583,6 +684,7 @@ async function openDailyChest(
       login: profile.docId,
       displayName: profileDisplayName(data, profile.docId),
       reward: rewardPatch.result.reward,
+      rewards: rewardPatch.result.rewards,
       createdAt: now,
       createdAtMs: now.getTime(),
       schemaVersion: DAILY_CHEST_SCHEMA_VERSION,
@@ -617,6 +719,7 @@ async function openDailyChest(
       },
       claim: claimPayload,
       reward: rewardPatch.result.reward,
+      rewards: rewardPatch.result.rewards,
       rewardResult: rewardPatch.result,
       participantSynced: !!participantSnap?.exists,
     };
@@ -713,7 +816,7 @@ function rewardColor(reward) {
 
 function buildDailyChestEmbed(result, user) {
   const reward = result?.reward || {};
-  const lines = [buildDailyChestResultPanel(reward)];
+  const lines = [buildDailyChestResultPanel(reward, rewardsForDisplay(result))];
 
   if (reward.type === "nothing" && reward.message) {
     lines.push(`${reward.message} ${REWARD_ICONS.laugh}`);
@@ -822,6 +925,8 @@ async function sendDailyChestTestMessage(
   const reward =
     forcedDailyChestTestReward(forceReward, rng) ||
     selectDailyChestReward({ rng });
+  const rewards = expandDailyChestRewards(reward, rng);
+  const totals = rewardTotals(rewards);
   const monthKey = monthKeyInTimezone(now, timeZone);
   const result = {
     status: "opened",
@@ -837,14 +942,16 @@ async function sendDailyChestTestMessage(
         "Test",
     },
     reward: rewardSummary(reward),
+    rewards: rewardSummaries(rewards),
     rewardResult: {
       reward: rewardSummary(reward),
+      rewards: rewardSummaries(rewards),
       questBonus:
-        reward.type === "quest_bonus"
+        rewards.some((entry) => entry.type === "quest_bonus")
           ? {
               before: 42,
-              after: clampPct(42 + reward.amount),
-              amount: reward.amount,
+              after: clampPct(42 + totals.questBonus),
+              amount: totals.questBonus,
             }
           : null,
     },

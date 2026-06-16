@@ -274,6 +274,10 @@ test("daily chest credits POPS and writes an idempotent ledger entry", async () 
       .amount,
     37,
   );
+  assert.deepEqual(
+    db.data("followers_all_time/alice/daily_chest_claims/2026-06-16").rewards,
+    [{ type: "pops", tier: "custom", amount: 37, message: "" }],
+  );
   assert.equal(
     db.data(
       "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
@@ -319,6 +323,10 @@ test("daily chest embed uses distinct visual frames by reward tier", () => {
     {
       dayKey: "2026-06-16",
       reward: { type: "pops", tier: "rare", amount: 150 },
+      rewards: [
+        { type: "pops", tier: "rare", amount: 150 },
+        { type: "quest_bonus", tier: "rare", amount: 1 },
+      ],
     },
     { username: "Alice" },
   ).toJSON();
@@ -326,6 +334,11 @@ test("daily chest embed uses distinct visual frames by reward tier", () => {
     {
       dayKey: "2026-06-16",
       reward: { type: "quest_bonus", tier: "legendary", amount: 10 },
+      rewards: [
+        { type: "quest_bonus", tier: "legendary", amount: 10 },
+        { type: "pops", tier: "legendary", amount: 250 },
+        { type: "exp", tier: "legendary", amount: 200 },
+      ],
     },
     { username: "Alice" },
   ).toJSON();
@@ -333,13 +346,21 @@ test("daily chest embed uses distinct visual frames by reward tier", () => {
   assert.match(rareEmbed.description, /\+\*{30}\+/);
   assert.match(rareEmbed.description, /COFFRE RARE/);
   assert.match(rareEmbed.description, /\uD83D\uDC8E/);
+  assert.equal((rareEmbed.description.match(/\| GAIN\s+\|/g) || []).length, 2);
+  assert.match(rareEmbed.description, /\+1%/);
   assert.doesNotMatch(rareEmbed.description, /JACKPOT/);
   assert.doesNotMatch(rareEmbed.description, /TIRAGE/);
 
   assert.match(legendaryEmbed.description, /\+#{30}\+/);
   assert.match(legendaryEmbed.description, /COFFRE LEGENDAIRE/);
   assert.match(legendaryEmbed.description, /\uD83D\uDC51/);
+  assert.equal(
+    (legendaryEmbed.description.match(/\| GAIN\s+\|/g) || []).length,
+    3,
+  );
   assert.match(legendaryEmbed.description, /\+10%/);
+  assert.match(legendaryEmbed.description, /\+250/);
+  assert.match(legendaryEmbed.description, /\+200/);
   assert.doesNotMatch(legendaryEmbed.description, /JACKPOT/);
   assert.doesNotMatch(legendaryEmbed.description, /TIRAGE/);
 });
@@ -498,6 +519,188 @@ test("daily chest quest bonus caps monthly progress and mirrors participants", a
   );
 });
 
+test("daily chest rare POPS also applies quest bonus", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      live_presence: {
+        "2026-06": { progress_pct: 40 },
+      },
+    }),
+    "participants/alice": { pseudo: "Alice" },
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "pops", tier: "rare", amount: 150 },
+  });
+
+  const doc = db.data("followers_all_time/alice");
+  const claim = db.data(
+    "followers_all_time/alice/daily_chest_claims/2026-06-16",
+  );
+  const transaction = db.data(
+    "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
+  );
+
+  assert.equal(result.status, "opened");
+  assert.equal(result.rewards.length, 2);
+  assert.deepEqual(
+    result.rewards.map((reward) => reward.type),
+    ["pops", "quest_bonus"],
+  );
+  assert.equal(doc.pops.balance, 160);
+  assert.equal(doc.live_presence["2026-06"].progress_pct, 41);
+  assert.equal(db.data("participants/alice").progress_pct, 41);
+  assert.equal(claim.reward.type, "pops");
+  assert.equal(claim.rewards.length, 2);
+  assert.equal(doc.dailyChest.lastRewards.length, 2);
+  assert.equal(transaction.amount, 150);
+  assert.equal(transaction.rewards.length, 2);
+});
+
+test("daily chest rare EXP also applies quest bonus", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      communityLevel: {
+        rank: 5,
+        level: 1,
+        xpTotal: 0,
+        xpInLevel: 0,
+        xpForNext: 100,
+        rankName: "Start",
+      },
+      live_presence: {
+        "2026-06": { progress_pct: 99 },
+      },
+    }),
+    "participants/alice": { pseudo: "Alice" },
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "exp", tier: "rare", amount: 150 },
+  });
+
+  const doc = db.data("followers_all_time/alice");
+  const claim = db.data(
+    "followers_all_time/alice/daily_chest_claims/2026-06-16",
+  );
+
+  assert.equal(result.status, "opened");
+  assert.deepEqual(
+    result.rewards.map((reward) => reward.type),
+    ["exp", "quest_bonus"],
+  );
+  assert.equal(doc.communityLevel.xpTotal, 150);
+  assert.equal(doc.communityLevel.dailyChestXpTotal, 150);
+  assert.equal(doc.live_presence["2026-06"].progress_pct, 100);
+  assert.equal(db.data("participants/alice").quest_progress_pct, 100);
+  assert.equal(claim.reward.type, "exp");
+  assert.equal(claim.rewards.length, 2);
+  assert.equal(
+    db.data(
+      "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
+    ),
+    undefined,
+  );
+});
+
+test("daily chest legendary applies quest bonus POPS and EXP", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      communityLevel: {
+        rank: 5,
+        level: 1,
+        xpTotal: 0,
+        xpInLevel: 0,
+        xpForNext: 100,
+        rankName: "Start",
+      },
+      live_presence: {
+        "2026-06": { progress_pct: 95 },
+      },
+    }),
+    "participants/alice": { pseudo: "Alice" },
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "quest_bonus", tier: "legendary", amount: 10 },
+  });
+
+  const doc = db.data("followers_all_time/alice");
+  const claim = db.data(
+    "followers_all_time/alice/daily_chest_claims/2026-06-16",
+  );
+  const transaction = db.data(
+    "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
+  );
+
+  assert.equal(result.status, "opened");
+  assert.deepEqual(
+    result.rewards.map((reward) => reward.type),
+    ["quest_bonus", "pops", "exp"],
+  );
+  assert.equal(doc.live_presence["2026-06"].progress_pct, 100);
+  assert.equal(doc.pops.balance, 260);
+  assert.equal(doc.pops.lifetimeEarned, 270);
+  assert.equal(doc.communityLevel.xpTotal, 200);
+  assert.equal(doc.communityLevel.dailyChestXpTotal, 200);
+  assert.equal(db.data("participants/alice").progress_pct, 100);
+  assert.equal(claim.reward.type, "quest_bonus");
+  assert.equal(claim.rewards.length, 3);
+  assert.equal(doc.dailyChest.lastRewards.length, 3);
+  assert.equal(transaction.amount, 250);
+  assert.equal(transaction.rewards.length, 3);
+});
+
+test("daily chest does not double credit bundled rewards same day", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      communityLevel: {
+        rank: 5,
+        level: 1,
+        xpTotal: 0,
+        xpInLevel: 0,
+        xpForNext: 100,
+        rankName: "Start",
+      },
+      live_presence: {
+        "2026-06": { progress_pct: 0 },
+      },
+    }),
+  });
+
+  await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "quest_bonus", tier: "legendary", amount: 10 },
+  });
+  db.resetCalls();
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "quest_bonus", tier: "legendary", amount: 10 },
+  });
+  const doc = db.data("followers_all_time/alice");
+
+  assert.equal(result.status, "already_opened");
+  assert.equal(doc.pops.balance, 260);
+  assert.equal(doc.communityLevel.xpTotal, 200);
+  assert.equal(doc.live_presence["2026-06"].progress_pct, 10);
+  assert.equal(db.calls.txUpdates.length, 0);
+  assert.equal(db.calls.txSets.length, 0);
+});
+
 test("daily chest nothing reward records claim without wallet or progress writes", async () => {
   const db = new FakeDb({
     "followers_all_time/alice": follower(),
@@ -561,6 +764,7 @@ test("daily chest test message renders preview without Firestore dependencies", 
   assert.equal(result.testMode, true);
   assert.equal(result.reward.type, "quest_bonus");
   assert.equal(result.reward.tier, "legendary");
+  assert.equal(result.rewards.length, 3);
   assert.equal(sentMessages.length, 1);
   const finalEdit = sentMessages[0].edits.at(-1);
   const finalEmbed = finalEdit.embeds[0].toJSON();
@@ -570,6 +774,12 @@ test("daily chest test message renders preview without Firestore dependencies", 
   assert.match(finalEmbed.description, /\+#{30}\+/);
   assert.match(finalEmbed.description, /COFFRE LEGENDAIRE/);
   assert.match(finalEmbed.description, /\+10%/);
+  assert.match(finalEmbed.description, /\+250/);
+  assert.match(finalEmbed.description, /\+200/);
+  assert.equal(
+    (finalEmbed.description.match(/\| GAIN\s+\|/g) || []).length,
+    3,
+  );
   assert.match(finalEmbed.description, /\| GAIN\s+\|/);
   assert.doesNotMatch(finalEmbed.description, /TIRAGE/);
   assert.doesNotMatch(finalEmbed.description, /RARET/);
