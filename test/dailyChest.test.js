@@ -328,6 +328,7 @@ test("daily chest credits POPS and writes an idempotent ledger entry", async () 
   });
 
   assert.equal(result.status, "opened");
+  assert.equal(result.totalOpenings, 1);
   assert.equal(db.data("followers_all_time/alice").pops.balance, 47);
   assert.equal(db.data("followers_all_time/alice").pops.lifetimeEarned, 57);
   assert.equal(
@@ -344,6 +345,18 @@ test("daily chest credits POPS and writes an idempotent ledger entry", async () 
       "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
     ).type,
     "daily_chest",
+  );
+  assert.deepEqual(db.data("followers_all_time/alice").dailyChest.stats, {
+    trackedOpenings: 1,
+    startedDay: "2026-06-16",
+    byTier: { common: 0, small: 1, rare: 0, legendary: 0 },
+    byType: { pops: 1, exp: 0, quest_bonus: 0, nothing: 0 },
+    totals: { pops: 37, xp: 0, questBonusPct: 0 },
+    multiRewardOpenings: 0,
+  });
+  assert.deepEqual(
+    result.stats,
+    db.data("followers_all_time/alice").dailyChest.stats,
   );
 });
 
@@ -377,6 +390,65 @@ test("daily chest POPS embed uses casino panel and ruby icon", () => {
   );
   assert.equal(fields.length, 0);
   assert.doesNotMatch(JSON.stringify(embed), /Tirage de/);
+});
+
+test("daily chest stats do not backfill existing total openings", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      dailyChest: {
+        totalOpenings: 5,
+        lastOpenedDay: "2026-06-15",
+      },
+    }),
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: {
+      type: "nothing",
+      tier: "common",
+      message: "Rien, mais avec panache.",
+    },
+  });
+  const doc = db.data("followers_all_time/alice");
+  const embed = buildDailyChestEmbed(result, { username: "Alice" }).toJSON();
+
+  assert.equal(result.status, "opened");
+  assert.equal(result.totalOpenings, 6);
+  assert.equal(doc.dailyChest.totalOpenings, 6);
+  assert.equal(doc.dailyChest.stats.trackedOpenings, 1);
+  assert.equal(doc.dailyChest.stats.startedDay, "2026-06-16");
+  assert.match(embed.description, /Ouverts: 6/);
+  assert.match(embed.description, /Suivis: 1/);
+});
+
+test("daily chest real embed includes compact user stats", () => {
+  const embed = buildDailyChestEmbed(
+    {
+      dayKey: "2026-06-16",
+      totalOpenings: 12,
+      reward: { type: "pops", tier: "small", amount: 37 },
+      stats: {
+        trackedOpenings: 4,
+        startedDay: "2026-06-13",
+        byTier: { common: 1, small: 1, rare: 1, legendary: 1 },
+        byType: { pops: 2, exp: 1, quest_bonus: 2, nothing: 1 },
+        totals: { pops: 287, xp: 200, questBonusPct: 11 },
+        multiRewardOpenings: 2,
+      },
+    },
+    { username: "Alice" },
+  ).toJSON();
+
+  assert.match(embed.description, /Ouverts: 12/);
+  assert.match(embed.description, /Suivis: 4/);
+  assert.match(embed.description, /Rares: 1/);
+  assert.match(embed.description, /Legendaires: 1/);
+  assert.match(embed.description, /287 \u2666\uFE0F POPS/);
+  assert.match(embed.description, /200 \u2728 EXP/);
+  assert.match(embed.description, /\+11% \uD83C\uDF40/);
 });
 
 test("daily chest embed uses distinct visual frames by reward tier", () => {
@@ -514,6 +586,14 @@ test("daily chest does not double credit the same day", async () => {
 
   assert.equal(result.status, "already_opened");
   assert.equal(db.data("followers_all_time/alice").pops.balance, 47);
+  assert.equal(
+    db.data("followers_all_time/alice").dailyChest.stats.trackedOpenings,
+    1,
+  );
+  assert.equal(
+    db.data("followers_all_time/alice").dailyChest.stats.totals.pops,
+    37,
+  );
   assert.equal(db.calls.runTransactions, 1);
   assert.equal(db.calls.txUpdates.length, 0);
   assert.equal(db.calls.txSets.length, 0);
@@ -548,6 +628,8 @@ test("daily chest EXP reward recalculates community level", async () => {
   assert.equal(community.xpForNext, 100);
   assert.equal(community.rankName, "Level 2");
   assert.equal(community.dailyChestXpTotal, 15);
+  assert.equal(db.data("followers_all_time/alice").dailyChest.stats.byType.exp, 1);
+  assert.equal(db.data("followers_all_time/alice").dailyChest.stats.totals.xp, 15);
 });
 
 test("daily chest quest bonus caps monthly progress and mirrors participants", async () => {
@@ -577,6 +659,14 @@ test("daily chest quest bonus caps monthly progress and mirrors participants", a
   assert.equal(
     db.data("participants/alice").live_presence["2026-06"].progress_pct,
     100,
+  );
+  assert.equal(
+    db.data("followers_all_time/alice").dailyChest.stats.byType.quest_bonus,
+    1,
+  );
+  assert.equal(
+    db.data("followers_all_time/alice").dailyChest.stats.totals.questBonusPct,
+    10,
   );
 });
 
@@ -619,6 +709,13 @@ test("daily chest rare POPS also applies quest bonus", async () => {
   assert.equal(doc.dailyChest.lastRewards.length, 2);
   assert.equal(transaction.amount, 150);
   assert.equal(transaction.rewards.length, 2);
+  assert.equal(doc.dailyChest.stats.trackedOpenings, 1);
+  assert.equal(doc.dailyChest.stats.byTier.rare, 1);
+  assert.equal(doc.dailyChest.stats.byType.pops, 1);
+  assert.equal(doc.dailyChest.stats.byType.quest_bonus, 1);
+  assert.equal(doc.dailyChest.stats.totals.pops, 150);
+  assert.equal(doc.dailyChest.stats.totals.questBonusPct, 1);
+  assert.equal(doc.dailyChest.stats.multiRewardOpenings, 1);
 });
 
 test("daily chest rare EXP also applies quest bonus", async () => {
@@ -662,6 +759,12 @@ test("daily chest rare EXP also applies quest bonus", async () => {
   assert.equal(db.data("participants/alice").quest_progress_pct, 100);
   assert.equal(claim.reward.type, "exp");
   assert.equal(claim.rewards.length, 2);
+  assert.equal(doc.dailyChest.stats.byTier.rare, 1);
+  assert.equal(doc.dailyChest.stats.byType.exp, 1);
+  assert.equal(doc.dailyChest.stats.byType.quest_bonus, 1);
+  assert.equal(doc.dailyChest.stats.totals.xp, 150);
+  assert.equal(doc.dailyChest.stats.totals.questBonusPct, 1);
+  assert.equal(doc.dailyChest.stats.multiRewardOpenings, 1);
   assert.equal(
     db.data(
       "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
@@ -719,6 +822,14 @@ test("daily chest legendary applies quest bonus POPS and EXP", async () => {
   assert.equal(doc.dailyChest.lastRewards.length, 3);
   assert.equal(transaction.amount, 250);
   assert.equal(transaction.rewards.length, 3);
+  assert.equal(doc.dailyChest.stats.byTier.legendary, 1);
+  assert.equal(doc.dailyChest.stats.byType.quest_bonus, 1);
+  assert.equal(doc.dailyChest.stats.byType.pops, 1);
+  assert.equal(doc.dailyChest.stats.byType.exp, 1);
+  assert.equal(doc.dailyChest.stats.totals.pops, 250);
+  assert.equal(doc.dailyChest.stats.totals.xp, 200);
+  assert.equal(doc.dailyChest.stats.totals.questBonusPct, 10);
+  assert.equal(doc.dailyChest.stats.multiRewardOpenings, 1);
 });
 
 test("daily chest does not double credit bundled rewards same day", async () => {
@@ -758,6 +869,9 @@ test("daily chest does not double credit bundled rewards same day", async () => 
   assert.equal(doc.pops.balance, 260);
   assert.equal(doc.communityLevel.xpTotal, 200);
   assert.equal(doc.live_presence["2026-06"].progress_pct, 10);
+  assert.equal(doc.dailyChest.stats.trackedOpenings, 1);
+  assert.equal(doc.dailyChest.stats.byTier.legendary, 1);
+  assert.equal(doc.dailyChest.stats.multiRewardOpenings, 1);
   assert.equal(db.calls.txUpdates.length, 0);
   assert.equal(db.calls.txSets.length, 0);
 });
@@ -780,6 +894,14 @@ test("daily chest nothing reward records claim without wallet or progress writes
   assert.equal(doc.communityLevel, undefined);
   assert.equal(doc.live_presence, undefined);
   assert.equal(doc.dailyChest.totalOpenings, 1);
+  assert.deepEqual(doc.dailyChest.stats, {
+    trackedOpenings: 1,
+    startedDay: "2026-06-16",
+    byTier: { common: 1, small: 0, rare: 0, legendary: 0 },
+    byType: { pops: 0, exp: 0, quest_bonus: 0, nothing: 1 },
+    totals: { pops: 0, xp: 0, questBonusPct: 0 },
+    multiRewardOpenings: 0,
+  });
   assert.equal(
     db.data("followers_all_time/alice/daily_chest_claims/2026-06-16").reward
       .type,
@@ -846,6 +968,8 @@ test("daily chest test message renders preview without Firestore dependencies", 
   assert.doesNotMatch(finalEmbed.description, /RARET/);
   assert.doesNotMatch(finalEmbed.description, /Commun/);
   assert.doesNotMatch(finalEmbed.description, /JACKPOT/);
+  assert.doesNotMatch(finalEmbed.description, /Ouverts:/);
+  assert.doesNotMatch(finalEmbed.description, /Suivis:/);
   assert.equal((finalEmbed.fields || []).length, 0);
   assert.ok(sentMessages[0].edits.length >= 5);
 });

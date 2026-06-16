@@ -22,6 +22,7 @@ const REWARD_ICONS = Object.freeze({
   unlock: "\uD83D\uDD13",
   spark: "\u2728",
   laugh: "\uD83D\uDE02",
+  stats: "\uD83D\uDCCA",
 });
 
 const SLOT_SYMBOLS = Object.freeze([
@@ -41,6 +42,20 @@ const TIER_LABELS = Object.freeze({
   legendary: "Legendaire",
   custom: "Test",
 });
+
+const DAILY_CHEST_STATS_TIERS = Object.freeze([
+  "common",
+  "small",
+  "rare",
+  "legendary",
+]);
+
+const DAILY_CHEST_STATS_TYPES = Object.freeze([
+  "pops",
+  "exp",
+  "quest_bonus",
+  "nothing",
+]);
 
 const NOTHING_MESSAGES = Object.freeze([
   "Le coffre etait rempli d'air premium. Tres rare, mais invendable.",
@@ -399,6 +414,83 @@ function rewardTotals(rewards) {
   );
 }
 
+function normalizeStatsCounterMap(source = {}, keys = []) {
+  const result = {};
+  const safeSource = source && typeof source === "object" ? source : {};
+  for (const key of keys) result[key] = toSafeCount(safeSource[key]);
+  return result;
+}
+
+function normalizeDailyChestStats(source = {}, dayKey = "") {
+  const safeSource = source && typeof source === "object" ? source : {};
+  const totals =
+    safeSource.totals && typeof safeSource.totals === "object"
+      ? safeSource.totals
+      : {};
+
+  return {
+    trackedOpenings: toSafeCount(safeSource.trackedOpenings),
+    startedDay: String(safeSource.startedDay || dayKey || ""),
+    byTier: normalizeStatsCounterMap(
+      safeSource.byTier,
+      DAILY_CHEST_STATS_TIERS,
+    ),
+    byType: normalizeStatsCounterMap(
+      safeSource.byType,
+      DAILY_CHEST_STATS_TYPES,
+    ),
+    totals: {
+      pops: toSafeCount(totals.pops),
+      xp: toSafeCount(totals.xp),
+      questBonusPct: toSafeCount(totals.questBonusPct),
+    },
+    multiRewardOpenings: toSafeCount(safeSource.multiRewardOpenings),
+  };
+}
+
+function rewardTierStatsKey(reward) {
+  const tier = String(reward?.tier || "");
+  if (DAILY_CHEST_STATS_TIERS.includes(tier)) return tier;
+  return reward?.type === "nothing" ? "common" : "small";
+}
+
+function rewardTypeStatsKey(reward) {
+  const type = String(reward?.type || "");
+  if (DAILY_CHEST_STATS_TYPES.includes(type)) return type;
+  return "";
+}
+
+function updateDailyChestStats({ existingStats, primaryReward, rewards, dayKey }) {
+  const stats = normalizeDailyChestStats(existingStats, dayKey);
+  const appliedRewards = normalizeRewardList(rewards);
+  const fallbackReward =
+    primaryReward && typeof primaryReward === "object"
+      ? normalizeReward(primaryReward)
+      : { type: "nothing", tier: "common", amount: 0, message: "" };
+  const rewardList = appliedRewards.length
+    ? appliedRewards
+    : [fallbackReward];
+  const mainReward = rewardList[0] || fallbackReward;
+  const tierKey = rewardTierStatsKey(mainReward);
+  const totals = rewardTotals(rewardList);
+
+  stats.trackedOpenings += 1;
+  if (!stats.startedDay) stats.startedDay = String(dayKey || "");
+  stats.byTier[tierKey] = toSafeCount(stats.byTier[tierKey]) + 1;
+  if (rewardList.length > 1) stats.multiRewardOpenings += 1;
+
+  for (const reward of rewardList) {
+    const typeKey = rewardTypeStatsKey(reward);
+    if (typeKey) stats.byType[typeKey] = toSafeCount(stats.byType[typeKey]) + 1;
+  }
+
+  stats.totals.pops += totals.pops;
+  stats.totals.xp += totals.exp;
+  stats.totals.questBonusPct += totals.questBonus;
+
+  return stats;
+}
+
 function rewardValueText(reward) {
   const amount = toSafeCount(reward?.amount);
   if (reward?.type === "pops") return `+${amount} ${REWARD_ICONS.pops} POPS`;
@@ -407,6 +499,44 @@ function rewardValueText(reward) {
     return `+${amount}% ${REWARD_ICONS.quest_bonus}`;
   }
   return `${REWARD_ICONS.nothing} Rien`;
+}
+
+function dailyChestStatsText(result) {
+  if (result?.testMode) return "";
+  const stats = result?.stats || result?.rewardResult?.stats;
+  if (!stats || typeof stats !== "object") return "";
+
+  const totalOpenings = toSafeCount(
+    result?.totalOpenings ||
+      result?.rewardResult?.totalOpenings ||
+      stats.trackedOpenings,
+  );
+  const trackedOpenings = toSafeCount(stats.trackedOpenings);
+  const rareOpenings = toSafeCount(stats.byTier?.rare);
+  const legendaryOpenings = toSafeCount(stats.byTier?.legendary);
+  const totals =
+    stats.totals && typeof stats.totals === "object" ? stats.totals : {};
+  const gainParts = [];
+
+  if (toSafeCount(totals.pops) > 0) {
+    gainParts.push(`${toSafeCount(totals.pops)} ${REWARD_ICONS.pops} POPS`);
+  }
+  if (toSafeCount(totals.xp) > 0) {
+    gainParts.push(`${toSafeCount(totals.xp)} ${REWARD_ICONS.exp} EXP`);
+  }
+  if (toSafeCount(totals.questBonusPct) > 0) {
+    gainParts.push(
+      `+${toSafeCount(totals.questBonusPct)}% ${REWARD_ICONS.quest_bonus}`,
+    );
+  }
+
+  return (
+    `${REWARD_ICONS.stats} Ouverts: ${totalOpenings}` +
+    ` | Suivis: ${trackedOpenings}` +
+    ` | Rares: ${rareOpenings}` +
+    ` | Legendaires: ${legendaryOpenings}` +
+    (gainParts.length ? ` | Total: ${gainParts.join(", ")}` : "")
+  );
 }
 
 function rewardIcon(rewardOrType) {
@@ -533,10 +663,19 @@ function applyRewardPatch({
   const primaryReward = appliedRewards[0] || normalizeReward(reward);
   const rewardListSummary = rewardSummaries(appliedRewards);
   const totals = rewardTotals(appliedRewards);
+  const totalOpenings = toSafeCount(data?.dailyChest?.totalOpenings) + 1;
+  const stats = updateDailyChestStats({
+    existingStats: data?.dailyChest?.stats,
+    primaryReward,
+    rewards: appliedRewards,
+    dayKey,
+  });
   const patch = {};
   const result = {
     reward: rewardSummary(primaryReward),
     rewards: rewardListSummary,
+    stats,
+    totalOpenings,
     transaction: null,
     participantPatch: null,
     levelResult: null,
@@ -616,7 +755,8 @@ function applyRewardPatch({
     lastOpenedAtMs: nowMs,
     lastReward: result.reward,
     lastRewards: rewardListSummary,
-    totalOpenings: toSafeCount(data?.dailyChest?.totalOpenings) + 1,
+    totalOpenings,
+    stats,
     schemaVersion: DAILY_CHEST_SCHEMA_VERSION,
   };
 
@@ -750,6 +890,8 @@ async function openDailyChest(
       claim: claimPayload,
       reward: rewardPatch.result.reward,
       rewards: rewardPatch.result.rewards,
+      stats: rewardPatch.result.stats,
+      totalOpenings: rewardPatch.result.totalOpenings,
       rewardResult: rewardPatch.result,
       participantSynced: !!participantSnap?.exists,
     };
@@ -863,6 +1005,9 @@ function buildDailyChestEmbed(result, user) {
   if (reward.type === "nothing" && reward.message) {
     lines.push(`${reward.message} ${REWARD_ICONS.laugh}`);
   }
+
+  const statsText = dailyChestStatsText(result);
+  if (statsText) lines.push(statsText);
 
   const embed = new EmbedBuilder()
     .setColor(rewardColor(reward))
