@@ -238,6 +238,57 @@ function rewardTierLabel(reward) {
   return TIER_LABELS[reward?.tier] || TIER_LABELS.custom;
 }
 
+function padPanelCell(value, width) {
+  const text = String(value || "");
+  if (text.length >= width) return text;
+  return text + " ".repeat(width - text.length);
+}
+
+function centerPanelText(value, width) {
+  const text = String(value || "");
+  if (text.length >= width) return text;
+  const left = Math.floor((width - text.length) / 2);
+  const right = width - text.length - left;
+  return `${" ".repeat(left)}${text}${" ".repeat(right)}`;
+}
+
+function fullPanelRow(value) {
+  return `|${centerPanelText(value, 30)}|`;
+}
+
+function splitPanelRow(label, value) {
+  return `| ${padPanelCell(label, 12)} | ${padPanelCell(value, 13)} |`;
+}
+
+function rewardJackpotLabel(reward) {
+  if (reward?.tier === "legendary") return "JACKPOT LEGENDAIRE";
+  if (reward?.tier === "rare") return "JACKPOT RARE";
+  return "";
+}
+
+function buildDailyChestResultPanel(reward) {
+  const jackpot = rewardJackpotLabel(reward);
+  const lines = [
+    "```text",
+    "+------------------------------+",
+    fullPanelRow("RESULTAT COFFRE"),
+  ];
+
+  if (jackpot) {
+    lines.push("+------------------------------+", fullPanelRow(jackpot));
+  }
+
+  lines.push(
+    "+--------------+---------------+",
+    splitPanelRow("GAIN", rewardValueText(reward)),
+    splitPanelRow("TIRAGE", rewardTierLabel(reward)),
+    "+--------------+---------------+",
+    "```",
+  );
+
+  return lines.join("\n");
+}
+
 function applyRewardPatch({
   data,
   reward,
@@ -548,9 +599,7 @@ function rewardColor(reward) {
 
 function buildDailyChestEmbed(result, user) {
   const reward = result?.reward || {};
-  const value = rewardValueText(reward);
-  const icon = rewardIcon(reward);
-  const lines = [];
+  const lines = [buildDailyChestResultPanel(reward)];
 
   if (reward.type === "nothing" && reward.message) {
     lines.push(reward.message);
@@ -559,23 +608,8 @@ function buildDailyChestEmbed(result, user) {
   const embed = new EmbedBuilder()
     .setColor(rewardColor(reward))
     .setTitle(`${REWARD_ICONS.chest} Coffre ouvert !`)
-    .addFields(
-      {
-        name: `${icon} Gain`,
-        value: `**${value}**`,
-        inline: true,
-      },
-      {
-        name: "\uD83C\uDFF7\uFE0F Tirage",
-        value: rewardTierLabel(reward),
-        inline: true,
-      },
-    )
+    .setDescription(lines.join("\n"))
     .setFooter({ text: `Reset quotidien: ${result?.dayKey || "demain"}` });
-
-  if (lines.length) {
-    embed.setDescription(lines.join("\n"));
-  }
 
   if (result?.testMode) {
     embed

@@ -281,7 +281,7 @@ test("daily chest credits POPS and writes an idempotent ledger entry", async () 
   );
 });
 
-test("daily chest POPS embed uses ruby icon instead of POPS text", () => {
+test("daily chest POPS embed uses casino panel and ruby icon", () => {
   const embed = buildDailyChestEmbed(
     {
       dayKey: "2026-06-16",
@@ -294,14 +294,19 @@ test("daily chest POPS embed uses ruby icon instead of POPS text", () => {
     { username: "Alice" },
   ).toJSON();
 
-  const gain = embed.fields.find((field) => field.name.includes("Gain"));
-  assert.match(gain.value, /\+37/);
-  assert.match(gain.value, /\u2666/);
-  assert.doesNotMatch(gain.value, /POPS/);
+  const fields = embed.fields || [];
+  assert.match(embed.description, /```text/);
+  assert.match(embed.description, /\+------------------------------\+/);
+  assert.match(embed.description, /\| GAIN\s+\|/);
+  assert.match(embed.description, /\| TIRAGE\s+\|/);
+  assert.match(embed.description, /\+37/);
+  assert.match(embed.description, /\u2666/);
+  assert.doesNotMatch(embed.description, /POPS/);
   assert.equal(
-    embed.fields.some((field) => field.name.includes("Impact")),
+    fields.some((field) => field.name.includes("Impact")),
     false,
   );
+  assert.equal(fields.length, 0);
   assert.doesNotMatch(JSON.stringify(embed), /Tirage de/);
 });
 
@@ -464,7 +469,13 @@ test("daily chest test message renders preview without Firestore dependencies", 
 
   assert.equal(result.testMode, true);
   assert.equal(sentMessages.length, 1);
-  assert.match(String(sentMessages[0].edits.at(-1).content), /aucun gain applique/);
-  assert.equal(sentMessages[0].edits.at(-1).embeds.length, 1);
+  const finalEdit = sentMessages[0].edits.at(-1);
+  const finalEmbed = finalEdit.embeds[0].toJSON();
+  assert.match(String(finalEdit.content), /aucun gain applique/);
+  assert.equal(finalEdit.embeds.length, 1);
+  assert.match(finalEmbed.description, /```text/);
+  assert.match(finalEmbed.description, /\| GAIN\s+\|/);
+  assert.match(finalEmbed.description, /\| TIRAGE\s+\|/);
+  assert.equal((finalEmbed.fields || []).length, 0);
   assert.ok(sentMessages[0].edits.length >= 5);
 });
