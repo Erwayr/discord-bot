@@ -7,6 +7,7 @@ const {
   buildDailyChestAnimationFrames,
   buildDailyChestEmbed,
   forcedDailyChestTestReward,
+  handleDailyChestInteraction,
   openDailyChest,
   sendDailyChestTestMessage,
 } = require("../script/dailyChest");
@@ -219,6 +220,10 @@ class FakeDb {
 const NOW = new Date("2026-06-16T10:00:00.000Z");
 const BASE_CONFIG = {
   timezone: "UTC",
+  discord: {
+    dailyChestChannelId: "1516374903203565621",
+    logChannelId: "log-channel",
+  },
   communityLevel: {
     enabled: true,
     baseXp: 100,
@@ -252,6 +257,62 @@ test("daily chest refuses members without a linked follower profile", async () =
 
   assert.equal(result.status, "profile_missing");
   assert.equal(db.calls.runTransactions, 0);
+});
+
+test("daily chest slash command is restricted to chest and log channels", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower(),
+  });
+  const replies = [];
+  const interaction = {
+    channelId: "wrong-channel",
+    user: { id: "111111111111111111" },
+    replied: false,
+    deferred: false,
+    async reply(payload) {
+      replies.push(payload);
+      this.replied = true;
+    },
+    async deferReply() {
+      throw new Error("deferReply should not run outside allowed channels");
+    },
+  };
+
+  const result = await handleDailyChestInteraction(interaction, db, BASE_CONFIG);
+
+  assert.equal(result.status, "wrong_channel");
+  assert.equal(result.allowedChannelIds.length, 2);
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /1516374903203565621/);
+  assert.match(replies[0].content, /log-channel/);
+  assert.equal(db.calls.gets.length, 0);
+  assert.equal(db.calls.runTransactions, 0);
+});
+
+test("daily chest slash command is allowed in log channel", async () => {
+  const db = new FakeDb();
+  const edits = [];
+  const interaction = {
+    channelId: "log-channel",
+    user: { id: "111111111111111111" },
+    replied: false,
+    deferred: false,
+    async deferReply(payload) {
+      this.deferred = true;
+      this.deferPayload = payload;
+    },
+    async editReply(payload) {
+      edits.push(payload);
+    },
+  };
+
+  const result = await handleDailyChestInteraction(interaction, db, BASE_CONFIG);
+
+  assert.equal(result.status, "profile_missing");
+  assert.equal(interaction.deferPayload.ephemeral, false);
+  assert.equal(edits.length, 1);
+  assert.match(String(edits[0]), /Profil introuvable/);
 });
 
 test("daily chest credits POPS and writes an idempotent ledger entry", async () => {

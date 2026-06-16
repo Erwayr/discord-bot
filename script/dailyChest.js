@@ -9,6 +9,7 @@ const DAILY_CHEST_TRANSACTION_TYPE = "daily_chest";
 const DAILY_CHEST_TRANSACTION_SOURCE = "discord_daily_chest";
 const DEFAULT_TIMEZONE = "Europe/Warsaw";
 const DEFAULT_ANIMATION_DELAY_MS = 650;
+const DEFAULT_DAILY_CHEST_CHANNEL_ID = "1516374903203565621";
 
 const REWARD_ICONS = Object.freeze({
   pops: "\u2666\uFE0F",
@@ -331,6 +332,35 @@ async function fetchProfileByDiscordId(db, discordId) {
 
 function transactionIdForDay(dayKey) {
   return `daily_chest_${dayKey}`;
+}
+
+function dailyChestAllowedChannelIds(config = {}) {
+  return Array.from(
+    new Set(
+      [
+        config?.discord?.dailyChestChannelId || DEFAULT_DAILY_CHEST_CHANNEL_ID,
+        config?.discord?.logChannelId,
+      ]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function dailyChestChannelIdFromInteraction(interaction) {
+  return String(interaction?.channelId || interaction?.channel?.id || "").trim();
+}
+
+function isDailyChestAllowedChannel(interaction, config = {}) {
+  const channelId = dailyChestChannelIdFromInteraction(interaction);
+  return dailyChestAllowedChannelIds(config).includes(channelId);
+}
+
+function dailyChestWrongChannelMessage(config = {}) {
+  const allowed = dailyChestAllowedChannelIds(config)
+    .map((id) => `<#${id}>`)
+    .join(" ou ");
+  return `\u274C Le coffre quotidien est disponible uniquement dans ${allowed}.`;
 }
 
 function rewardSummary(reward) {
@@ -814,6 +844,18 @@ function rewardColor(reward) {
   return rewardVisualTheme(reward).color;
 }
 
+async function replyDailyChestWrongChannel(interaction, config = {}) {
+  const payload = {
+    content: dailyChestWrongChannelMessage(config),
+    ephemeral: true,
+  };
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({ content: payload.content, embeds: [] });
+    return;
+  }
+  await interaction.reply(payload);
+}
+
 function buildDailyChestEmbed(result, user) {
   const reward = result?.reward || {};
   const lines = [buildDailyChestResultPanel(reward, rewardsForDisplay(result))];
@@ -852,6 +894,14 @@ async function handleDailyChestInteraction(
   { getCommunityLevelConfig, rng = Math.random, animationDelayMs } = {},
 ) {
   try {
+    if (!isDailyChestAllowedChannel(interaction, config)) {
+      await replyDailyChestWrongChannel(interaction, config);
+      return {
+        status: "wrong_channel",
+        allowedChannelIds: dailyChestAllowedChannelIds(config),
+      };
+    }
+
     await interaction.deferReply({ ephemeral: false });
     const result = await openDailyChest(db, {
       discordId: interaction.user?.id,

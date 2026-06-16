@@ -16,6 +16,8 @@ function boolEnv(name, fallback = true) {
 const config = {
   discord: {
     logChannelId: process.env.LOG_CHANNEL_ID || "1377870229153120257",
+    dailyChestChannelId:
+      process.env.DAILY_CHEST_CHANNEL_ID || "1516374903203565621",
     generalChannelId:
       process.env.GENERAL_CHANNEL_ID || "797077170974490645",
     bootyChannelId:
