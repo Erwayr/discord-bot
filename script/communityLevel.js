@@ -563,6 +563,93 @@ function applyChatMessageLevelProgress(options = {}) {
   });
 }
 
+function applyFlatCommunityLevelXp({
+  data = {},
+  awardXp = 0,
+  nowMs = Date.now(),
+  rawConfig = {},
+  sourceLabel = "discord_daily_chest",
+} = {}) {
+  const config = resolveCommunityLevelConfig(rawConfig);
+  if (!config.enabled) {
+    return { awarded: false, reason: "disabled", source: sourceLabel };
+  }
+
+  const safeAwardXp = Math.max(0, toInt(awardXp, 0));
+  if (safeAwardXp <= 0) {
+    return { awarded: false, reason: "no_xp", source: sourceLabel };
+  }
+
+  const existingCommunity = isObject(data.communityLevel) ? data.communityLevel : {};
+  const current = normalizeCommunityLevel(data, config);
+  let level = Math.max(1, current.level || 1);
+  let xpInLevel = Math.max(0, current.xpInLevel || 0) + safeAwardXp;
+  const xpTotal = Math.max(0, current.xpTotal || 0) + safeAwardXp;
+  let leveledUp = false;
+
+  while (level < config.maxLevel) {
+    const needed = xpRequiredForNextLevel(level, config);
+    if (xpInLevel < needed) break;
+    xpInLevel -= needed;
+    level += 1;
+    leveledUp = true;
+  }
+
+  const xpForNext = xpRequiredForNextLevel(level, config);
+  const rankName = titleForLevel(level, config.rankTitles);
+  const nextCommunityLevel = {
+    ...existingCommunity,
+    rank: current.rank,
+    level,
+    xpTotal,
+    xpInLevel,
+    xpForNext,
+    rankName,
+    uptimeText: current.uptimeText,
+    uptimeMinutes: current.uptimeMinutes,
+    uptimeRank: current.uptimeRank,
+    dailyChestXpTotal:
+      Math.max(
+        0,
+        toInt(
+          firstDefined(
+            existingCommunity.dailyChestXpTotal,
+            current.dailyChestXpTotal,
+          ),
+          0,
+        ),
+      ) + safeAwardXp,
+    lastDailyChestXpAt: nowMs,
+    source: sourceLabel,
+    updatedAt: nowMs,
+  };
+
+  const legacyFields = config.legacyDoubleWrite
+    ? {
+        wizebotLevel: level,
+        wizebotExp: xpTotal,
+        wizebotRankName: rankName,
+        wizebotUpdatedAt: nowMs,
+      }
+    : {};
+  if (config.legacyDoubleWrite && current.rank > 0) {
+    legacyFields.wizebotRank = current.rank;
+  }
+
+  return {
+    awarded: true,
+    source: sourceLabel,
+    awardXp: safeAwardXp,
+    level,
+    xpTotal,
+    xpInLevel,
+    xpForNext,
+    leveledUp,
+    communityLevel: nextCommunityLevel,
+    legacyFields,
+  };
+}
+
 async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
   const config = resolveCommunityLevelConfig(rawConfig);
   if (!config.enabled) return { updated: 0, skipped: true };
@@ -645,5 +732,6 @@ module.exports = {
   xpRequiredForNextLevel,
   applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
+  applyFlatCommunityLevelXp,
   recalculateCommunityLevelRanks,
 };

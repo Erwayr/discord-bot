@@ -212,6 +212,7 @@ registerDiscordEvents({
   sendWeeklyFollowersRecap,
   weeklyPlanningPublisher,
   birthdays,
+  getCommunityLevelConfig,
 });
 
 jobs.scheduleCoreJobs();

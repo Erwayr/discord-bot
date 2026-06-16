@@ -11,8 +11,13 @@ const {
   handleProfileMessage,
 } = require("../script/profileHandler");
 const {
+  handleDailyChestInteraction,
+  sendDailyChestTestMessage,
+} = require("../script/dailyChest");
+const {
+  DAILY_CHEST_COMMAND_NAME,
   PROFILE_COMMAND_NAME,
-  registerProfileSlashCommand,
+  registerSlashCommands,
 } = require("./slashCommands");
 const {
   isPlanningApprover,
@@ -30,6 +35,7 @@ function registerDiscordEvents({
   sendWeeklyFollowersRecap,
   weeklyPlanningPublisher,
   birthdays,
+  getCommunityLevelConfig,
 }) {
   client.once(Events.ClientReady, async () => {
     console.log(`✅ Connecté en tant que ${client.user.tag}`);
@@ -40,8 +46,8 @@ function registerDiscordEvents({
     }
 
     await twitchEventSub.subscribeAll();
-    await registerProfileSlashCommand({ client, config }).catch((e) =>
-      console.error("[slash] /profil registration failed:", e?.message || e),
+    await registerSlashCommands({ client, config }).catch((e) =>
+      console.error("[slash] registration failed:", e?.message || e),
     );
 
     for (const guild of client.guilds.cache.values()) {
@@ -167,8 +173,17 @@ function registerDiscordEvents({
     }
 
     if (!interaction.isChatInputCommand()) return;
-    if (interaction.commandName !== PROFILE_COMMAND_NAME) return;
-    await handleProfileInteraction(interaction, db, config);
+
+    if (interaction.commandName === PROFILE_COMMAND_NAME) {
+      await handleProfileInteraction(interaction, db, config);
+      return;
+    }
+
+    if (interaction.commandName === DAILY_CHEST_COMMAND_NAME) {
+      await handleDailyChestInteraction(interaction, db, config, {
+        getCommunityLevelConfig,
+      });
+    }
   });
 
   client.on(Events.MessageCreate, async (message) => {
@@ -296,6 +311,36 @@ function registerDiscordEvents({
         console.error("[birthday-discord] test command failed:", e?.message || e);
         await message.reply(
           `❌ Impossible de générer le test anniversaire: ${
+            e?.message || "erreur inconnue"
+          }`,
+        );
+      }
+      return;
+    }
+
+    if (command === "!coffretest" || command === "!chesttest") {
+      if (message.channelId !== config.discord.logChannelId) {
+        await message.reply(
+          "âŒ Cette commande de test est disponible uniquement dans le salon logs.",
+        );
+        return;
+      }
+
+      const canRun = message.member?.permissions?.has("ManageGuild");
+      if (!canRun) {
+        await message.reply(
+          "âŒ Tu n'as pas la permission pour tester le coffre.",
+        );
+        return;
+      }
+
+      try {
+        await sendDailyChestTestMessage(message, { config });
+        await message.react("\u2705").catch(() => {});
+      } catch (e) {
+        console.error("[daily-chest] test command failed:", e?.message || e);
+        await message.reply(
+          `âŒ Impossible de generer le test coffre: ${
             e?.message || "erreur inconnue"
           }`,
         );
