@@ -6,11 +6,17 @@ const { test } = require("node:test");
 const {
   buildDailyChestAnimationFrames,
   buildDailyChestEmbed,
+  buildDailyChestStatsEmbed,
   forcedDailyChestTestReward,
   handleDailyChestInteraction,
+  handleDailyChestStatsInteraction,
   openDailyChest,
   sendDailyChestTestMessage,
 } = require("../script/dailyChest");
+const {
+  DAILY_CHEST_STATS_COMMAND_NAME,
+  slashCommandPayloads,
+} = require("../app/slashCommands");
 
 function clone(value) {
   if (value == null) return value;
@@ -124,6 +130,11 @@ class FakeCollectionRef {
   }
 
   async get() {
+    this.db.calls.queries.push({
+      path: this.path,
+      filters: clone(this.filters),
+      limitCount: this.limitCount,
+    });
     const prefix = `${this.path}/`;
     const docs = [];
     for (const [path, data] of this.db.store.entries()) {
@@ -186,6 +197,7 @@ class FakeDb {
   resetCalls() {
     this.calls = {
       gets: [],
+      queries: [],
       sets: [],
       txGets: [],
       txSets: [],
@@ -244,6 +256,22 @@ function follower(overrides = {}) {
     ...overrides,
   };
 }
+
+function embedField(embed, name) {
+  return (embed.fields || []).find((field) => field.name === name);
+}
+
+test("daily chest stats slash command is registered with optional member option", () => {
+  const payload = slashCommandPayloads().find(
+    (command) => command.name === DAILY_CHEST_STATS_COMMAND_NAME,
+  );
+
+  assert.ok(payload);
+  assert.equal(payload.name, "coffrestats");
+  assert.match(payload.description, /statistiques/);
+  assert.equal(payload.options?.[0]?.name, "membre");
+  assert.equal(payload.options?.[0]?.required, false);
+});
 
 test("daily chest refuses members without a linked follower profile", async () => {
   const db = new FakeDb();
@@ -313,6 +341,228 @@ test("daily chest slash command is allowed in log channel", async () => {
   assert.equal(interaction.deferPayload.ephemeral, false);
   assert.equal(edits.length, 1);
   assert.match(String(edits[0]), /Profil introuvable/);
+});
+
+test("daily chest stats slash command is restricted to chest and log channels", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower(),
+  });
+  const replies = [];
+  const interaction = {
+    channelId: "wrong-channel",
+    user: { id: "111111111111111111" },
+    replied: false,
+    deferred: false,
+    options: {
+      getUser() {
+        throw new Error("getUser should not run outside allowed channels");
+      },
+    },
+    async reply(payload) {
+      replies.push(payload);
+      this.replied = true;
+    },
+    async deferReply() {
+      throw new Error("deferReply should not run outside allowed channels");
+    },
+  };
+
+  const result = await handleDailyChestStatsInteraction(
+    interaction,
+    db,
+    BASE_CONFIG,
+  );
+
+  assert.equal(result.status, "wrong_channel");
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true);
+  assert.match(replies[0].content, /1516374903203565621/);
+  assert.equal(db.calls.queries.length, 0);
+  assert.equal(db.calls.runTransactions, 0);
+});
+
+test("daily chest stats slash command handles missing linked profile", async () => {
+  const db = new FakeDb();
+  const edits = [];
+  const interaction = {
+    channelId: "log-channel",
+    user: { id: "111111111111111111", username: "AliceDiscord" },
+    replied: false,
+    deferred: false,
+    options: {
+      getUser() {
+        return null;
+      },
+    },
+    async deferReply(payload) {
+      this.deferred = true;
+      this.deferPayload = payload;
+    },
+    async editReply(payload) {
+      edits.push(payload);
+    },
+  };
+
+  const result = await handleDailyChestStatsInteraction(
+    interaction,
+    db,
+    BASE_CONFIG,
+  );
+
+  assert.equal(result.status, "profile_missing");
+  assert.equal(interaction.deferPayload.ephemeral, false);
+  assert.equal(db.calls.queries.length, 1);
+  assert.equal(db.calls.runTransactions, 0);
+  assert.equal(db.calls.txUpdates.length, 0);
+  assert.match(String(edits[0]), /Profil introuvable/);
+});
+
+test("daily chest stats slash command renders current member stats without writes", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      dailyChest: {
+        totalOpenings: 12,
+        lastOpenedDay: "2026-06-16",
+        lastRewards: [
+          { type: "pops", tier: "rare", amount: 150, message: "" },
+          { type: "quest_bonus", tier: "rare", amount: 1, message: "" },
+        ],
+        stats: {
+          trackedOpenings: 4,
+          startedDay: "2026-06-13",
+          byTier: { common: 1, small: 1, rare: 1, legendary: 1 },
+          byType: { pops: 2, exp: 1, quest_bonus: 2, nothing: 1 },
+          totals: { pops: 287, xp: 200, questBonusPct: 11 },
+          multiRewardOpenings: 2,
+        },
+      },
+    }),
+  });
+  const edits = [];
+  const interaction = {
+    channelId: "1516374903203565621",
+    user: { id: "111111111111111111", username: "AliceDiscord" },
+    replied: false,
+    deferred: false,
+    options: {
+      getUser(name) {
+        assert.equal(name, "membre");
+        return null;
+      },
+    },
+    async deferReply(payload) {
+      this.deferred = true;
+      this.deferPayload = payload;
+    },
+    async editReply(payload) {
+      edits.push(payload);
+    },
+  };
+
+  const result = await handleDailyChestStatsInteraction(
+    interaction,
+    db,
+    BASE_CONFIG,
+  );
+  const finalEmbed = edits.at(-1).embeds[0].toJSON();
+
+  assert.equal(result.status, "stats");
+  assert.equal(result.profile.displayName, "Alice");
+  assert.equal(result.totalOpenings, 12);
+  assert.equal(result.stats.trackedOpenings, 4);
+  assert.equal(db.calls.runTransactions, 0);
+  assert.equal(db.calls.txUpdates.length, 0);
+  assert.equal(db.calls.txSets.length, 0);
+  assert.match(finalEmbed.title, /Stats coffre de Alice/);
+  assert.match(embedField(finalEmbed, "Ouvertures").value, /Historique: \*\*12\*\*/);
+  assert.match(embedField(finalEmbed, "Ouvertures").value, /Suivies: \*\*4\*\*/);
+  assert.match(embedField(finalEmbed, "Coffres speciaux").value, /Rares: \*\*1\*\*/);
+  assert.match(
+    embedField(finalEmbed, "Coffres speciaux").value,
+    /Legendaires: \*\*1\*\*/,
+  );
+  assert.match(embedField(finalEmbed, "Gains cumules").value, /287 \u2666\uFE0F POPS/);
+  assert.match(embedField(finalEmbed, "Gains cumules").value, /200 \u2728 EXP/);
+  assert.match(embedField(finalEmbed, "Gains cumules").value, /\+11% \uD83C\uDF40/);
+  assert.match(embedField(finalEmbed, "Dernier coffre").value, /2026-06-16/);
+  assert.match(embedField(finalEmbed, "Dernier coffre").value, /\+150/);
+  assert.match(embedField(finalEmbed, "Dernier coffre").value, /\+1%/);
+});
+
+test("daily chest stats slash command can target another member", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower(),
+    "followers_all_time/bob": follower({
+      pseudo: "Bob",
+      discord_id: "222222222222222222",
+      dailyChest: {
+        totalOpenings: 2,
+        stats: {
+          trackedOpenings: 2,
+          byTier: { common: 0, small: 2, rare: 0, legendary: 0 },
+          byType: { pops: 1, exp: 1, quest_bonus: 0, nothing: 0 },
+          totals: { pops: 15, xp: 20, questBonusPct: 0 },
+          multiRewardOpenings: 0,
+        },
+      },
+    }),
+  });
+  const edits = [];
+  const targetUser = { id: "222222222222222222", username: "BobDiscord" };
+  const interaction = {
+    channelId: "log-channel",
+    user: { id: "111111111111111111", username: "AliceDiscord" },
+    options: {
+      getUser(name) {
+        assert.equal(name, "membre");
+        return targetUser;
+      },
+    },
+    async deferReply() {},
+    async editReply(payload) {
+      edits.push(payload);
+    },
+  };
+
+  const result = await handleDailyChestStatsInteraction(
+    interaction,
+    db,
+    BASE_CONFIG,
+  );
+  const finalEmbed = edits.at(-1).embeds[0].toJSON();
+
+  assert.equal(result.status, "stats");
+  assert.equal(result.targetDiscordId, "222222222222222222");
+  assert.equal(result.profile.displayName, "Bob");
+  assert.equal(db.calls.queries[0].filters[0].value, "222222222222222222");
+  assert.match(finalEmbed.title, /Stats coffre de Bob/);
+});
+
+test("daily chest stats embed supports profiles without tracked stats", () => {
+  const embed = buildDailyChestStatsEmbed(
+    {
+      status: "stats",
+      profile: { displayName: "Alice" },
+      totalOpenings: 3,
+      stats: undefined,
+      lastOpenedDay: "2026-06-15",
+      lastReward: { type: "pops", tier: "small", amount: 5, message: "" },
+    },
+    { username: "AliceDiscord" },
+  ).toJSON();
+
+  assert.match(embed.title, /Stats coffre de Alice/);
+  assert.match(embedField(embed, "Ouvertures").value, /Historique: \*\*3\*\*/);
+  assert.match(embedField(embed, "Ouvertures").value, /Suivies: \*\*0\*\*/);
+  assert.match(embedField(embed, "Coffres speciaux").value, /Rares: \*\*0\*\*/);
+  assert.match(
+    embedField(embed, "Coffres speciaux").value,
+    /Legendaires: \*\*0\*\*/,
+  );
+  assert.match(embedField(embed, "Gains cumules").value, /0 \u2666\uFE0F POPS/);
+  assert.match(embedField(embed, "Gains cumules").value, /0 \u2728 EXP/);
+  assert.match(embedField(embed, "Gains cumules").value, /\+0% \uD83C\uDF40/);
+  assert.match(embedField(embed, "Dernier coffre").value, /\+5 \u2666\uFE0F POPS/);
 });
 
 test("daily chest credits POPS and writes an idempotent ledger entry", async () => {

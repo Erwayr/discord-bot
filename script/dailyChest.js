@@ -539,6 +539,66 @@ function dailyChestStatsText(result) {
   );
 }
 
+function dailyChestStatsRewardText(rewards, reward) {
+  const entries = rewardsOrSingle(rewards, reward);
+  if (!entries.length) return "Aucun gain enregistre.";
+  return entries.map((entry) => rewardValueText(entry)).join("\n");
+}
+
+function buildDailyChestStatsEmbed(result, user) {
+  const stats = normalizeDailyChestStats(result?.stats);
+  const totals = stats.totals || {};
+  const displayName =
+    result?.profile?.displayName || user?.globalName || user?.username || "profil";
+  const totalOpenings = toSafeCount(result?.totalOpenings);
+  const lastOpenedDay = String(result?.lastOpenedDay || "").trim();
+  const lastRewardText = dailyChestStatsRewardText(
+    result?.lastRewards,
+    result?.lastReward,
+  );
+
+  return new EmbedBuilder()
+    .setColor("#A78BFA")
+    .setTitle(`${REWARD_ICONS.stats} Stats coffre de ${displayName}`)
+    .addFields(
+      {
+        name: "Ouvertures",
+        value:
+          `Historique: **${totalOpenings}**\n` +
+          `Suivies: **${toSafeCount(stats.trackedOpenings)}**`,
+        inline: true,
+      },
+      {
+        name: "Coffres speciaux",
+        value:
+          `Rares: **${toSafeCount(stats.byTier?.rare)}**\n` +
+          `Legendaires: **${toSafeCount(stats.byTier?.legendary)}**\n` +
+          `Multi-gains: **${toSafeCount(stats.multiRewardOpenings)}**`,
+        inline: true,
+      },
+      {
+        name: "Gains cumules",
+        value:
+          `${toSafeCount(totals.pops)} ${REWARD_ICONS.pops} POPS\n` +
+          `${toSafeCount(totals.xp)} ${REWARD_ICONS.exp} EXP\n` +
+          `+${toSafeCount(totals.questBonusPct)}% ${REWARD_ICONS.quest_bonus}`,
+        inline: false,
+      },
+      {
+        name: "Dernier coffre",
+        value: lastOpenedDay
+          ? `Jour: **${lastOpenedDay}**\nGain:\n${lastRewardText}`
+          : "Aucun coffre enregistre.",
+        inline: false,
+      },
+    )
+    .setFooter({
+      text: stats.startedDay
+        ? `Stats suivies depuis: ${stats.startedDay}`
+        : "Stats suivies depuis la mise a jour du coffre.",
+    });
+}
+
 function rewardIcon(rewardOrType) {
   const type =
     typeof rewardOrType === "string" ? rewardOrType : rewardOrType?.type;
@@ -900,6 +960,33 @@ async function openDailyChest(
   return txResult || { status: "error", dayKey, monthKey };
 }
 
+async function getDailyChestStats(db, { discordId } = {}) {
+  if (!db) throw new Error("getDailyChestStats: missing db dependency");
+
+  const profile = await fetchProfileByDiscordId(db, discordId);
+  if (!profile) return { status: "profile_missing" };
+
+  const data = profile.data || {};
+  const dailyChest =
+    data.dailyChest && typeof data.dailyChest === "object"
+      ? data.dailyChest
+      : {};
+  const stats = normalizeDailyChestStats(dailyChest.stats);
+
+  return {
+    status: "stats",
+    profile: {
+      docId: profile.docId,
+      displayName: profileDisplayName(data, profile.docId),
+    },
+    totalOpenings: toSafeCount(dailyChest.totalOpenings),
+    stats,
+    lastOpenedDay: String(dailyChest.lastOpenedDay || ""),
+    lastReward: dailyChest.lastReward || null,
+    lastRewards: rewardsOrSingle(dailyChest.lastRewards, dailyChest.lastReward),
+  };
+}
+
 function buildSlotLine(rng = Math.random, middleIcon = null) {
   const left = pickRandom(SLOT_SYMBOLS, rng);
   const middle = middleIcon || pickRandom(SLOT_SYMBOLS, rng);
@@ -1106,6 +1193,55 @@ async function handleDailyChestInteraction(
   }
 }
 
+async function handleDailyChestStatsInteraction(interaction, db, config = {}) {
+  try {
+    if (!isDailyChestAllowedChannel(interaction, config)) {
+      await replyDailyChestWrongChannel(interaction, config);
+      return {
+        status: "wrong_channel",
+        allowedChannelIds: dailyChestAllowedChannelIds(config),
+      };
+    }
+
+    await interaction.deferReply({ ephemeral: false });
+    const targetUser =
+      interaction.options?.getUser?.("membre") || interaction.user || null;
+    const result = await getDailyChestStats(db, {
+      discordId: targetUser?.id,
+    });
+
+    if (result.status === "profile_missing") {
+      await interaction.editReply(
+        "\u274C Profil introuvable dans `followers_all_time`. " +
+          "Il faut un profil Twitch/Discord lie pour afficher les stats coffre.",
+      );
+      return {
+        ...result,
+        targetDiscordId: targetUser?.id || "",
+      };
+    }
+
+    await interaction.editReply({
+      content: "",
+      embeds: [buildDailyChestStatsEmbed(result, targetUser)],
+    });
+    return {
+      ...result,
+      targetDiscordId: targetUser?.id || "",
+    };
+  } catch (err) {
+    console.error("[daily-chest-stats] interaction failed:", err?.message || err);
+    const content =
+      "\u274C Une erreur est survenue pendant l'affichage des stats coffre.";
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(content).catch(() => {});
+    } else {
+      await interaction.reply({ content, ephemeral: false }).catch(() => {});
+    }
+    return { status: "error", error: err };
+  }
+}
+
 async function sendDailyChestTestMessage(
   message,
   {
@@ -1181,9 +1317,12 @@ module.exports = {
   normalizePopsWallet,
   selectDailyChestReward,
   forcedDailyChestTestReward,
+  getDailyChestStats,
   openDailyChest,
   buildDailyChestEmbed,
+  buildDailyChestStatsEmbed,
   buildDailyChestAnimationFrames,
   handleDailyChestInteraction,
+  handleDailyChestStatsInteraction,
   sendDailyChestTestMessage,
 };

@@ -4,6 +4,7 @@ const { SlashCommandBuilder } = require("discord.js");
 
 const PROFILE_COMMAND_NAME = "profil";
 const DAILY_CHEST_COMMAND_NAME = "coffre";
+const DAILY_CHEST_STATS_COMMAND_NAME = "coffrestats";
 
 function profileCommandData() {
   return new SlashCommandBuilder()
@@ -25,8 +26,25 @@ function dailyChestCommandData() {
     .toJSON();
 }
 
+function dailyChestStatsCommandData() {
+  return new SlashCommandBuilder()
+    .setName(DAILY_CHEST_STATS_COMMAND_NAME)
+    .setDescription("Affiche les statistiques du coffre quotidien.")
+    .addUserOption((option) =>
+      option
+        .setName("membre")
+        .setDescription("Membre dont afficher les stats coffre.")
+        .setRequired(false),
+    )
+    .toJSON();
+}
+
 function slashCommandPayloads() {
-  return [profileCommandData(), dailyChestCommandData()];
+  return [
+    profileCommandData(),
+    dailyChestCommandData(),
+    dailyChestStatsCommandData(),
+  ];
 }
 
 async function registerSlashCommands({ client, config }) {
@@ -68,7 +86,10 @@ async function registerProfileSlashCommand(options) {
 module.exports = {
   PROFILE_COMMAND_NAME,
   DAILY_CHEST_COMMAND_NAME,
+  DAILY_CHEST_STATS_COMMAND_NAME,
   dailyChestCommandData,
+  dailyChestStatsCommandData,
+  slashCommandPayloads,
   registerSlashCommands,
   registerProfileSlashCommand,
 };

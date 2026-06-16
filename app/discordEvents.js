@@ -12,10 +12,12 @@ const {
 } = require("../script/profileHandler");
 const {
   handleDailyChestInteraction,
+  handleDailyChestStatsInteraction,
   sendDailyChestTestMessage,
 } = require("../script/dailyChest");
 const {
   DAILY_CHEST_COMMAND_NAME,
+  DAILY_CHEST_STATS_COMMAND_NAME,
   PROFILE_COMMAND_NAME,
   registerSlashCommands,
 } = require("./slashCommands");
@@ -183,6 +185,11 @@ function registerDiscordEvents({
       await handleDailyChestInteraction(interaction, db, config, {
         getCommunityLevelConfig,
       });
+      return;
+    }
+
+    if (interaction.commandName === DAILY_CHEST_STATS_COMMAND_NAME) {
+      await handleDailyChestStatsInteraction(interaction, db, config);
     }
   });
 
