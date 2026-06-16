@@ -221,7 +221,7 @@ function rewardSummary(reward) {
 
 function rewardValueText(reward) {
   const amount = toSafeCount(reward?.amount);
-  if (reward?.type === "pops") return `+${amount} ${REWARD_ICONS.pops}`;
+  if (reward?.type === "pops") return `+${amount} ${REWARD_ICONS.pops} POPS`;
   if (reward?.type === "exp") return `+${amount} ${REWARD_ICONS.exp} EXP`;
   if (reward?.type === "quest_bonus") {
     return `+${amount}% ${REWARD_ICONS.quest_bonus}`;
