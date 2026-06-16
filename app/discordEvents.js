@@ -335,7 +335,10 @@ function registerDiscordEvents({
       }
 
       try {
-        await sendDailyChestTestMessage(message, { config });
+        await sendDailyChestTestMessage(message, {
+          config,
+          forceReward: content.slice(command.length).trim(),
+        });
         await message.react("\u2705").catch(() => {});
       } catch (e) {
         console.error("[daily-chest] test command failed:", e?.message || e);

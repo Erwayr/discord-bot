@@ -49,6 +49,12 @@ const NOTHING_MESSAGES = Object.freeze([
   "Inventaire plein de vibes. Solde: zero.",
 ]);
 
+const TEST_REWARD_AMOUNTS = Object.freeze({
+  pops: { small: 15, rare: 150 },
+  exp: { small: 15, rare: 150 },
+  quest_bonus: { small: 1, legendary: 10 },
+});
+
 const REWARD_TABLE = Object.freeze([
   { type: "nothing", tier: "common", weight: 34, min: 0, max: 0 },
   { type: "pops", tier: "small", weight: 28, min: 5, max: 25 },
@@ -175,6 +181,67 @@ function normalizeReward(reward, rng = Math.random) {
   };
 }
 
+function normalizeTestToken(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_%-]+/g, " ")
+    .trim();
+}
+
+function forcedDailyChestTestReward(input, rng = Math.random) {
+  const normalized = normalizeTestToken(input);
+  if (!normalized) return null;
+
+  const tokens = new Set(normalized.split(/\s+/).filter(Boolean));
+  const hasAny = (...values) => values.some((value) => tokens.has(value));
+
+  let type = "";
+  if (hasAny("rien", "nothing", "vide", "air", "zero")) type = "nothing";
+  if (hasAny("pops", "pop", "rubis", "ruby", "rubies")) type = "pops";
+  if (hasAny("exp", "xp", "experience")) type = "exp";
+  if (hasAny("chance", "quete", "quest", "bonus", "trefle", "luck")) {
+    type = "quest_bonus";
+  }
+
+  let tier = "";
+  if (hasAny("legendaire", "legendary", "legend", "leg")) tier = "legendary";
+  if (hasAny("rare")) tier = "rare";
+  if (hasAny("petit", "small")) tier = "small";
+  if (hasAny("commun", "common")) tier = "common";
+
+  if (!type && !tier) {
+    throw new Error(
+      "type de coffre inconnu. Exemples: pops, exp, chance, rien, rare, legendaire.",
+    );
+  }
+
+  if (type === "nothing") {
+    return normalizeReward(
+      {
+        type: "nothing",
+        tier: "common",
+        message: pickRandom(NOTHING_MESSAGES, rng),
+      },
+      rng,
+    );
+  }
+
+  if (!type) {
+    type = tier === "legendary" ? "quest_bonus" : "pops";
+  }
+
+  if (type === "quest_bonus") {
+    tier = tier === "legendary" ? "legendary" : "small";
+  } else {
+    tier = tier === "rare" ? "rare" : "small";
+  }
+
+  const amount = TEST_REWARD_AMOUNTS[type]?.[tier] || 1;
+  return normalizeReward({ type, tier, amount }, rng);
+}
+
 function profileDisplayName(data = {}, fallback = "Profil") {
   return (
     String(
@@ -264,35 +331,21 @@ function splitPanelRow(label, value) {
   return `| ${padPanelCell(label, 12)} | ${padPanelCell(value, 13)} |`;
 }
 
-function rewardJackpotLabel(reward) {
-  if (reward?.tier === "legendary") return "JACKPOT LEGENDAIRE";
-  if (reward?.tier === "rare") return "JACKPOT RARE";
-  return "";
-}
-
 function rewardPanelTitle(reward) {
   const tier = rewardTierLabel(reward);
   return tier ? `COFFRE ${tier.toUpperCase()}` : "COFFRE";
 }
 
 function buildDailyChestResultPanel(reward) {
-  const jackpot = rewardJackpotLabel(reward);
   const lines = [
     "```text",
-    "+------------------------------+",
+    "+==============================+",
     fullPanelRow(rewardPanelTitle(reward)),
-  ];
-
-  if (jackpot) {
-    lines.push("+------------------------------+", fullPanelRow(jackpot));
-  }
-
-  lines.push(
-    "+--------------+---------------+",
+    "+==============+===============+",
     splitPanelRow("GAIN", rewardValueText(reward)),
-    "+--------------+---------------+",
+    "+==============================+",
     "```",
-  );
+  ];
 
   return lines.join("\n");
 }
@@ -704,10 +757,18 @@ async function handleDailyChestInteraction(
 
 async function sendDailyChestTestMessage(
   message,
-  { config = {}, rng = Math.random, animationDelayMs = 250, now = new Date() } = {},
+  {
+    config = {},
+    rng = Math.random,
+    animationDelayMs = 250,
+    now = new Date(),
+    forceReward,
+  } = {},
 ) {
   const timeZone = config.timezone || DEFAULT_TIMEZONE;
-  const reward = selectDailyChestReward({ rng });
+  const reward =
+    forcedDailyChestTestReward(forceReward, rng) ||
+    selectDailyChestReward({ rng });
   const monthKey = monthKeyInTimezone(now, timeZone);
   const result = {
     status: "opened",
@@ -764,6 +825,7 @@ module.exports = {
   monthKeyInTimezone,
   normalizePopsWallet,
   selectDailyChestReward,
+  forcedDailyChestTestReward,
   openDailyChest,
   buildDailyChestEmbed,
   buildDailyChestAnimationFrames,

@@ -6,6 +6,7 @@ const { test } = require("node:test");
 const {
   buildDailyChestAnimationFrames,
   buildDailyChestEmbed,
+  forcedDailyChestTestReward,
   openDailyChest,
   sendDailyChestTestMessage,
 } = require("../script/dailyChest");
@@ -296,14 +297,15 @@ test("daily chest POPS embed uses casino panel and ruby icon", () => {
 
   const fields = embed.fields || [];
   assert.match(embed.description, /```text/);
-  assert.match(embed.description, /\+------------------------------\+/);
+  assert.match(embed.description, /\+==============================\+/);
   assert.match(embed.description, /COFFRE PETIT GAIN/);
   assert.match(embed.description, /\| GAIN\s+\|/);
   assert.doesNotMatch(embed.description, /TIRAGE/);
   assert.doesNotMatch(embed.description, /RARET/);
+  assert.doesNotMatch(embed.description, /JACKPOT/);
   assert.match(embed.description, /\+37/);
   assert.match(embed.description, /\u2666/);
-  assert.doesNotMatch(embed.description, /POPS/);
+  assert.match(embed.description, /\u2666\uFE0F POPS/);
   assert.equal(
     fields.some((field) => field.name.includes("Impact")),
     false,
@@ -340,6 +342,41 @@ test("daily chest nothing embed appends laughing emoji to funny message", () => 
   assert.match(embed.description, /\|\s+COFFRE\s+\|/);
   assert.doesNotMatch(embed.description, /Commun/);
   assert.doesNotMatch(embed.description, /TIRAGE/);
+});
+
+test("daily chest test reward parser supports forced reward aliases", () => {
+  const rng = () => 0;
+
+  assert.deepEqual(forcedDailyChestTestReward("pops", rng), {
+    type: "pops",
+    tier: "small",
+    amount: 15,
+    message: "",
+  });
+  assert.deepEqual(forcedDailyChestTestReward("exp rare", rng), {
+    type: "exp",
+    tier: "rare",
+    amount: 150,
+    message: "",
+  });
+  assert.deepEqual(forcedDailyChestTestReward("chance", rng), {
+    type: "quest_bonus",
+    tier: "small",
+    amount: 1,
+    message: "",
+  });
+  assert.deepEqual(forcedDailyChestTestReward("legendaire", rng), {
+    type: "quest_bonus",
+    tier: "legendary",
+    amount: 10,
+    message: "",
+  });
+
+  const nothing = forcedDailyChestTestReward("rien", rng);
+  assert.equal(nothing.type, "nothing");
+  assert.equal(nothing.tier, "common");
+  assert.equal(nothing.amount, 0);
+  assert.ok(nothing.message);
 });
 
 test("daily chest does not double credit the same day", async () => {
@@ -486,20 +523,26 @@ test("daily chest test message renders preview without Firestore dependencies", 
     config: BASE_CONFIG,
     now: NOW,
     animationDelayMs: 0,
+    forceReward: "legendaire",
     rng: () => 0.1,
   });
 
   assert.equal(result.testMode, true);
+  assert.equal(result.reward.type, "quest_bonus");
+  assert.equal(result.reward.tier, "legendary");
   assert.equal(sentMessages.length, 1);
   const finalEdit = sentMessages[0].edits.at(-1);
   const finalEmbed = finalEdit.embeds[0].toJSON();
   assert.match(String(finalEdit.content), /aucun gain applique/);
   assert.equal(finalEdit.embeds.length, 1);
   assert.match(finalEmbed.description, /```text/);
+  assert.match(finalEmbed.description, /COFFRE LEGENDAIRE/);
+  assert.match(finalEmbed.description, /\+10%/);
   assert.match(finalEmbed.description, /\| GAIN\s+\|/);
   assert.doesNotMatch(finalEmbed.description, /TIRAGE/);
   assert.doesNotMatch(finalEmbed.description, /RARET/);
   assert.doesNotMatch(finalEmbed.description, /Commun/);
+  assert.doesNotMatch(finalEmbed.description, /JACKPOT/);
   assert.equal((finalEmbed.fields || []).length, 0);
   assert.ok(sentMessages[0].edits.length >= 5);
 });
