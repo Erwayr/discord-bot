@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const {
+  buildDailyChestAnimationFrames,
   buildDailyChestEmbed,
   openDailyChest,
   sendDailyChestTestMessage,
@@ -297,6 +298,21 @@ test("daily chest POPS embed uses ruby icon instead of POPS text", () => {
   assert.match(gain.value, /\+37/);
   assert.match(gain.value, /\u2666/);
   assert.doesNotMatch(gain.value, /POPS/);
+  assert.equal(
+    embed.fields.some((field) => field.name.includes("Impact")),
+    false,
+  );
+  assert.doesNotMatch(JSON.stringify(embed), /Tirage de/);
+});
+
+test("daily chest animation frames do not include player draw title", () => {
+  const frames = buildDailyChestAnimationFrames({
+    reward: { type: "exp", tier: "small", amount: 15 },
+    rng: () => 0.2,
+  });
+
+  assert.ok(frames.length >= 5);
+  assert.doesNotMatch(frames.join("\n"), /Tirage de/);
 });
 
 test("daily chest does not double credit the same day", async () => {

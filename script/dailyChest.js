@@ -238,26 +238,6 @@ function rewardTierLabel(reward) {
   return TIER_LABELS[reward?.tier] || TIER_LABELS.custom;
 }
 
-function rewardImpactText(result) {
-  const reward = result?.reward || {};
-  if (reward.type === "pops") return "Ajoute au portefeuille POPS.";
-  if (reward.type === "exp") {
-    const levelResult = result?.rewardResult?.levelResult;
-    if (levelResult?.leveledUp) {
-      return `Niveau communautaire atteint : ${levelResult.level}.`;
-    }
-    return "Ajoute au niveau communautaire.";
-  }
-  if (reward.type === "quest_bonus") {
-    const questBonus = result?.rewardResult?.questBonus;
-    if (!questBonus) return "Bonus ajoute au tirage du mois.";
-    return `Progression tirage : ${Math.round(
-      questBonus.before,
-    )}% -> ${Math.round(questBonus.after)}%.`;
-  }
-  return reward.message || "Le coffre garde son meilleur tresor pour demain.";
-}
-
 function applyRewardPatch({
   data,
   reward,
@@ -512,24 +492,19 @@ function buildRandomSlotPanel(rng = Math.random, middleIcon = null) {
 function buildDailyChestAnimationFrames({
   rng = Math.random,
   reward = null,
-  displayName = "Membre",
 } = {}) {
   const lockedIcon = reward ? rewardIcon(reward) : pickRandom(SLOT_SYMBOLS, rng);
   return [
     `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
-      `Tirage de **${displayName}**\n` +
       buildRandomSlotPanel(rng) +
       `\n${REWARD_ICONS.lock} Le coffre se charge...`,
     `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
-      `Tirage de **${displayName}**\n` +
       buildRandomSlotPanel(rng) +
       `\n${REWARD_ICONS.spark} Les rouleaux accelerent.`,
     `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
-      `Tirage de **${displayName}**\n` +
       buildRandomSlotPanel(rng, lockedIcon) +
       `\n${REWARD_ICONS.lock} Un symbole accroche...`,
     `${REWARD_ICONS.slot} **Coffre quotidien**\n` +
-      `Tirage de **${displayName}**\n` +
       buildSlotPanel([
         buildSlotLine(rng, lockedIcon),
         buildSlotLine(rng, lockedIcon),
@@ -555,10 +530,9 @@ async function playDailyChestAnimation(
     rng = Math.random,
     delayMs = DEFAULT_ANIMATION_DELAY_MS,
     reward = null,
-    displayName = "Membre",
   } = {},
 ) {
-  const frames = buildDailyChestAnimationFrames({ rng, reward, displayName });
+  const frames = buildDailyChestAnimationFrames({ rng, reward });
   for (const frame of frames) {
     await interaction.editReply({ content: frame, embeds: [] });
     if (delayMs > 0) await sleep(delayMs);
@@ -574,29 +548,21 @@ function rewardColor(reward) {
 
 function buildDailyChestEmbed(result, user) {
   const reward = result?.reward || {};
-  const displayName =
-    result?.profile?.displayName || user?.globalName || user?.username || "Membre";
   const value = rewardValueText(reward);
   const icon = rewardIcon(reward);
-  const lines = [`${REWARD_ICONS.slot} Tirage de **${displayName}**`];
+  const lines = [];
 
   if (reward.type === "nothing" && reward.message) {
-    lines.push("", reward.message);
+    lines.push(reward.message);
   }
 
   const embed = new EmbedBuilder()
     .setColor(rewardColor(reward))
     .setTitle(`${REWARD_ICONS.chest} Coffre ouvert !`)
-    .setDescription(lines.join("\n"))
     .addFields(
       {
         name: `${icon} Gain`,
         value: `**${value}**`,
-        inline: true,
-      },
-      {
-        name: "\uD83D\uDCCA Impact",
-        value: rewardImpactText(result),
         inline: true,
       },
       {
@@ -606,6 +572,10 @@ function buildDailyChestEmbed(result, user) {
       },
     )
     .setFooter({ text: `Reset quotidien: ${result?.dayKey || "demain"}` });
+
+  if (lines.length) {
+    embed.setDescription(lines.join("\n"));
+  }
 
   if (result?.testMode) {
     embed
@@ -663,11 +633,6 @@ async function handleDailyChestInteraction(
       await playDailyChestAnimation(interaction, {
         rng,
         reward: result.reward,
-        displayName:
-          result.profile?.displayName ||
-          interaction.user?.globalName ||
-          interaction.user?.username ||
-          "Membre",
         delayMs:
           animationDelayMs == null
             ? DEFAULT_ANIMATION_DELAY_MS
@@ -732,7 +697,6 @@ async function sendDailyChestTestMessage(
   const frames = buildDailyChestAnimationFrames({
     rng,
     reward,
-    displayName: result.profile.displayName,
   });
   const sent = await message.channel.send(frames[0]);
   for (const frame of frames.slice(1)) {
