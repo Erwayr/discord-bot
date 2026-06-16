@@ -331,19 +331,68 @@ function splitPanelRow(label, value) {
   return `| ${padPanelCell(label, 12)} | ${padPanelCell(value, 13)} |`;
 }
 
+function rewardVisualTheme(reward) {
+  const tier = String(reward?.tier || "custom");
+  const base = {
+    title: rewardPanelTitle(reward),
+    color: "#9CA3AF",
+    border: "-",
+    divider: "-",
+  };
+
+  if (tier === "legendary") {
+    return {
+      title: "\uD83D\uDC51 COFFRE LEGENDAIRE \uD83D\uDC51",
+      color: "#FACC15",
+      border: "#",
+      divider: "#",
+    };
+  }
+
+  if (tier === "rare") {
+    return {
+      title: "\uD83D\uDC8E COFFRE RARE \uD83D\uDC8E",
+      color: "#A78BFA",
+      border: "*",
+      divider: "*",
+    };
+  }
+
+  if (tier === "small") {
+    return {
+      ...base,
+      color: rewardTypeColor(reward),
+      border: "=",
+      divider: "=",
+    };
+  }
+
+  return base;
+}
+
 function rewardPanelTitle(reward) {
   const tier = rewardTierLabel(reward);
   return tier ? `COFFRE ${tier.toUpperCase()}` : "COFFRE";
 }
 
+function panelBorder(char) {
+  return `+${String(char || "-").repeat(30)}+`;
+}
+
+function panelDivider(char) {
+  const fill = String(char || "-");
+  return `+${fill.repeat(14)}+${fill.repeat(15)}+`;
+}
+
 function buildDailyChestResultPanel(reward) {
+  const theme = rewardVisualTheme(reward);
   const lines = [
     "```text",
-    "+==============================+",
-    fullPanelRow(rewardPanelTitle(reward)),
-    "+==============+===============+",
+    panelBorder(theme.border),
+    fullPanelRow(theme.title),
+    panelDivider(theme.divider),
     splitPanelRow("GAIN", rewardValueText(reward)),
-    "+==============================+",
+    panelBorder(theme.border),
     "```",
   ];
 
@@ -651,11 +700,15 @@ async function playDailyChestAnimation(
   }
 }
 
-function rewardColor(reward) {
+function rewardTypeColor(reward) {
   if (reward?.type === "pops") return "#F6C85F";
   if (reward?.type === "exp") return "#7DD3FC";
   if (reward?.type === "quest_bonus") return "#6EE7B7";
   return "#9CA3AF";
+}
+
+function rewardColor(reward) {
+  return rewardVisualTheme(reward).color;
 }
 
 function buildDailyChestEmbed(result, user) {

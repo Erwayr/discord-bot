@@ -314,6 +314,36 @@ test("daily chest POPS embed uses casino panel and ruby icon", () => {
   assert.doesNotMatch(JSON.stringify(embed), /Tirage de/);
 });
 
+test("daily chest embed uses distinct visual frames by reward tier", () => {
+  const rareEmbed = buildDailyChestEmbed(
+    {
+      dayKey: "2026-06-16",
+      reward: { type: "pops", tier: "rare", amount: 150 },
+    },
+    { username: "Alice" },
+  ).toJSON();
+  const legendaryEmbed = buildDailyChestEmbed(
+    {
+      dayKey: "2026-06-16",
+      reward: { type: "quest_bonus", tier: "legendary", amount: 10 },
+    },
+    { username: "Alice" },
+  ).toJSON();
+
+  assert.match(rareEmbed.description, /\+\*{30}\+/);
+  assert.match(rareEmbed.description, /COFFRE RARE/);
+  assert.match(rareEmbed.description, /\uD83D\uDC8E/);
+  assert.doesNotMatch(rareEmbed.description, /JACKPOT/);
+  assert.doesNotMatch(rareEmbed.description, /TIRAGE/);
+
+  assert.match(legendaryEmbed.description, /\+#{30}\+/);
+  assert.match(legendaryEmbed.description, /COFFRE LEGENDAIRE/);
+  assert.match(legendaryEmbed.description, /\uD83D\uDC51/);
+  assert.match(legendaryEmbed.description, /\+10%/);
+  assert.doesNotMatch(legendaryEmbed.description, /JACKPOT/);
+  assert.doesNotMatch(legendaryEmbed.description, /TIRAGE/);
+});
+
 test("daily chest animation frames do not include player draw title", () => {
   const frames = buildDailyChestAnimationFrames({
     reward: { type: "exp", tier: "small", amount: 15 },
@@ -339,6 +369,7 @@ test("daily chest nothing embed appends laughing emoji to funny message", () => 
   ).toJSON();
 
   assert.match(embed.description, /Rien, mais avec panache\. \uD83D\uDE02$/);
+  assert.match(embed.description, /\+-{30}\+/);
   assert.match(embed.description, /\|\s+COFFRE\s+\|/);
   assert.doesNotMatch(embed.description, /Commun/);
   assert.doesNotMatch(embed.description, /TIRAGE/);
@@ -536,6 +567,7 @@ test("daily chest test message renders preview without Firestore dependencies", 
   assert.match(String(finalEdit.content), /aucun gain applique/);
   assert.equal(finalEdit.embeds.length, 1);
   assert.match(finalEmbed.description, /```text/);
+  assert.match(finalEmbed.description, /\+#{30}\+/);
   assert.match(finalEmbed.description, /COFFRE LEGENDAIRE/);
   assert.match(finalEmbed.description, /\+10%/);
   assert.match(finalEmbed.description, /\| GAIN\s+\|/);
