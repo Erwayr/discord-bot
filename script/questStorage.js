@@ -3,12 +3,14 @@
 
 const admin = require("firebase-admin");
 const {
+  applyCommunityLevelUptime,
   applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
   resolveCommunityLevelConfig,
 } = require("./communityLevel");
 const CHAT_MESSAGE_CAP_PER_STREAM = 10;
 const STREAM_RESTART_MERGE_WINDOW_MS = 3 * 60 * 60 * 1000;
+const MS_PER_MINUTE = 60 * 1000;
 
 function monthKeyUTC(d = new Date()) {
   const y = d.getUTCFullYear();
@@ -174,6 +176,40 @@ function findStreamIndex(streams, streamId) {
   return streams.findIndex((s) => streamHasId(s, streamId));
 }
 
+function findStreamEntryAcrossMonths(livePresence, streamId) {
+  if (!livePresence || typeof livePresence !== "object") return null;
+  const safeStreamId = normalizeStreamId(streamId);
+  if (!safeStreamId) return null;
+
+  for (const monthKey of Object.keys(livePresence).sort()) {
+    const month = livePresence[monthKey];
+    if (!month || typeof month !== "object") continue;
+    month.streams = Array.isArray(month.streams) ? [...month.streams] : [];
+    const idx = findStreamIndex(month.streams, safeStreamId);
+    if (idx < 0) continue;
+    return {
+      monthKey,
+      month,
+      idx,
+      entry: month.streams[idx],
+    };
+  }
+
+  return null;
+}
+
+function uptimeMinutesFromMs(value) {
+  const ms = Math.max(0, Math.floor(Number(value) || 0));
+  return Math.floor(ms / MS_PER_MINUTE);
+}
+
+function finalizedUptimeStreamIds(entry) {
+  const raw = entry?.presence?.uptime_finalized_stream_ids;
+  return Array.isArray(raw)
+    ? raw.map((id) => normalizeStreamId(id)).filter(Boolean)
+    : [];
+}
+
 /**
  * Helpers pour journaliser les quêtes par STREAM (tableau).
  * @param {import('firebase-admin').firestore.Firestore} db
@@ -303,6 +339,154 @@ function createQuestStorage(db, options = {}) {
       leveledUp: !!presenceLevelResult?.leveledUp,
       reason: presenceLevelResult?.reason || null,
     };
+  }
+
+  async function finalizeLiveUptime(
+    login,
+    streamId,
+    { uptimeMs = 0, startedAt = null, endedAt = null } = {},
+  ) {
+    const docId = String(login || "").trim().toLowerCase();
+    const safeStreamId = normalizeStreamId(streamId);
+    const uptimeMinutes = uptimeMinutesFromMs(uptimeMs);
+    if (!docId || !safeStreamId) {
+      return { applied: false, reason: "invalid_target" };
+    }
+    if (uptimeMinutes <= 0) {
+      return { applied: false, reason: "no_uptime" };
+    }
+
+    const ref = col.doc(docId);
+    const participantRef = db.collection("participants").doc(docId);
+    let result = {
+      applied: false,
+      reason: "not_processed",
+      login: docId,
+      streamId: safeStreamId,
+      uptimeMinutesAdded: 0,
+    };
+
+    await db.runTransaction(async (tx) => {
+      const [snap, participantSnap] = await Promise.all([
+        tx.get(ref),
+        tx.get(participantRef),
+      ]);
+      if (!snap.exists) {
+        result = {
+          ...result,
+          reason: "missing_follower",
+        };
+        return;
+      }
+
+      const data = snap.data() || {};
+      const lp = { ...(data.live_presence || {}) };
+      let found = findStreamEntryAcrossMonths(lp, safeStreamId);
+
+      if (!found) {
+        const anchorDate =
+          toDateMaybe(startedAt) || toDateMaybe(endedAt) || new Date();
+        const mk = monthKeyUTC(anchorDate);
+        const month = ensureMonthLayer(lp, mk);
+        const ensured = await ensureStreamEntry(
+          tx,
+          ref,
+          month,
+          safeStreamId,
+          startedAt,
+        );
+        found = {
+          monthKey: mk,
+          month,
+          idx: ensured.idx,
+          entry: month.streams[ensured.idx],
+        };
+      }
+
+      const entry = found.entry;
+      entry.presence = {
+        seen: false,
+        first_at: null,
+        last_at: null,
+        ...(entry.presence || {}),
+      };
+
+      const finalizedIds = finalizedUptimeStreamIds(entry);
+      if (finalizedIds.includes(safeStreamId)) {
+        result = {
+          ...result,
+          reason: "already_finalized",
+          monthKey: found.monthKey,
+          uptimeMinutesAdded: 0,
+        };
+        return;
+      }
+
+      const nowMs = Date.now();
+      const wasSeen = !!entry.presence.seen;
+      entry.presence.seen = true;
+      if (!wasSeen) {
+        found.month.count = Math.max(0, Number(found.month.count || 0)) + 1;
+      }
+      if (!entry.presence.first_at) entry.presence.first_at = nowMs;
+      entry.presence.last_at = nowMs;
+      entry.presence.uptime_minutes =
+        Math.max(0, Math.floor(Number(entry.presence.uptime_minutes || 0))) +
+        uptimeMinutes;
+      entry.presence.uptime_finalized_stream_ids = [
+        ...finalizedIds,
+        safeStreamId,
+      ];
+      found.month.last_update_at = nowMs;
+
+      const uptimeResult = applyCommunityLevelUptime({
+        data,
+        uptimeMinutes,
+        nowMs,
+      });
+      if (!uptimeResult.applied) {
+        result = {
+          ...result,
+          reason: uptimeResult.reason || "no_uptime",
+          monthKey: found.monthKey,
+        };
+        return;
+      }
+
+      tx.update(ref, {
+        live_presence: lp,
+        communityLevel: uptimeResult.communityLevel,
+      });
+
+      if (participantSnap.exists) {
+        tx.set(
+          participantRef,
+          {
+            communityLevel: {
+              uptimeMinutes: uptimeResult.uptimeMinutes,
+              uptimeText: uptimeResult.uptimeText,
+              source: "twitch_presence_uptime",
+              updatedAt: nowMs,
+            },
+          },
+          { merge: true },
+        );
+      }
+
+      result = {
+        applied: true,
+        reason: "applied",
+        login: docId,
+        streamId: safeStreamId,
+        monthKey: found.monthKey,
+        uptimeMinutesAdded: uptimeMinutes,
+        uptimeMinutes: uptimeResult.uptimeMinutes,
+        uptimeText: uptimeResult.uptimeText,
+        participantMirrored: !!participantSnap.exists,
+      };
+    });
+
+    return result;
   }
 
   async function noteEmoteUsage(login, streamId, inc = 1, { startedAt } = {}) {
@@ -612,6 +796,7 @@ function createQuestStorage(db, options = {}) {
 
   return {
     notePresence,
+    finalizeLiveUptime,
     noteChatMessage,
     noteEmoteUsage,
     noteClipCreated,

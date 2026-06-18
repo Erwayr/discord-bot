@@ -6,6 +6,31 @@ const { test } = require("node:test");
 const { createQuestStorage } = require("../script/questStorage");
 const { titleForLevel } = require("../script/communityLevel");
 
+function clone(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMerge(target, source) {
+  const next = clone(target || {});
+  for (const [key, value] of Object.entries(source || {})) {
+    if (isPlainObject(value) && isPlainObject(next[key])) {
+      next[key] = deepMerge(next[key], value);
+    } else {
+      next[key] = clone(value);
+    }
+  }
+  return next;
+}
+
+function refKey(ref) {
+  return ref.path || ref.id;
+}
+
 class FakeSnapshot {
   constructor(data) {
     this._data = data;
@@ -23,21 +48,23 @@ class FakeTransaction {
   }
 
   async get(ref) {
-    return new FakeSnapshot(this.store.get(ref.id) || null);
+    return new FakeSnapshot(this.store.get(refKey(ref)) || null);
   }
 
   set(ref, data, options = {}) {
+    const key = refKey(ref);
     if (options.merge) {
-      this.store.set(ref.id, { ...(this.store.get(ref.id) || {}), ...data });
+      this.store.set(key, deepMerge(this.store.get(key) || {}, data));
       return;
     }
-    this.store.set(ref.id, data);
+    this.store.set(key, clone(data));
   }
 
   update(ref, payload) {
-    const current = this.store.get(ref.id);
-    assert.ok(current, `missing fake doc ${ref.id}`);
-    this.store.set(ref.id, { ...current, ...payload });
+    const key = refKey(ref);
+    const current = this.store.get(key);
+    assert.ok(current, `missing fake doc ${key}`);
+    this.store.set(key, { ...current, ...clone(payload) });
   }
 }
 
@@ -46,9 +73,12 @@ class FakeDb {
     this.store = new Map(Object.entries(initialDocs));
   }
 
-  collection() {
+  collection(name) {
     return {
-      doc: (id) => ({ id }),
+      doc: (id) => ({
+        id,
+        path: name === "followers_all_time" ? id : `${name}/${id}`,
+      }),
     };
   }
 
@@ -273,6 +303,91 @@ test("presence level awards again on a new live", async () => {
   assert.equal(doc.communityLevel.presenceXpTotal, 400);
   assert.equal(doc.communityLevel.presenceStreams, 2);
   assert.equal(month.streams.length, 2);
+});
+
+test("finalize live uptime adds minutes once and mirrors participant", async () => {
+  const db = new FakeDb({
+    alice: {
+      pseudo: "alice",
+      communityLevel: {
+        rank: 7,
+        level: 42,
+        xpTotal: 1234,
+        xpInLevel: 34,
+        xpForNext: 200,
+        rankName: "Maitre du cosmos",
+        uptimeMinutes: 120,
+        uptimeText: "2h",
+        chatXpTotal: 99,
+      },
+      live_presence: {
+        "2026-05": {
+          streams: [
+            {
+              stream_id: "stream-1",
+              day_key: "2026-05-16",
+              presence: {
+                seen: true,
+                first_at: Date.parse("2026-05-16T10:00:00.000Z"),
+                last_at: Date.parse("2026-05-16T11:00:00.000Z"),
+              },
+            },
+          ],
+        },
+      },
+    },
+    "participants/alice": {
+      pseudo: "alice",
+      communityLevel: {
+        level: 42,
+        uptimeMinutes: 120,
+        uptimeText: "2h",
+      },
+    },
+  });
+  const store = createQuestStorage(db);
+
+  const first = await withDateNow(Date.parse("2026-05-16T13:00:00.000Z"), () =>
+    store.finalizeLiveUptime("Alice", "stream-1", {
+      uptimeMs: 30 * 60 * 1000,
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+      endedAt: new Date("2026-05-16T13:00:00.000Z"),
+    }),
+  );
+  const second = await withDateNow(Date.parse("2026-05-16T13:05:00.000Z"), () =>
+    store.finalizeLiveUptime("alice", "stream-1", {
+      uptimeMs: 30 * 60 * 1000,
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+      endedAt: new Date("2026-05-16T13:00:00.000Z"),
+    }),
+  );
+
+  const doc = db.doc("alice");
+  const stream = doc.live_presence["2026-05"].streams[0];
+  const participant = db.doc("participants/alice");
+
+  assert.equal(first.applied, true);
+  assert.equal(first.uptimeMinutesAdded, 30);
+  assert.equal(first.uptimeMinutes, 150);
+  assert.equal(first.uptimeText, "2h 30m");
+  assert.equal(first.participantMirrored, true);
+  assert.equal(second.applied, false);
+  assert.equal(second.reason, "already_finalized");
+
+  assert.equal(doc.communityLevel.uptimeMinutes, 150);
+  assert.equal(doc.communityLevel.uptimeText, "2h 30m");
+  assert.equal(doc.communityLevel.rank, 7);
+  assert.equal(doc.communityLevel.level, 42);
+  assert.equal(doc.communityLevel.xpTotal, 1234);
+  assert.equal(doc.communityLevel.xpInLevel, 34);
+  assert.equal(doc.communityLevel.xpForNext, 200);
+  assert.equal(doc.communityLevel.chatXpTotal, 99);
+
+  assert.equal(stream.presence.uptime_minutes, 30);
+  assert.deepEqual(stream.presence.uptime_finalized_stream_ids, ["stream-1"]);
+  assert.equal(participant.communityLevel.level, 42);
+  assert.equal(participant.communityLevel.uptimeMinutes, 150);
+  assert.equal(participant.communityLevel.uptimeText, "2h 30m");
 });
 
 test("channel points level awards 5 xp per redemption and caps at 50 per live", async () => {

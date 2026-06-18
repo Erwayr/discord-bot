@@ -101,6 +101,8 @@ const livePresenceTick = createLivePresenceTicker({
   broadcasterId: config.twitch.channelId,
   moderatorId: config.twitch.moderatorId,
   questStore,
+  uptimeTickMs: config.communityLevel.uptimeTickMs,
+  uptimeMaxTickMs: config.communityLevel.uptimeMaxTickMs,
 });
 
 const pollClipsTick = createClipPoller({

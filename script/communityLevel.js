@@ -650,6 +650,36 @@ function applyFlatCommunityLevelXp({
   };
 }
 
+function applyCommunityLevelUptime({
+  data = {},
+  uptimeMinutes = 0,
+  nowMs = Date.now(),
+} = {}) {
+  const safeMinutes = Math.max(0, toInt(uptimeMinutes, 0));
+  if (safeMinutes <= 0) {
+    return { applied: false, reason: "no_uptime" };
+  }
+
+  const existingCommunity = isObject(data.communityLevel) ? data.communityLevel : {};
+  const current = normalizeCommunityLevel(data);
+  const nextUptimeMinutes = Math.max(0, current.uptimeMinutes || 0) + safeMinutes;
+  const nextUptimeText = formatUptimeMinutes(nextUptimeMinutes);
+
+  return {
+    applied: true,
+    uptimeMinutesAdded: safeMinutes,
+    uptimeMinutes: nextUptimeMinutes,
+    uptimeText: nextUptimeText,
+    communityLevel: {
+      ...existingCommunity,
+      uptimeMinutes: nextUptimeMinutes,
+      uptimeText: nextUptimeText,
+      source: "twitch_presence_uptime",
+      updatedAt: nowMs,
+    },
+  };
+}
+
 async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
   const config = resolveCommunityLevelConfig(rawConfig);
   if (!config.enabled) return { updated: 0, skipped: true };
@@ -733,5 +763,6 @@ module.exports = {
   applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
   applyFlatCommunityLevelXp,
+  applyCommunityLevelUptime,
   recalculateCommunityLevelRanks,
 };

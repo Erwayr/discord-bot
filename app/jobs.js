@@ -382,6 +382,17 @@ if (currentId) {
         announcedStreamId = null;
         announcedStartedAt = null;
 
+        if (typeof livePresenceTick.flushStreamUptime === "function") {
+          await livePresenceTick
+            .flushStreamUptime(endedStreamId, { reason: "live-end" })
+            .catch((e) =>
+              console.error(
+                "[ticker] uptime live-end flush failed:",
+                e?.message || e,
+              ),
+            );
+        }
+
         await stopCommunityLevelRankCronAndRunFinal(endedStreamId).catch((e) =>
           console.error(
             "[community-level] final rank refresh failed:",

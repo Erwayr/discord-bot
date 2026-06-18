@@ -153,6 +153,11 @@ const config = {
       "COMMUNITY_LEVEL_PRESENCE_XP_CAP_PER_STREAM",
       200,
     ),
+    uptimeTickMs: numberEnv("COMMUNITY_LEVEL_UPTIME_TICK_MS", 120_000),
+    uptimeMaxTickMs: numberEnv(
+      "COMMUNITY_LEVEL_UPTIME_MAX_TICK_MS",
+      300_000,
+    ),
     channelPointsXp: numberEnv("COMMUNITY_LEVEL_CHANNEL_POINTS_XP", 5),
     channelPointsXpCapPerStream: numberEnv(
       "COMMUNITY_LEVEL_CHANNEL_POINTS_XP_CAP_PER_STREAM",
