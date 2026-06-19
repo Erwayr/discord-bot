@@ -38,6 +38,7 @@ function registerDiscordEvents({
   weeklyPlanningPublisher,
   birthdays,
   getCommunityLevelConfig,
+  cardNotifications,
 }) {
   client.once(Events.ClientReady, async () => {
     console.log(`✅ Connecté en tant que ${client.user.tag}`);
@@ -200,11 +201,11 @@ function registerDiscordEvents({
       console.error("[discord] messageCountHandler failed:", err);
     });
 
-    await electionHandler(message, db, config.discord.generalChannelId).catch(
-      (err) => {
-        console.error("[discord] electionHandler failed:", err);
-      },
-    );
+    await electionHandler(message, db, config.discord.generalChannelId, {
+      cardNotifications,
+    }).catch((err) => {
+      console.error("[discord] electionHandler failed:", err);
+    });
 
     const content = message.content.trim();
     const command = content.split(/\s+/)[0]?.toLowerCase() || "";

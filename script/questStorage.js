@@ -210,6 +210,17 @@ function finalizedUptimeStreamIds(entry) {
     : [];
 }
 
+function normalizeActivityEvents(events = []) {
+  return (Array.isArray(events) ? events : [])
+    .map((event) => {
+      const atMs = Math.max(0, Math.floor(Number(event?.atMs) || Date.now()));
+      const count = Math.max(1, Math.floor(Number(event?.count) || 1));
+      return { atMs, count };
+    })
+    .filter((event) => event.atMs > 0 && event.count > 0)
+    .sort((a, b) => a.atMs - b.atMs);
+}
+
 /**
  * Helpers pour journaliser les quêtes par STREAM (tableau).
  * @param {import('firebase-admin').firestore.Firestore} db
@@ -636,6 +647,167 @@ function createQuestStorage(db, options = {}) {
     };
   }
 
+  async function noteLiveActivity(
+    login,
+    streamId,
+    { startedAt, chatEvents = [], emoteCount = 0 } = {},
+  ) {
+    const docId = String(login || "").trim().toLowerCase();
+    const safeStreamId = normalizeStreamId(streamId);
+    const normalizedChatEvents = normalizeActivityEvents(chatEvents);
+    const safeEmoteCount = Math.max(0, Math.floor(Number(emoteCount) || 0));
+    if (!docId || !safeStreamId) {
+      return { applied: false, reason: "invalid_target" };
+    }
+    if (!normalizedChatEvents.length && safeEmoteCount <= 0) {
+      return { applied: false, reason: "empty_activity" };
+    }
+
+    const ref = col.doc(docId);
+    const mk = monthKeyUTC();
+    let result = {
+      applied: false,
+      login: docId,
+      streamId: safeStreamId,
+      chatEvents: normalizedChatEvents.length,
+      chatCount: 0,
+      chatCapped: false,
+      emoteCount: safeEmoteCount,
+      levelAwarded: false,
+      levelXp: 0,
+      level: null,
+      rankName: "",
+      leveledUp: false,
+      levelUps: [],
+    };
+    const effectiveCommunityLevelConfig = normalizedChatEvents.length
+      ? await getCommunityLevelConfig()
+      : null;
+
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.exists ? snap.data() || {} : {};
+      const workingData = { ...data };
+      const lp = { ...(data.live_presence || {}) };
+      const month = ensureMonthLayer(lp, mk);
+
+      const { idx, created } = await ensureStreamEntry(
+        tx,
+        ref,
+        month,
+        safeStreamId,
+        startedAt,
+      );
+      const entry = month.streams[idx];
+      let latestAtMs = Date.now();
+      let latestLevelResult = null;
+      const patch = { live_presence: lp };
+
+      if (normalizedChatEvents.length) {
+        entry.chat_message = {
+          sent: false,
+          count: 0,
+          first_at: null,
+          last_at: null,
+          ...(entry.chat_message || {}),
+        };
+
+        for (const event of normalizedChatEvents) {
+          latestAtMs = Math.max(latestAtMs, event.atMs);
+          const beforeCount = Math.max(
+            0,
+            Math.floor(Number(entry.chat_message.count || 0)),
+          );
+          const nextCount = Math.min(
+            CHAT_MESSAGE_CAP_PER_STREAM,
+            beforeCount + event.count,
+          );
+          const levelResult = applyChatMessageLevelProgress({
+            data: workingData,
+            entry,
+            streamId: safeStreamId,
+            nowMs: event.atMs,
+            rawConfig: effectiveCommunityLevelConfig,
+            eventCount: event.count,
+          });
+
+          if (nextCount !== beforeCount || !entry.chat_message.sent) {
+            entry.chat_message.sent = true;
+            entry.chat_message.count = nextCount;
+            if (!entry.chat_message.first_at) {
+              entry.chat_message.first_at = event.atMs;
+            }
+            entry.chat_message.last_at = event.atMs;
+          }
+
+          if (levelResult.awarded) {
+            latestLevelResult = levelResult;
+            workingData.communityLevel = levelResult.communityLevel;
+            Object.assign(workingData, levelResult.legacyFields);
+            if (levelResult.leveledUp) {
+              result.levelUps.push({
+                level: levelResult.level,
+                rankName: levelResult.communityLevel?.rankName || "",
+              });
+            }
+          }
+        }
+
+        result.chatCount = Math.max(
+          0,
+          Math.floor(Number(entry.chat_message.count || 0)),
+        );
+        result.chatCapped = result.chatCount >= CHAT_MESSAGE_CAP_PER_STREAM;
+      }
+
+      if (safeEmoteCount > 0) {
+        entry.emote = {
+          used: false,
+          count: 0,
+          last_at: null,
+          ...(entry.emote || {}),
+        };
+        entry.emote.used = true;
+        entry.emote.count =
+          Math.max(0, Math.floor(Number(entry.emote.count || 0))) +
+          safeEmoteCount;
+        entry.emote.last_at = latestAtMs;
+      }
+
+      month.last_update_at = latestAtMs;
+      if (latestLevelResult?.awarded) {
+        patch.communityLevel = latestLevelResult.communityLevel;
+        Object.assign(patch, latestLevelResult.legacyFields);
+      }
+
+      if (snap.exists) {
+        tx.update(ref, patch);
+      } else {
+        tx.set(
+          ref,
+          {
+            pseudo: docId,
+            ...patch,
+          },
+          { merge: true },
+        );
+      }
+
+      result = {
+        ...result,
+        applied: true,
+        streamCreated: !!created,
+        levelAwarded: !!latestLevelResult?.awarded,
+        levelXp: latestLevelResult?.awardXp || 0,
+        level: latestLevelResult?.level || null,
+        rankName: latestLevelResult?.communityLevel?.rankName || "",
+        leveledUp: result.levelUps.length > 0,
+      };
+    });
+
+    return result;
+  }
+
   async function noteClipCreated(
     login,
     streamId,
@@ -797,6 +969,7 @@ function createQuestStorage(db, options = {}) {
   return {
     notePresence,
     finalizeLiveUptime,
+    noteLiveActivity,
     noteChatMessage,
     noteEmoteUsage,
     noteClipCreated,

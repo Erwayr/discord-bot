@@ -12,7 +12,12 @@ const AUTO_CLOSE_DELAY = 2 * 24 * 60 * 60 * 1000;
  * @param {Message} message
  * @param {FirebaseFirestore.Firestore} db
  */
-module.exports = async function electionHandler(message, db, channelId) {
+module.exports = async function electionHandler(
+  message,
+  db,
+  channelId,
+  { cardNotifications } = {},
+) {
   const [cmd, sub] = message.content.trim().split(/ +/);
 
   if (cmd !== "!election") return;
@@ -201,6 +206,7 @@ module.exports = async function electionHandler(message, db, channelId) {
 
     // Attendre que tout soit termin?
     await Promise.all([batchCommit, rolePromise, sendMessage, sendMessageRole]);
+    cardNotifications?.enqueueFollowerDoc(userDoc.ref).catch(console.error);
   }
 
 

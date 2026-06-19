@@ -21,6 +21,7 @@ const {
   createDiscordMessaging,
   formatClipDiscordMessage,
 } = require("./app/discordMessaging");
+const { createCardNotificationQueue } = require("./app/cardNotificationQueue");
 const {
   loginDiscordClient,
   registerDiscordEvents,
@@ -80,6 +81,10 @@ const client = createDiscordClient();
 const { postDiscord, sendDMOrFallback } = createDiscordMessaging({
   client,
   logChannelId: config.discord.logChannelId,
+});
+const cardNotifications = createCardNotificationQueue({
+  config,
+  sendDMOrFallback,
 });
 
 const questStore = createQuestStorage(db, {
@@ -182,6 +187,7 @@ const jobs = createJobs({
   birthdays,
   twitchChat,
   getCommunityLevelConfig,
+  cardNotifications,
 });
 
 const firestoreListeners = createFirestoreListeners({
@@ -215,13 +221,14 @@ registerDiscordEvents({
   weeklyPlanningPublisher,
   birthdays,
   getCommunityLevelConfig,
+  cardNotifications,
 });
 
 jobs.scheduleCoreJobs();
 twitchChat.start();
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Express server listening on port ${PORT}`);
 });
 
@@ -229,3 +236,22 @@ loginDiscordClient({
   client,
   token: config.discord.botToken,
 });
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received, flushing live activity...`);
+  try {
+    twitchChat.stopLiveActivityBuffer?.();
+    await twitchChat.flushLiveActivity?.({ reason: "shutdown" });
+  } catch (e) {
+    console.error("[shutdown] live activity flush failed:", e?.message || e);
+  } finally {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  }
+}
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));

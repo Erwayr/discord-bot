@@ -23,6 +23,7 @@ function createJobs({
   birthdays,
   twitchChat,
   getCommunityLevelConfig,
+  cardNotifications,
 }) {
   let announcedStreamId = null;
   let announcedStartedAt = null;
@@ -39,8 +40,16 @@ function createJobs({
     );
   }
 
-  async function runCommunityLevelRankRefresh(source) {
-    if (!isCommunityLevelRankRefreshEnabled()) return null;
+  function isCommunityLevelRankLiveEndRefreshEnabled() {
+    return (
+      config.communityLevel?.enabled &&
+      config.communityLevel?.rankRefreshOnLiveEnd !== false
+    );
+  }
+
+  async function runCommunityLevelRankRefresh(source, { ignoreCron = false } = {}) {
+    if (!config.communityLevel?.enabled) return null;
+    if (!ignoreCron && !isCommunityLevelRankRefreshEnabled()) return null;
 
     if (communityLevelRankRefreshPromise) {
       console.log(
@@ -100,8 +109,6 @@ function createJobs({
   }
 
   async function stopCommunityLevelRankCronAndRunFinal(streamId) {
-    if (!isCommunityLevelRankRefreshEnabled()) return;
-
     if (communityLevelRankTask && communityLevelRankTaskStarted) {
       await Promise.resolve(communityLevelRankTask.stop?.());
       communityLevelRankTaskStarted = false;
@@ -118,7 +125,19 @@ function createJobs({
       await communityLevelRankRefreshPromise.catch(() => null);
     }
 
-    await runCommunityLevelRankRefresh("live-end-final");
+    if (isCommunityLevelRankLiveEndRefreshEnabled()) {
+      await runCommunityLevelRankRefresh("live-end-final", { ignoreCron: true });
+    }
+  }
+
+  async function flushTwitchLiveActivity(reason) {
+    if (typeof twitchChat?.flushLiveActivity !== "function") return null;
+    try {
+      return await twitchChat.flushLiveActivity({ reason });
+    } catch (e) {
+      console.error("[live-activity] flush failed:", e?.message || e);
+      return null;
+    }
   }
 
   async function refreshCommunityLevelRanks() {
@@ -178,6 +197,7 @@ function createJobs({
       if (snap.empty) continue;
 
       const batch = db.batch();
+      const notifyRefs = [];
 
       snap.docs.forEach((doc) => {
         const data = doc.data();
@@ -190,12 +210,16 @@ function createJobs({
           cards_generated: admin.firestore.FieldValue.arrayUnion(oldMemberCard),
           isAlreadyWinDiscordOldMember: true,
         });
+        notifyRefs.push(doc.ref);
         console.log(
           `🎉 Carte "discord_old_member" attribuée à ${data.discord_id}`,
         );
       });
 
       await commitBatchWithRetry(batch, { label: "assign-old-member-cards" });
+      notifyRefs.forEach((ref) =>
+        cardNotifications?.enqueueFollowerDoc(ref).catch(console.error),
+      );
       console.log(`✅ Batch de ${chunk.length} membres traité.`);
     }
   }
@@ -250,6 +274,8 @@ function createJobs({
       memberById: boosterMembersById,
       batchSize: config.batchSize,
       label: "assign-server-booster-cards",
+      onGrantedDoc: (doc) =>
+        cardNotifications?.enqueueFollowerDoc(doc.ref).catch(console.error),
     });
 
     if (result.missing > 0) {
@@ -278,6 +304,8 @@ function createJobs({
       memberById: new Map([[discordId, member]]),
       batchSize: 1,
       label: "guild-member-update-server-booster",
+      onGrantedDoc: (doc) =>
+        cardNotifications?.enqueueFollowerDoc(doc.ref).catch(console.error),
     });
 
     if (result.missing > 0) {
@@ -287,8 +315,8 @@ function createJobs({
     }
   }
 
-  async function refreshAndSendBirthdayAnnouncements() {
-    await birthdays.refreshTodayBirthdays();
+  async function refreshAndSendBirthdayAnnouncements({ forceRebuild = false } = {}) {
+    await birthdays.refreshTodayBirthdays({ forceRebuild });
     const result = await birthdays.sendDiscordBirthdayAnnouncements({
       client,
       channelId: config.discord.generalChannelId,
@@ -340,10 +368,14 @@ function createJobs({
       const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
       const currentId = streamId || null;
 
-if (currentId) {
+      if (currentId) {
         offlineStreak = 0;
 
         if (announcedStreamId !== currentId) {
+          if (announcedStreamId) {
+            await flushTwitchLiveActivity("stream-switch");
+          }
+
           announcedStreamId = currentId;
           announcedStartedAt = startedAt || null;
 
@@ -382,6 +414,8 @@ if (currentId) {
         announcedStreamId = null;
         announcedStartedAt = null;
 
+        await flushTwitchLiveActivity("live-end");
+
         if (typeof livePresenceTick.flushStreamUptime === "function") {
           await livePresenceTick
             .flushStreamUptime(endedStreamId, { reason: "live-end" })
@@ -405,7 +439,10 @@ if (currentId) {
     birthdays.refreshTodayBirthdays().catch(console.error);
     cron.schedule(
       config.cron.birthdayRefresh,
-      () => refreshAndSendBirthdayAnnouncements().catch(console.error),
+      () =>
+        refreshAndSendBirthdayAnnouncements({ forceRebuild: true }).catch(
+          console.error,
+        ),
       { timezone: config.timezone },
     );
 

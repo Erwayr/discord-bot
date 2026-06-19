@@ -71,6 +71,7 @@ class FakeTransaction {
 class FakeDb {
   constructor(initialDocs = {}) {
     this.store = new Map(Object.entries(initialDocs));
+    this.transactions = 0;
   }
 
   collection(name) {
@@ -83,6 +84,7 @@ class FakeDb {
   }
 
   async runTransaction(callback) {
+    this.transactions += 1;
     return callback(new FakeTransaction(this.store));
   }
 
@@ -611,4 +613,88 @@ test("chat level progresses to next level when xp threshold is reached", async (
   assert.equal(doc.communityLevel.level, 2);
   assert.equal(doc.communityLevel.xpInLevel, 0);
   assert.equal(doc.communityLevel.xpForNext, 2);
+});
+
+test("batched live chat applies 100 messages in one transaction", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatCooldownMs: 0,
+    },
+  });
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+  const baseMs = Date.parse("2026-05-16T11:00:00.000Z");
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    startedAt,
+    chatEvents: Array.from({ length: 100 }, (_, index) => ({
+      atMs: baseMs + index * 1000,
+    })),
+  });
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(db.transactions, 1);
+  assert.equal(result.applied, true);
+  assert.equal(result.chatEvents, 100);
+  assert.equal(result.chatCount, 10);
+  assert.equal(result.chatCapped, true);
+  assert.equal(doc.communityLevel.chatMessages, 100);
+  assert.equal(doc.communityLevel.chatXpTotal, 1000);
+  assert.equal(stream.chat_message.count, 10);
+  assert.equal(stream.community_level.messages, 100);
+  assert.equal(stream.community_level.chat_xp, 1000);
+});
+
+test("batched live chat replays timestamps for cooldown", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatXp: 10,
+      chatCooldownMs: 60_000,
+    },
+  });
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+  const baseMs = Date.parse("2026-05-16T11:00:00.000Z");
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    startedAt,
+    chatEvents: [
+      { atMs: baseMs },
+      { atMs: baseMs + 10_000 },
+      { atMs: baseMs + 61_000 },
+    ],
+  });
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(db.transactions, 1);
+  assert.equal(result.chatCount, 3);
+  assert.equal(doc.communityLevel.chatMessages, 2);
+  assert.equal(doc.communityLevel.chatXpTotal, 20);
+  assert.equal(stream.chat_message.count, 3);
+  assert.equal(stream.community_level.messages, 2);
+  assert.equal(stream.community_level.chat_xp, 20);
+});
+
+test("batched live activity groups emotes with chat in one transaction", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatCooldownMs: 0,
+    },
+  });
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    chatEvents: [{ atMs: Date.parse("2026-05-16T11:00:00.000Z") }],
+    emoteCount: 7,
+  });
+
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(db.transactions, 1);
+  assert.equal(result.emoteCount, 7);
+  assert.equal(stream.chat_message.count, 1);
+  assert.equal(stream.emote.count, 7);
+  assert.equal(stream.emote.used, true);
 });

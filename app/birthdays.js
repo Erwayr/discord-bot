@@ -534,7 +534,7 @@ function createBirthdayService({ db, admin, config }) {
     console.log(`[birthday] index built (${index.size} days)`);
   }
 
-  async function refreshTodayBirthdays() {
+  async function refreshTodayBirthdays({ forceRebuild = false } = {}) {
     const now = new Date();
     const dk = warsawDateKey(now);
     const { month, day } = getWarsawParts(now);
@@ -546,26 +546,28 @@ function createBirthdayService({ db, admin, config }) {
     let usedFallback = false;
     let needsRebuild = true;
 
-    try {
-      const metaSnap = await db.doc(birthdayConfig.indexMetaDoc).get();
-      if (metaSnap.exists) {
-        const meta = metaSnap.data() || {};
-        const version = Number(meta.version || 0);
-        if (version >= birthdayConfig.indexVersion) {
-          needsRebuild = false;
-          if (birthdayConfig.indexMaxAgeHours > 0) {
-            const lastTs =
-              toMillisMaybe(meta.updatedAt) || toMillisMaybe(meta.builtAt);
-            if (lastTs) {
-              const maxAgeMs =
-                birthdayConfig.indexMaxAgeHours * 60 * 60 * 1000;
-              if (Date.now() - lastTs > maxAgeMs) needsRebuild = true;
+    if (!forceRebuild) {
+      try {
+        const metaSnap = await db.doc(birthdayConfig.indexMetaDoc).get();
+        if (metaSnap.exists) {
+          const meta = metaSnap.data() || {};
+          const version = Number(meta.version || 0);
+          if (version >= birthdayConfig.indexVersion) {
+            needsRebuild = false;
+            if (birthdayConfig.indexMaxAgeHours > 0) {
+              const lastTs =
+                toMillisMaybe(meta.updatedAt) || toMillisMaybe(meta.builtAt);
+              if (lastTs) {
+                const maxAgeMs =
+                  birthdayConfig.indexMaxAgeHours * 60 * 60 * 1000;
+                if (Date.now() - lastTs > maxAgeMs) needsRebuild = true;
+              }
             }
           }
         }
+      } catch (e) {
+        console.warn("[birthday] index meta read failed:", e?.message || e);
       }
-    } catch (e) {
-      console.warn("[birthday] index meta read failed:", e?.message || e);
     }
 
     if (needsRebuild) {

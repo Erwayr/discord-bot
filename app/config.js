@@ -63,6 +63,8 @@ const config = {
 
   firestore: {
     enableListener: process.env.FIRESTORE_ENABLE_LISTENER !== "0",
+    enableFollowerListener:
+      process.env.FIRESTORE_ENABLE_FOLLOWER_LISTENER === "1",
     preferRest: process.env.FIRESTORE_PREFER_REST !== "0",
   },
 
@@ -167,8 +169,17 @@ const config = {
     growthXp: numberEnv("COMMUNITY_LEVEL_GROWTH_XP", 25),
     maxLevel: numberEnv("COMMUNITY_LEVEL_MAX_LEVEL", 999),
     legacyDoubleWrite: boolEnv("COMMUNITY_LEVEL_LEGACY_DOUBLE_WRITE", false),
-    rankCron: process.env.CRON_COMMUNITY_LEVEL_RANKS || "*/10 * * * *",
+    rankCron: process.env.CRON_COMMUNITY_LEVEL_RANKS || "0",
     rankBatchSize: numberEnv("COMMUNITY_LEVEL_RANK_BATCH_SIZE", 400),
+    rankRefreshOnLiveEnd: boolEnv(
+      "COMMUNITY_LEVEL_RANK_REFRESH_ON_LIVE_END",
+      true,
+    ),
+  },
+
+  twitchLiveActivity: {
+    flushMs: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_MS", 20 * 60 * 1000),
+    flushChunkSize: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_CHUNK_SIZE", 25),
   },
 
   twitchCommands: {

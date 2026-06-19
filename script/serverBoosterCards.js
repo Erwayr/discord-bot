@@ -141,6 +141,7 @@ async function grantServerBoosterCardsByDiscordIds({
   memberById = new Map(),
   batchSize = 10,
   label = "assign-server-booster-cards",
+  onGrantedDoc = null,
 } = {}) {
   const ids = [
     ...new Set(
@@ -171,6 +172,7 @@ async function grantServerBoosterCardsByDiscordIds({
 
     const foundIds = new Set();
     const batch = db.batch();
+    const grantedDocs = [];
     let writes = 0;
 
     snap.docs.forEach((doc) => {
@@ -188,12 +190,16 @@ async function grantServerBoosterCardsByDiscordIds({
 
       if (!payload) return;
       batch.update(doc.ref, payload);
+      grantedDocs.push(doc);
       writes += 1;
     });
 
     missing += chunk.filter((id) => !foundIds.has(id)).length;
     if (writes > 0) {
       await commitBatchWithRetry(batch, { label });
+      if (typeof onGrantedDoc === "function") {
+        grantedDocs.forEach((doc) => onGrantedDoc(doc));
+      }
       updated += writes;
       console.log(
         `🎉 [${label}] ${writes} carte(s) Booster Discord attribuée(s).`,

@@ -206,7 +206,8 @@ function createFirestoreListeners({
       return;
     }
 
-    db.collection("followers_all_time").onSnapshot(
+    if (config.firestore.enableFollowerListener === true) {
+      db.collection("followers_all_time").onSnapshot(
       (snapshot) => {
         const changes = snapshot.docChanges();
         birthdays.handleFollowerChanges(changes);
@@ -256,7 +257,8 @@ function createFirestoreListeners({
         });
       },
       (err) => console.error("Listener Firestore error:", err),
-    );
+      );
+    }
 
     db.collection("gagnants").onSnapshot(
       (snapshot) => {

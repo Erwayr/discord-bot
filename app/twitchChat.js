@@ -4,6 +4,7 @@ const axios = require("axios");
 const tmi = require("tmi.js");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
+const { createLiveActivityBuffer } = require("../script/liveActivityBuffer");
 const {
   buildCommunityLevelUpMessage,
 } = require("../script/twitchLevelAnnouncements");
@@ -150,6 +151,26 @@ function createTwitchChat({
     }
   }
 
+  const liveActivityBuffer = createLiveActivityBuffer({
+    questStore,
+    flushIntervalMs: config.twitchLiveActivity?.flushMs,
+    flushChunkSize: config.twitchLiveActivity?.flushChunkSize,
+    onLevelUp: async ({ login, displayName, level, rankName }) => {
+      const levelUpMessage = buildCommunityLevelUpMessage({
+        displayName,
+        login,
+        level,
+        rankName,
+      });
+      if (!levelUpMessage) return;
+      try {
+        await sendTwitchChatMessage(levelUpMessage);
+      } catch (e) {
+        console.warn("level-up chat message failed:", e?.message || e);
+      }
+    },
+  });
+
   const twitchChatCommands = createTwitchChatCommands({
     db,
     config: config.twitchCommands,
@@ -205,32 +226,17 @@ function createTwitchChat({
     }
 
     try {
-      const chatProgress = await questStore.noteChatMessage(login, streamId, 1, {
+      const chatProgress = liveActivityBuffer.noteChatMessage(login, streamId, {
         startedAt: liveState.startedAt,
+        displayName: tags["display-name"] || tags.displayName || tags.username || login,
       });
-      if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.levelAwarded) {
+      if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.buffered) {
         console.log(
-          `[community-level] ${login} +${chatProgress.levelXp} xp -> level ${chatProgress.level}`,
+          `[community-level] buffered chat ${login} stream=${streamId} pending=${chatProgress.pendingChatEvents}`,
         );
       }
-      if (chatProgress?.leveledUp) {
-        const levelUpMessage = buildCommunityLevelUpMessage({
-          displayName:
-            tags["display-name"] || tags.displayName || tags.username || login,
-          login,
-          level: chatProgress.level,
-          rankName: chatProgress.rankName,
-        });
-        if (levelUpMessage) {
-          try {
-            await sendTwitchChatMessage(levelUpMessage);
-          } catch (e) {
-            console.warn("level-up chat message failed:", e?.message || e);
-          }
-        }
-      }
     } catch (e) {
-      console.warn("noteChatMessage failed:", e?.message || e);
+      console.warn("buffer noteChatMessage failed:", e?.message || e);
     }
 
     const emotesObj = tags.emotes || null;
@@ -274,15 +280,17 @@ function createTwitchChat({
           )}"`,
         );
         try {
-          await questStore.noteEmoteUsage(login, streamId, incByName, {
+          liveActivityBuffer.noteEmoteUsage(login, streamId, incByName, {
             startedAt: liveState.startedAt,
+            displayName:
+              tags["display-name"] || tags.displayName || tags.username || login,
           });
           console.log(
-            `[emotes→DB] OK fallback-name | ${login} +${incByName} stream=${streamId}`,
+            `[emotes→buffer] OK fallback-name | ${login} +${incByName} stream=${streamId}`,
           );
         } catch (e) {
           console.error(
-            `[emotes→DB] FAIL fallback-name | ${login} +${incByName} stream=${streamId}`,
+            `[emotes→buffer] FAIL fallback-name | ${login} +${incByName} stream=${streamId}`,
           );
           console.error(e?.stack || e?.message || e);
         }
@@ -336,17 +344,19 @@ function createTwitchChat({
       `[emotes] ${login} +${inc} (ids=${idsLabel}) msg="${msg.slice(0, 80)}"`,
     );
     try {
-      await questStore.noteEmoteUsage(login, streamId, inc, {
+      liveActivityBuffer.noteEmoteUsage(login, streamId, inc, {
         startedAt: liveState.startedAt,
+        displayName: tags["display-name"] || tags.displayName || tags.username || login,
       });
-      console.log(`[emotes→DB] OK | ${login} +${inc} stream=${streamId}`);
+      console.log(`[emotes→buffer] OK | ${login} +${inc} stream=${streamId}`);
     } catch (e) {
-      console.error(`[emotes→DB] FAIL | ${login} +${inc} stream=${streamId}`);
+      console.error(`[emotes→buffer] FAIL | ${login} +${inc} stream=${streamId}`);
       console.error(e?.stack || e?.message || e);
     }
   });
 
   function start() {
+    liveActivityBuffer.start();
     tmiClient.connect().catch(console.error);
     return tmiClient;
   }
@@ -357,6 +367,9 @@ function createTwitchChat({
     refreshChannelEmotes,
     refreshChannelEmotesThrottled,
     sendTwitchChatMessage,
+    flushLiveActivity: liveActivityBuffer.flush,
+    stopLiveActivityBuffer: liveActivityBuffer.stop,
+    getPendingLiveActivity: liveActivityBuffer.pendingSnapshot,
   };
 }
 
