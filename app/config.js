@@ -81,6 +81,19 @@ const config = {
       "ma carte",
   },
 
+  githubActions: {
+    enabled: boolEnv("GITHUB_ACTIONS_ON_LIVE_END", true),
+    token: process.env.GITHUB_ACTIONS_TOKEN || "",
+    owner: process.env.GITHUB_ACTIONS_OWNER || "Erwayr",
+    repo: process.env.GITHUB_ACTIONS_REPO || "ErwayrWebSite",
+    ref: process.env.GITHUB_ACTIONS_REF || "master",
+    liveEndWorkflowId:
+      process.env.GITHUB_ACTIONS_LIVE_END_WORKFLOW || "twitch-to-firebase.yml",
+    liveEndInputs: {
+      run_cards_after: process.env.GITHUB_ACTIONS_RUN_CARDS_AFTER || "true",
+    },
+  },
+
   timezone: process.env.TIMEZONE || "Europe/Warsaw",
 
   birthdays: {

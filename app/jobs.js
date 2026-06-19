@@ -24,6 +24,7 @@ function createJobs({
   twitchChat,
   getCommunityLevelConfig,
   cardNotifications,
+  githubActions,
 }) {
   let announcedStreamId = null;
   let announcedStartedAt = null;
@@ -150,6 +151,22 @@ function createJobs({
       console.log(`[community-level] ranks refreshed (${result.updated} profils)`);
     }
     return result;
+  }
+
+  async function dispatchLiveEndGithubActions(streamId) {
+    if (typeof githubActions?.dispatchLiveEndWorkflows !== "function") {
+      return null;
+    }
+
+    try {
+      return await githubActions.dispatchLiveEndWorkflows({ streamId });
+    } catch (e) {
+      console.error(
+        "[github-actions] live-end dispatch failed:",
+        e?.message || e,
+      );
+      return null;
+    }
   }
 
   async function assignOldMemberCards() {
@@ -433,6 +450,8 @@ function createJobs({
             e?.message || e,
           ),
         );
+
+        await dispatchLiveEndGithubActions(endedStreamId);
       }
     });
 

@@ -29,6 +29,7 @@ const {
 const { createFirebase } = require("./app/firebase");
 const { createFirestoreListeners } = require("./app/firestoreListeners");
 const { createAuthHealth, mountHttpRoutes } = require("./app/httpRoutes");
+const { createGithubActionsDispatcher } = require("./app/githubActions");
 const { createJobs } = require("./app/jobs");
 const { createTwitchChat } = require("./app/twitchChat");
 const { createTwitchEventSub } = require("./app/twitchEventSub");
@@ -163,6 +164,8 @@ const authHealth = createAuthHealth({
   postDiscord,
 });
 
+const githubActions = createGithubActionsDispatcher({ config });
+
 const twitchEventSub = createTwitchEventSub({
   db,
   client,
@@ -188,6 +191,7 @@ const jobs = createJobs({
   twitchChat,
   getCommunityLevelConfig,
   cardNotifications,
+  githubActions,
 });
 
 const firestoreListeners = createFirestoreListeners({
