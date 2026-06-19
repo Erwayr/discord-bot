@@ -680,6 +680,21 @@ function applyCommunityLevelUptime({
   };
 }
 
+function needsCommunityRankPatch(data = {}, rank, rankName, config = {}) {
+  if (!isObject(data.communityLevel)) return true;
+
+  const community = data.communityLevel;
+  if (toInt(community.rank, 0) !== rank) return true;
+  if (firstText(community.rankName) !== rankName) return true;
+
+  if (config.legacyDoubleWrite) {
+    if (toInt(data.wizebotRank, 0) !== rank) return true;
+    if (firstText(data.wizebotRankName) !== rankName) return true;
+  }
+
+  return false;
+}
+
 async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
   const config = resolveCommunityLevelConfig(rawConfig);
   if (!config.enabled) return { updated: 0, skipped: true };
@@ -722,6 +737,10 @@ async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
     const row = rows[i];
     const patch = {};
     const rankName = titleForLevel(row.community.level, config.rankTitles);
+    if (!needsCommunityRankPatch(row.data, rank, rankName, config)) {
+      continue;
+    }
+
     if (isObject(row.data.communityLevel)) {
       patch["communityLevel.rank"] = rank;
       patch["communityLevel.rankName"] = rankName;
