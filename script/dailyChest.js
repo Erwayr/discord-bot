@@ -511,7 +511,6 @@ function dailyChestStatsText(result) {
       result?.rewardResult?.totalOpenings ||
       stats.trackedOpenings,
   );
-  const trackedOpenings = toSafeCount(stats.trackedOpenings);
   const rareOpenings = toSafeCount(stats.byTier?.rare);
   const legendaryOpenings = toSafeCount(stats.byTier?.legendary);
   const totals =
@@ -532,7 +531,6 @@ function dailyChestStatsText(result) {
 
   return (
     `${REWARD_ICONS.stats} Ouverts: ${totalOpenings}` +
-    ` | Suivis: ${trackedOpenings}` +
     ` | Rares: ${rareOpenings}` +
     ` | Legendaires: ${legendaryOpenings}` +
     (gainParts.length ? ` | Total: ${gainParts.join(", ")}` : "")

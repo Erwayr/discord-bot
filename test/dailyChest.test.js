@@ -671,7 +671,7 @@ test("daily chest stats do not backfill existing total openings", async () => {
   assert.equal(doc.dailyChest.stats.trackedOpenings, 1);
   assert.equal(doc.dailyChest.stats.startedDay, "2026-06-16");
   assert.match(embed.description, /Ouverts: 6/);
-  assert.match(embed.description, /Suivis: 1/);
+  assert.doesNotMatch(embed.description, /Suivis:/);
 });
 
 test("daily chest real embed includes compact user stats", () => {
@@ -693,7 +693,7 @@ test("daily chest real embed includes compact user stats", () => {
   ).toJSON();
 
   assert.match(embed.description, /Ouverts: 12/);
-  assert.match(embed.description, /Suivis: 4/);
+  assert.doesNotMatch(embed.description, /Suivis:/);
   assert.match(embed.description, /Rares: 1/);
   assert.match(embed.description, /Legendaires: 1/);
   assert.match(embed.description, /287 \u2666\uFE0F POPS/);
