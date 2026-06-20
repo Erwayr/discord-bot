@@ -911,6 +911,50 @@ test("daily chest does not double credit the same day", async () => {
   assert.equal(db.calls.txSets.length, 0);
 });
 
+test("daily chest slash command shows remaining time when already opened", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower(),
+  });
+
+  await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "pops", amount: 37 },
+  });
+  db.resetCalls();
+
+  const edits = [];
+  const interaction = {
+    channelId: "1516374903203565621",
+    user: { id: "111111111111111111" },
+    replied: false,
+    deferred: false,
+    async deferReply(payload) {
+      this.deferred = true;
+      this.deferPayload = payload;
+    },
+    async editReply(payload) {
+      edits.push(payload);
+    },
+  };
+
+  const result = await handleDailyChestInteraction(
+    interaction,
+    db,
+    BASE_CONFIG,
+    { now: NOW },
+  );
+
+  assert.equal(result.status, "already_opened");
+  assert.equal(interaction.deferPayload.ephemeral, false);
+  assert.equal(edits.length, 1);
+  assert.match(String(edits[0]), /Coffre deja ouvert aujourd'hui/);
+  assert.match(String(edits[0]), /Alice, reviens dans 14 h\./);
+  assert.equal(db.calls.txUpdates.length, 0);
+  assert.equal(db.calls.txSets.length, 0);
+});
+
 test("daily chest EXP reward recalculates community level", async () => {
   const db = new FakeDb({
     "followers_all_time/alice": follower({

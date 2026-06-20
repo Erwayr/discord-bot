@@ -10,6 +10,9 @@ const DAILY_CHEST_TRANSACTION_SOURCE = "discord_daily_chest";
 const DEFAULT_TIMEZONE = "Europe/Warsaw";
 const DEFAULT_ANIMATION_DELAY_MS = 650;
 const DEFAULT_DAILY_CHEST_CHANNEL_ID = "1516374903203565621";
+const MS_PER_SECOND = 1000;
+const MS_PER_MINUTE = 60 * MS_PER_SECOND;
+const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 
 const REWARD_ICONS = Object.freeze({
   pops: "\u2666\uFE0F",
@@ -141,6 +144,50 @@ function dayKeyInTimezone(date, timeZone = DEFAULT_TIMEZONE) {
 function monthKeyInTimezone(date, timeZone = DEFAULT_TIMEZONE) {
   const parts = datePartsInTimezone(date, timeZone);
   return `${parts.year}-${parts.month}`;
+}
+
+function nextDailyChestResetAt(date, timeZone = DEFAULT_TIMEZONE) {
+  const now = date instanceof Date ? date : new Date(date);
+  const nowMs = now.getTime();
+  if (!Number.isFinite(nowMs)) return new Date(Date.now() + MS_PER_HOUR);
+
+  const currentDayKey = dayKeyInTimezone(now, timeZone);
+  let low = nowMs;
+  let high = nowMs + MS_PER_HOUR;
+
+  while (dayKeyInTimezone(new Date(high), timeZone) === currentDayKey) {
+    low = high;
+    high += MS_PER_HOUR;
+  }
+
+  while (high - low > MS_PER_SECOND) {
+    const mid = Math.floor((low + high) / 2);
+    if (dayKeyInTimezone(new Date(mid), timeZone) === currentDayKey) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  return new Date(high);
+}
+
+function formatDailyChestResetRemaining(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(Number(ms) / MS_PER_SECOND));
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return "quelques secondes";
+  }
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+
+  if (hours > 0) parts.push(`${hours} h`);
+  if (minutes > 0) parts.push(`${minutes} min`);
+  if (!parts.length && seconds > 0) parts.push(`${seconds} s`);
+
+  return parts.join(" ") || "quelques secondes";
 }
 
 function normalizePopsWallet(source = {}) {
@@ -860,6 +907,9 @@ async function openDailyChest(
   const timeZone = config.timezone || DEFAULT_TIMEZONE;
   const dayKey = dayKeyInTimezone(now, timeZone);
   const monthKey = monthKeyInTimezone(now, timeZone);
+  const resetAt = nextDailyChestResetAt(now, timeZone);
+  const resetRemainingMs = Math.max(0, resetAt.getTime() - now.getTime());
+  const resetRemainingText = formatDailyChestResetRemaining(resetRemainingMs);
   if (!profile) {
     return { status: "profile_missing", dayKey, monthKey };
   }
@@ -899,6 +949,9 @@ async function openDailyChest(
         claim,
         reward: claim.reward || null,
         rewards: rewardsOrSingle(claim.rewards, claim.reward),
+        resetAt,
+        resetRemainingMs,
+        resetRemainingText,
       };
       return;
     }
@@ -1119,9 +1172,12 @@ function buildDailyChestEmbed(result, user) {
 
 function alreadyOpenedMessage(result) {
   const displayName = result?.profile?.displayName || "profil";
+  const resetRemainingText =
+    result?.resetRemainingText ||
+    formatDailyChestResetRemaining(result?.resetRemainingMs);
   return (
     "\u23F3 **Coffre deja ouvert aujourd'hui.**\n" +
-    `${displayName}, reviens apres le reset quotidien.`
+    `${displayName}, reviens dans ${resetRemainingText}.`
   );
 }
 
@@ -1129,7 +1185,7 @@ async function handleDailyChestInteraction(
   interaction,
   db,
   config = {},
-  { getCommunityLevelConfig, rng = Math.random, animationDelayMs } = {},
+  { getCommunityLevelConfig, rng = Math.random, animationDelayMs, now } = {},
 ) {
   try {
     if (!isDailyChestAllowedChannel(interaction, config)) {
@@ -1145,6 +1201,7 @@ async function handleDailyChestInteraction(
       discordId: interaction.user?.id,
       config,
       getCommunityLevelConfig,
+      now,
       rng,
     });
 
