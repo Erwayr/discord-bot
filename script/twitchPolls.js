@@ -246,27 +246,21 @@ function pollFailureMessage(code) {
   }
 }
 
-function buildPollFailureChatMessage(redemption, code, { refunded = true } = {}) {
+function buildPollFailureChatMessage(redemption, code) {
   const login = String(redemption?.user_login || redemption?.user_name || "")
     .trim()
     .replace(/^@+/, "");
   const mention = login ? `@${login} ` : "";
-  const suffix = refunded
-    ? "Les points sont rembourses."
-    : "Un modo doit verifier le remboursement Twitch.";
-  return `${mention}${pollFailureMessage(code)} ${suffix}`;
+  return `${mention}${pollFailureMessage(code)} Aucun sondage n'a ete lance.`;
 }
 
 async function sendFailureChatMessage({
   redemption,
   code,
   sendTwitchChatMessage,
-  refunded = true,
 }) {
   if (typeof sendTwitchChatMessage !== "function") return false;
-  await sendTwitchChatMessage(
-    buildPollFailureChatMessage(redemption, code, { refunded }),
-  );
+  await sendTwitchChatMessage(buildPollFailureChatMessage(redemption, code));
   return true;
 }
 
@@ -277,7 +271,6 @@ async function processTwitchPollRedemption({
   redemption,
   livePresenceTick,
   sendTwitchChatMessage,
-  updateRedemptionStatusFn,
   createPollFn = createTwitchPoll,
 }) {
   if (!redemption?.id || !redemption?.reward?.id) {
@@ -286,45 +279,24 @@ async function processTwitchPollRedemption({
   if (!tokenManager?.getAccessToken) {
     throw new Error("tokenManager missing");
   }
-  if (typeof updateRedemptionStatusFn !== "function") {
-    throw new Error("updateRedemptionStatusFn missing");
-  }
 
   const pollConfig = config.twitchPoll || {};
   const streamState = livePresenceTick?.getLiveStreamState?.() || {};
   const parsed = parseTwitchPollInput(redemption.user_input);
 
-  let status = "CANCELED";
+  let status = "REJECTED";
   let reason = null;
   let poll = null;
   let accessToken = null;
-  let statusUpdateError = null;
 
-  const setRedemptionStatus = async (nextStatus) => {
-    accessToken = accessToken || (await tokenManager.getAccessToken());
-    await updateRedemptionStatusFn({
-      broadcasterId: config.twitch.channelId,
-      rewardId: redemption.reward.id,
-      redemptionIds: [redemption.id],
-      status: nextStatus,
-      accessToken,
-    });
-  };
-
-  const cancel = async (code) => {
-    status = "CANCELED";
+  const reject = async (code) => {
+    status = "REJECTED";
     reason = code;
-    try {
-      await setRedemptionStatus("CANCELED");
-    } catch (e) {
-      statusUpdateError = e;
-    }
     try {
       await sendFailureChatMessage({
         redemption,
         code,
         sendTwitchChatMessage,
-        refunded: !statusUpdateError,
       });
     } catch (e) {
       console.warn("poll failure chat message failed:", e?.message || e);
@@ -333,13 +305,12 @@ async function processTwitchPollRedemption({
       handled: true,
       status,
       reason,
-      statusUpdateError,
       poll,
     };
   };
 
-  if (!streamState.streamId) return cancel("not_live");
-  if (!parsed.ok) return cancel(parsed.code);
+  if (!streamState.streamId) return reject("not_live");
+  if (!parsed.ok) return reject(parsed.code);
 
   try {
     await assertManagePollsScope({
@@ -358,20 +329,13 @@ async function processTwitchPollRedemption({
       pollsUrl: config.urls?.helixPolls,
     });
   } catch (e) {
-    return cancel(classifyTwitchPollError(e));
-  }
-
-  try {
-    await setRedemptionStatus("FULFILLED");
-  } catch (e) {
-    statusUpdateError = e;
+    return reject(classifyTwitchPollError(e));
   }
 
   return {
     handled: true,
-    status: "FULFILLED",
+    status: "CREATED",
     reason: null,
-    statusUpdateError,
     poll,
   };
 }

@@ -185,8 +185,7 @@ test("twitch poll parser rejects duplicate choices after normalization", () => {
   assert.equal(parsed.code, "duplicate_choice");
 });
 
-test("poll redemption creates a Twitch poll and fulfills the redemption", async () => {
-  const updates = [];
+test("poll redemption creates a Twitch poll without updating redemption status", async () => {
   const createdPolls = [];
 
   const result = await processTwitchPollRedemption({
@@ -198,18 +197,14 @@ test("poll redemption creates a Twitch poll and fulfills the redemption", async 
     sendTwitchChatMessage: async () => {
       throw new Error("chat should not be used on success");
     },
-    updateRedemptionStatusFn: async (payload) => updates.push(payload),
     createPollFn: async (payload) => {
       createdPolls.push(payload);
       return { id: "poll-1" };
     },
   });
 
-  assert.equal(result.status, "FULFILLED");
+  assert.equal(result.status, "CREATED");
   assert.equal(result.poll.id, "poll-1");
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].status, "FULFILLED");
-  assert.equal(updates[0].accessToken, "user-token");
   assert.equal(createdPolls.length, 1);
   assert.equal(createdPolls[0].title, "Va-t-il rager ?");
   assert.deepEqual(
@@ -218,8 +213,7 @@ test("poll redemption creates a Twitch poll and fulfills the redemption", async 
   );
 });
 
-test("poll redemption cancels invalid input", async () => {
-  const updates = [];
+test("poll redemption rejects invalid input without canceling redemption", async () => {
   const chatMessages = [];
 
   const result = await processTwitchPollRedemption({
@@ -229,22 +223,19 @@ test("poll redemption cancels invalid input", async () => {
     redemption: fakePollRedemption("Va-t-il rager oui/non"),
     livePresenceTick: fakeLivePresenceTick(),
     sendTwitchChatMessage: async (message) => chatMessages.push(message),
-    updateRedemptionStatusFn: async (payload) => updates.push(payload),
     createPollFn: async () => {
       throw new Error("createPollFn should not be called");
     },
   });
 
-  assert.equal(result.status, "CANCELED");
+  assert.equal(result.status, "REJECTED");
   assert.equal(result.reason, "missing_question_mark");
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].status, "CANCELED");
   assert.equal(chatMessages.length, 1);
   assert.match(chatMessages[0], /Format attendu/);
+  assert.doesNotMatch(chatMessages[0], /rembours/i);
 });
 
-test("poll redemption cancels when Twitch reports an active poll", async () => {
-  const updates = [];
+test("poll redemption rejects when Twitch reports an active poll", async () => {
   const chatMessages = [];
   const activePollError = new Error("active poll");
   activePollError.response = {
@@ -259,15 +250,12 @@ test("poll redemption cancels when Twitch reports an active poll", async () => {
     redemption: fakePollRedemption(),
     livePresenceTick: fakeLivePresenceTick(),
     sendTwitchChatMessage: async (message) => chatMessages.push(message),
-    updateRedemptionStatusFn: async (payload) => updates.push(payload),
     createPollFn: async () => {
       throw activePollError;
     },
   });
 
-  assert.equal(result.status, "CANCELED");
+  assert.equal(result.status, "REJECTED");
   assert.equal(result.reason, "poll_already_active");
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].status, "CANCELED");
   assert.match(chatMessages[0], /deja actif/);
 });

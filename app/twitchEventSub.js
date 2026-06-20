@@ -261,17 +261,8 @@ function createTwitchEventSub({
             redemption: r,
             livePresenceTick,
             sendTwitchChatMessage,
-            updateRedemptionStatusFn: updateRedemptionStatus,
           });
-          shouldNoteChannelPoints = result.status === "FULFILLED";
-          if (result.statusUpdateError) {
-            console.warn(
-              "poll redemption status update failed:",
-              result.statusUpdateError?.response?.data ||
-                result.statusUpdateError?.message ||
-                result.statusUpdateError,
-            );
-          }
+          shouldNoteChannelPoints = result.status === "CREATED";
           console.log(
             `[poll] redemption handled user=${r.user_login} status=${result.status} reason=${result.reason || "-"} poll=${result.poll?.id || "-"}`,
           );
