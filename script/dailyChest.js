@@ -515,26 +515,35 @@ function dailyChestStatsText(result) {
   const legendaryOpenings = toSafeCount(stats.byTier?.legendary);
   const totals =
     stats.totals && typeof stats.totals === "object" ? stats.totals : {};
-  const gainParts = [];
+  const lines = [
+    "```text",
+    panelBorder("-"),
+    fullPanelRow("BILAN COFFRES"),
+    panelDivider("-"),
+    splitPanelRow("Ouverts", totalOpenings),
+    splitPanelRow("Rares", rareOpenings),
+    splitPanelRow("Legendaires", legendaryOpenings),
+    splitPanelRow(
+      "Total POPS",
+      `${toSafeCount(totals.pops)} ${REWARD_ICONS.pops}`,
+    ),
+    splitPanelRow(
+      "Total EXP",
+      `${toSafeCount(totals.xp)} ${REWARD_ICONS.exp}`,
+    ),
+  ];
 
-  if (toSafeCount(totals.pops) > 0) {
-    gainParts.push(`${toSafeCount(totals.pops)} ${REWARD_ICONS.pops} POPS`);
-  }
-  if (toSafeCount(totals.xp) > 0) {
-    gainParts.push(`${toSafeCount(totals.xp)} ${REWARD_ICONS.exp} EXP`);
-  }
   if (toSafeCount(totals.questBonusPct) > 0) {
-    gainParts.push(
-      `+${toSafeCount(totals.questBonusPct)}% ${REWARD_ICONS.quest_bonus}`,
+    lines.push(
+      splitPanelRow(
+        "Total bonus",
+        `+${toSafeCount(totals.questBonusPct)}% ${REWARD_ICONS.quest_bonus}`,
+      ),
     );
   }
 
-  return (
-    `${REWARD_ICONS.stats} Ouverts: ${totalOpenings}` +
-    ` | Rares: ${rareOpenings}` +
-    ` | Legendaires: ${legendaryOpenings}` +
-    (gainParts.length ? ` | Total: ${gainParts.join(", ")}` : "")
-  );
+  lines.push(panelBorder("-"), "```");
+  return lines.join("\n");
 }
 
 function dailyChestStatsRewardText(rewards, reward) {
@@ -560,14 +569,14 @@ function buildDailyChestStatsEmbed(result, user) {
     .setTitle(`${REWARD_ICONS.stats} Stats coffre de ${displayName}`)
     .addFields(
       {
-        name: "Ouvertures",
+        name: `${REWARD_ICONS.stats} Ouvertures`,
         value:
           `Historique: **${totalOpenings}**\n` +
           `Suivies: **${toSafeCount(stats.trackedOpenings)}**`,
         inline: true,
       },
       {
-        name: "Coffres speciaux",
+        name: `${REWARD_ICONS.chest} Coffres speciaux`,
         value:
           `Rares: **${toSafeCount(stats.byTier?.rare)}**\n` +
           `Legendaires: **${toSafeCount(stats.byTier?.legendary)}**\n` +
@@ -575,7 +584,7 @@ function buildDailyChestStatsEmbed(result, user) {
         inline: true,
       },
       {
-        name: "Gains cumules",
+        name: `${REWARD_ICONS.pops} Gains cumules`,
         value:
           `${toSafeCount(totals.pops)} ${REWARD_ICONS.pops} POPS\n` +
           `${toSafeCount(totals.xp)} ${REWARD_ICONS.exp} EXP\n` +
@@ -583,7 +592,7 @@ function buildDailyChestStatsEmbed(result, user) {
         inline: false,
       },
       {
-        name: "Dernier coffre",
+        name: `${REWARD_ICONS.unlock} Dernier coffre`,
         value: lastOpenedDay
           ? `Jour: **${lastOpenedDay}**\nGain:\n${lastRewardText}`
           : "Aucun coffre enregistre.",
@@ -611,7 +620,7 @@ function rewardTierLabel(reward) {
 }
 
 function padPanelCell(value, width) {
-  const text = String(value || "");
+  const text = value == null ? "" : String(value);
   if (text.length >= width) return text;
   return text + " ".repeat(width - text.length);
 }

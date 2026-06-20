@@ -18,6 +18,13 @@ const {
   slashCommandPayloads,
 } = require("../app/slashCommands");
 
+const DAILY_CHEST_STATS_FIELD_NAMES = Object.freeze({
+  openings: "\uD83D\uDCCA Ouvertures",
+  special: "\uD83C\uDF81 Coffres speciaux",
+  gains: "\u2666\uFE0F Gains cumules",
+  last: "\uD83D\uDD13 Dernier coffre",
+});
+
 function clone(value) {
   if (value == null) return value;
   return JSON.parse(JSON.stringify(value));
@@ -474,19 +481,46 @@ test("daily chest stats slash command renders current member stats without write
   assert.equal(db.calls.txUpdates.length, 0);
   assert.equal(db.calls.txSets.length, 0);
   assert.match(finalEmbed.title, /Stats coffre de Alice/);
-  assert.match(embedField(finalEmbed, "Ouvertures").value, /Historique: \*\*12\*\*/);
-  assert.match(embedField(finalEmbed, "Ouvertures").value, /Suivies: \*\*4\*\*/);
-  assert.match(embedField(finalEmbed, "Coffres speciaux").value, /Rares: \*\*1\*\*/);
   assert.match(
-    embedField(finalEmbed, "Coffres speciaux").value,
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.openings).value,
+    /Historique: \*\*12\*\*/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.openings).value,
+    /Suivies: \*\*4\*\*/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.special).value,
+    /Rares: \*\*1\*\*/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.special).value,
     /Legendaires: \*\*1\*\*/,
   );
-  assert.match(embedField(finalEmbed, "Gains cumules").value, /287 \u2666\uFE0F POPS/);
-  assert.match(embedField(finalEmbed, "Gains cumules").value, /200 \u2728 EXP/);
-  assert.match(embedField(finalEmbed, "Gains cumules").value, /\+11% \uD83C\uDF40/);
-  assert.match(embedField(finalEmbed, "Dernier coffre").value, /2026-06-16/);
-  assert.match(embedField(finalEmbed, "Dernier coffre").value, /\+150/);
-  assert.match(embedField(finalEmbed, "Dernier coffre").value, /\+1%/);
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.gains).value,
+    /287 \u2666\uFE0F POPS/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.gains).value,
+    /200 \u2728 EXP/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.gains).value,
+    /\+11% \uD83C\uDF40/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.last).value,
+    /2026-06-16/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.last).value,
+    /\+150/,
+  );
+  assert.match(
+    embedField(finalEmbed, DAILY_CHEST_STATS_FIELD_NAMES.last).value,
+    /\+1%/,
+  );
 });
 
 test("daily chest stats slash command can target another member", async () => {
@@ -552,17 +586,38 @@ test("daily chest stats embed supports profiles without tracked stats", () => {
   ).toJSON();
 
   assert.match(embed.title, /Stats coffre de Alice/);
-  assert.match(embedField(embed, "Ouvertures").value, /Historique: \*\*3\*\*/);
-  assert.match(embedField(embed, "Ouvertures").value, /Suivies: \*\*0\*\*/);
-  assert.match(embedField(embed, "Coffres speciaux").value, /Rares: \*\*0\*\*/);
   assert.match(
-    embedField(embed, "Coffres speciaux").value,
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.openings).value,
+    /Historique: \*\*3\*\*/,
+  );
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.openings).value,
+    /Suivies: \*\*0\*\*/,
+  );
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.special).value,
+    /Rares: \*\*0\*\*/,
+  );
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.special).value,
     /Legendaires: \*\*0\*\*/,
   );
-  assert.match(embedField(embed, "Gains cumules").value, /0 \u2666\uFE0F POPS/);
-  assert.match(embedField(embed, "Gains cumules").value, /0 \u2728 EXP/);
-  assert.match(embedField(embed, "Gains cumules").value, /\+0% \uD83C\uDF40/);
-  assert.match(embedField(embed, "Dernier coffre").value, /\+5 \u2666\uFE0F POPS/);
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.gains).value,
+    /0 \u2666\uFE0F POPS/,
+  );
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.gains).value,
+    /0 \u2728 EXP/,
+  );
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.gains).value,
+    /\+0% \uD83C\uDF40/,
+  );
+  assert.match(
+    embedField(embed, DAILY_CHEST_STATS_FIELD_NAMES.last).value,
+    /\+5 \u2666\uFE0F POPS/,
+  );
 });
 
 test("daily chest credits POPS and writes an idempotent ledger entry", async () => {
@@ -670,8 +725,13 @@ test("daily chest stats do not backfill existing total openings", async () => {
   assert.equal(doc.dailyChest.totalOpenings, 6);
   assert.equal(doc.dailyChest.stats.trackedOpenings, 1);
   assert.equal(doc.dailyChest.stats.startedDay, "2026-06-16");
-  assert.match(embed.description, /Ouverts: 6/);
-  assert.doesNotMatch(embed.description, /Suivis:/);
+  assert.match(embed.description, /BILAN COFFRES/);
+  assert.match(embed.description, /\| Ouverts\s+\| 6\s+\|/);
+  assert.match(embed.description, /\| Rares\s+\| 0\s+\|/);
+  assert.match(embed.description, /\| Legendaires\s+\| 0\s+\|/);
+  assert.match(embed.description, /\| Total POPS\s+\| 0 \u2666\uFE0F\s+\|/);
+  assert.match(embed.description, /\| Total EXP\s+\| 0 \u2728\s+\|/);
+  assert.doesNotMatch(embed.description, /Suivis/);
 });
 
 test("daily chest real embed includes compact user stats", () => {
@@ -692,12 +752,13 @@ test("daily chest real embed includes compact user stats", () => {
     { username: "Alice" },
   ).toJSON();
 
-  assert.match(embed.description, /Ouverts: 12/);
-  assert.doesNotMatch(embed.description, /Suivis:/);
-  assert.match(embed.description, /Rares: 1/);
-  assert.match(embed.description, /Legendaires: 1/);
-  assert.match(embed.description, /287 \u2666\uFE0F POPS/);
-  assert.match(embed.description, /200 \u2728 EXP/);
+  assert.match(embed.description, /BILAN COFFRES/);
+  assert.match(embed.description, /\| Ouverts\s+\| 12\s+\|/);
+  assert.doesNotMatch(embed.description, /Suivis/);
+  assert.match(embed.description, /\| Rares\s+\| 1\s+\|/);
+  assert.match(embed.description, /\| Legendaires\s+\| 1\s+\|/);
+  assert.match(embed.description, /\| Total POPS\s+\| 287 \u2666\uFE0F\s+\|/);
+  assert.match(embed.description, /\| Total EXP\s+\| 200 \u2728\s+\|/);
   assert.match(embed.description, /\+11% \uD83C\uDF40/);
   assert.equal(embed.footer, undefined);
 });
@@ -1219,8 +1280,9 @@ test("daily chest test message renders preview without Firestore dependencies", 
   assert.doesNotMatch(finalEmbed.description, /RARET/);
   assert.doesNotMatch(finalEmbed.description, /Commun/);
   assert.doesNotMatch(finalEmbed.description, /JACKPOT/);
-  assert.doesNotMatch(finalEmbed.description, /Ouverts:/);
-  assert.doesNotMatch(finalEmbed.description, /Suivis:/);
+  assert.doesNotMatch(finalEmbed.description, /BILAN COFFRES/);
+  assert.doesNotMatch(finalEmbed.description, /Ouverts/);
+  assert.doesNotMatch(finalEmbed.description, /Suivis/);
   assert.equal((finalEmbed.fields || []).length, 0);
   assert.ok(sentMessages[0].edits.length >= 5);
 });
