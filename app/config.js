@@ -59,6 +59,7 @@ const config = {
     helixChatters: "https://api.twitch.tv/helix/chat/chatters",
     helixChatMessages: "https://api.twitch.tv/helix/chat/messages",
     helixEmotes: "https://api.twitch.tv/helix/chat/emotes",
+    helixPolls: "https://api.twitch.tv/helix/polls",
   },
 
   firestore: {
@@ -79,6 +80,19 @@ const config = {
       process.env.OVERLAY_CARD_REWARD_TITLE ||
       process.env.MA_CARTE_REWARD_TITLE ||
       "ma carte",
+  },
+
+  twitchPoll: {
+    rewardId: process.env.POLL_REWARD_ID || "",
+    rewardTitle: process.env.POLL_REWARD_TITLE || "Faire un sondage",
+    durationSeconds: Math.max(
+      15,
+      Math.min(1800, numberEnv("TWITCH_POLL_DURATION_SECONDS", 300)),
+    ),
+    channelPointsPerExtraVote: Math.max(
+      0,
+      Math.floor(numberEnv("TWITCH_POLL_CHANNEL_POINTS_PER_EXTRA_VOTE", 0)),
+    ),
   },
 
   githubActions: {

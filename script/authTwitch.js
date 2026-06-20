@@ -7,6 +7,8 @@ const { FieldValue } = require("firebase-admin/firestore");
 const CORE_SCOPES = [
   "channel:manage:redemptions",
   "channel:read:redemptions",
+  "channel:manage:polls",
+  "channel:read:polls",
   "channel:read:subscriptions",
   "chat:read",
   "chat:edit",

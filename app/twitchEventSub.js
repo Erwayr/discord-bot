@@ -11,6 +11,10 @@ const {
 const {
   buildCommunityLevelUpMessage,
 } = require("../script/twitchLevelAnnouncements");
+const {
+  isTwitchPollRedemption,
+  processTwitchPollRedemption,
+} = require("../script/twitchPolls");
 
 function normalizeRewardText(value) {
   return String(value || "")
@@ -241,10 +245,44 @@ function createTwitchEventSub({
       const isTicket = config.twitch.ticketRewardId
         ? r.reward?.id === config.twitch.ticketRewardId
         : /ticket d'or/i.test(r.reward?.title || "");
+      const isPoll = isTwitchPollRedemption(r, config.twitchPoll);
+      let shouldNoteChannelPoints = true;
 
       console.log(
-        `🎯 Redemption: user=${r.user_login} rewardId=${r.reward?.id} title="${r.reward?.title}" isTicket=${isTicket}`,
+        `🎯 Redemption: user=${r.user_login} rewardId=${r.reward?.id} title="${r.reward?.title}" isTicket=${isTicket} isPoll=${isPoll}`,
       );
+
+      if (isPoll) {
+        try {
+          const result = await processTwitchPollRedemption({
+            db,
+            config,
+            tokenManager,
+            redemption: r,
+            livePresenceTick,
+            sendTwitchChatMessage,
+            updateRedemptionStatusFn: updateRedemptionStatus,
+          });
+          shouldNoteChannelPoints = result.status === "FULFILLED";
+          if (result.statusUpdateError) {
+            console.warn(
+              "poll redemption status update failed:",
+              result.statusUpdateError?.response?.data ||
+                result.statusUpdateError?.message ||
+                result.statusUpdateError,
+            );
+          }
+          console.log(
+            `[poll] redemption handled user=${r.user_login} status=${result.status} reason=${result.reason || "-"} poll=${result.poll?.id || "-"}`,
+          );
+        } catch (e) {
+          shouldNoteChannelPoints = false;
+          console.error(
+            "poll redemption error:",
+            e?.response?.data || e?.message || e,
+          );
+        }
+      }
 
       try {
         await publishOverlayCardRedemptionEvent(r);
@@ -284,6 +322,12 @@ function createTwitchEventSub({
       }
 
       try {
+        if (!shouldNoteChannelPoints) {
+          console.log(
+            `[poll] ChannelPoints skipped (invalid poll user=${r.user_login})`,
+          );
+          return res.sendStatus(200);
+        }
         const login = (r.user_login || r.user_name || "").toLowerCase();
         const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
         if (login && streamId) {
