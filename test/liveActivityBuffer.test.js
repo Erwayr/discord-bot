@@ -1,6 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { test } = require("node:test");
 
 const {
@@ -108,6 +111,7 @@ test("timer flush uses the 20 minute default", async () => {
     },
     setIntervalFn: scheduler.setIntervalFn,
     clearIntervalFn: scheduler.clearIntervalFn,
+    flushMode: "interval",
     now: () => 1000,
   });
 
@@ -123,6 +127,104 @@ test("timer flush uses the 20 minute default", async () => {
   assert.equal(calls.length, 1);
   buffer.stop();
   assert.equal(scheduler.intervals[0].cleared, true);
+});
+
+test("live-end mode disables the timer by default", () => {
+  const scheduler = createFakeScheduler();
+  const buffer = createLiveActivityBuffer({
+    questStore: {
+      noteLiveActivity: async () => ({ applied: true }),
+    },
+    setIntervalFn: scheduler.setIntervalFn,
+    clearIntervalFn: scheduler.clearIntervalFn,
+  });
+
+  buffer.noteChatMessage("alice", "stream-1");
+  buffer.start();
+
+  assert.equal(scheduler.intervals.length, 0);
+  assert.equal(buffer.pendingSize(), 1);
+});
+
+test("pending chat is restored from the local journal", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "live-activity-"));
+  const calls = [];
+
+  try {
+    const first = createLiveActivityBuffer({
+      questStore: {
+        noteLiveActivity: async (...args) => {
+          calls.push(args);
+          return { applied: true };
+        },
+      },
+      persistenceDir: dir,
+      now: () => 1234,
+    });
+    first.noteChatMessage("Alice", "stream-1", {
+      displayName: "Alice",
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    });
+
+    const restored = createLiveActivityBuffer({
+      questStore: {
+        noteLiveActivity: async (...args) => {
+          calls.push(args);
+          return { applied: true };
+        },
+      },
+      persistenceDir: dir,
+      now: () => 2000,
+      logger: { log() {}, warn() {} },
+    });
+
+    assert.equal(restored.pendingSize(), 1);
+    const result = await restored.flush({ reason: "manual" });
+    assert.equal(result.flushed, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "alice");
+    assert.equal(calls[0][2].chatEvents.length, 1);
+    assert.match(calls[0][2].flushId, /^live-activity:stream-1:alice:/);
+    assert.equal(fs.existsSync(path.join(dir, "pending.jsonl")), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("merged uptime keeps the journaled chat segment flush id", async () => {
+  const calls = [];
+  const buffer = createLiveActivityBuffer({
+    questStore: {
+      noteLiveActivity: async (...args) => {
+        calls.push(args);
+        return { applied: true };
+      },
+    },
+    now: () => 1000,
+  });
+
+  buffer.noteChatMessage("alice", "stream-1");
+  const segmentId = buffer.pendingSnapshot()[0].segmentId;
+  await buffer.flush({
+    reason: "live-end",
+    uptimeEntries: [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        firstSeenAtMs: 1000,
+        lastSeenAtMs: 61_000,
+        accumulatedMs: 60_000,
+      },
+    ],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0][2].flushId,
+    `live-activity:stream-1:alice:${segmentId}`,
+  );
+  assert.equal(calls[0][2].chatEvents.length, 1);
+  assert.equal(calls[0][2].uptimeMs, 60_000);
 });
 
 test("level-up notifications are emitted after flush", async () => {

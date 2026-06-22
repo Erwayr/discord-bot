@@ -698,3 +698,84 @@ test("batched live activity groups emotes with chat in one transaction", async (
   assert.equal(stream.emote.count, 7);
   assert.equal(stream.emote.used, true);
 });
+
+test("batched live activity replay with the same flush id is ignored", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    communityLevel: {
+      chatCooldownMs: 0,
+    },
+  });
+  const startedAt = new Date("2026-05-16T10:00:00.000Z");
+  const payload = {
+    startedAt,
+    chatEvents: [
+      { atMs: Date.parse("2026-05-16T11:00:00.000Z"), count: 1 },
+      { atMs: Date.parse("2026-05-16T11:01:00.000Z"), count: 1 },
+    ],
+    emoteCount: 2,
+    flushId: "segment-1",
+  };
+
+  const first = await store.noteLiveActivity("alice", "stream-1", payload);
+  const replay = await store.noteLiveActivity("alice", "stream-1", payload);
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(first.applied, true);
+  assert.equal(replay.reason, "already_flushed");
+  assert.equal(doc.communityLevel.chatMessages, 2);
+  assert.equal(doc.communityLevel.chatXpTotal, 20);
+  assert.equal(stream.chat_message.count, 2);
+  assert.equal(stream.emote.count, 2);
+  assert.deepEqual(stream.activity_flush_ids, ["segment-1"]);
+});
+
+test("batched live activity applies deferred presence and uptime together", async () => {
+  const db = new FakeDb({
+    alice: {
+      pseudo: "alice",
+      communityLevel: {
+        level: 3,
+        xpTotal: 50,
+        xpInLevel: 50,
+        xpForNext: 150,
+        uptimeMinutes: 60,
+        uptimeText: "1h",
+      },
+      live_presence: {},
+    },
+    "participants/alice": {
+      pseudo: "alice",
+      communityLevel: {
+        uptimeMinutes: 60,
+        uptimeText: "1h",
+      },
+    },
+  });
+  const store = createQuestStorage(db);
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    uptimeMs: 30 * 60 * 1000,
+    presenceFirstSeenAtMs: Date.parse("2026-05-16T10:05:00.000Z"),
+    presenceLastSeenAtMs: Date.parse("2026-05-16T10:35:00.000Z"),
+    flushId: "presence-uptime-1",
+  });
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  const participant = db.doc("participants/alice");
+  assert.equal(result.applied, true);
+  assert.equal(result.presenceApplied, true);
+  assert.equal(result.uptimeApplied, true);
+  assert.equal(doc.communityLevel.presenceXpTotal, 200);
+  assert.equal(doc.communityLevel.uptimeMinutes, 90);
+  assert.equal(doc.communityLevel.uptimeText, "1h 30m");
+  assert.equal(stream.presence.seen, true);
+  assert.equal(stream.presence.uptime_minutes, 30);
+  assert.deepEqual(stream.presence.uptime_finalized_stream_ids, ["stream-1"]);
+  assert.equal(stream.community_level.presence_xp, 200);
+  assert.equal(participant.communityLevel.uptimeMinutes, 90);
+  assert.equal(participant.communityLevel.uptimeText, "1h 30m");
+});

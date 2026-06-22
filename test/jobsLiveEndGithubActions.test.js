@@ -6,14 +6,24 @@ const { test } = require("node:test");
 const cron = require("node-cron");
 const { createJobs } = require("../app/jobs");
 
-function createLivePresenceTick(states, calls) {
+function createLivePresenceTick(states, calls, pendingUptime = []) {
   let current = { streamId: null, startedAt: null };
+  let pendingUptimeEntries = pendingUptime.slice();
 
   async function livePresenceTick() {
     current = states.shift() || { streamId: null, startedAt: null };
   }
 
   livePresenceTick.getLiveStreamState = () => current;
+  livePresenceTick.getPendingUptime = () => pendingUptimeEntries.slice();
+  livePresenceTick.clearPendingUptime = (entries = []) => {
+    const cleared = new Set(entries.map((entry) => entry.login));
+    if (!cleared.size) return;
+    pendingUptimeEntries = pendingUptimeEntries.filter(
+      (entry) => !cleared.has(entry.login),
+    );
+    calls.push(`clear-uptime:${Array.from(cleared).join(",")}`);
+  };
   livePresenceTick.flushStreamUptime = async (streamId, options = {}) => {
     calls.push(`uptime:${streamId}:${options.reason}`);
   };
@@ -21,8 +31,8 @@ function createLivePresenceTick(states, calls) {
   return livePresenceTick;
 }
 
-function createTestJobs({ states, calls }) {
-  const livePresenceTick = createLivePresenceTick(states, calls);
+function createTestJobs({ states, calls, pendingUptime = [], flushPayloads = [] }) {
+  const livePresenceTick = createLivePresenceTick(states, calls, pendingUptime);
 
   return createJobs({
     db: {},
@@ -63,8 +73,18 @@ function createTestJobs({ states, calls }) {
       sendDiscordBirthdayAnnouncements: async () => ({}),
     },
     twitchChat: {
-      flushLiveActivity: async ({ reason }) => calls.push(`flush:${reason}`),
+      flushLiveActivity: async (payload) => {
+        flushPayloads.push(payload);
+        calls.push(`flush:${payload.reason}`);
+        return {
+          flushedEntries: (payload.uptimeEntries || []).map((entry) => ({
+            login: entry.login,
+            streamId: entry.streamId,
+          })),
+        };
+      },
       refreshChannelEmotesThrottled: async () => {},
+      getPendingLiveActivityStreams: () => [],
     },
     getCommunityLevelConfig: async () => ({}),
     cardNotifications: null,
@@ -125,6 +145,61 @@ test("live-end dispatch waits for confirmed offline state and existing flushes",
   await liveJob.fn();
   assert.deepEqual(calls, [
     "flush:live-end",
+    "uptime:stream-1:live-end",
+    "dispatch:stream-1",
+  ]);
+});
+
+test("live-end flush passes pending uptime entries before uptime fallback", async (t) => {
+  const originalSchedule = cron.schedule;
+  const scheduled = [];
+  cron.schedule = (expr, fn, options) => {
+    scheduled.push({ expr, fn, options });
+    return {
+      start: () => {},
+      stop: () => {},
+    };
+  };
+  t.after(() => {
+    cron.schedule = originalSchedule;
+  });
+
+  const calls = [];
+  const flushPayloads = [];
+  const jobs = createTestJobs({
+    calls,
+    flushPayloads,
+    pendingUptime: [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        accumulatedMs: 30 * 60 * 1000,
+      },
+    ],
+    states: [
+      {
+        streamId: "stream-1",
+        startedAt: new Date("2026-06-19T20:00:00.000Z"),
+      },
+      { streamId: null, startedAt: null },
+      { streamId: null, startedAt: null },
+    ],
+  });
+
+  jobs.scheduleCoreJobs();
+  const liveJob = scheduled.find((entry) => entry.expr === "live-presence");
+  await liveJob.fn();
+  await liveJob.fn();
+  await liveJob.fn();
+
+  assert.equal(flushPayloads.length, 1);
+  assert.equal(flushPayloads[0].reason, "live-end");
+  assert.equal(flushPayloads[0].streamId, "stream-1");
+  assert.equal(flushPayloads[0].uptimeEntries.length, 1);
+  assert.equal(flushPayloads[0].uptimeEntries[0].login, "alice");
+  assert.deepEqual(calls, [
+    "flush:live-end",
+    "clear-uptime:alice",
     "uptime:stream-1:live-end",
     "dispatch:stream-1",
   ]);

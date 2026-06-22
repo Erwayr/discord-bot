@@ -114,11 +114,23 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
       .filter((entry) => entry.login && entry.streamId && entry.accumulatedMs > 0);
   }
 
+  function removeLogins(logins = []) {
+    const removed = [];
+    for (const rawLogin of Array.isArray(logins) ? logins : []) {
+      const login = normalizeLogin(rawLogin?.login || rawLogin);
+      if (!login || !entries.has(login)) continue;
+      entries.delete(login);
+      removed.push(login);
+    }
+    return removed;
+  }
+
   return {
     reset,
     markSeen,
     markPresenceNoted,
     snapshot,
+    removeLogins,
     clear: () => entries.clear(),
     hasEntries: () => entries.size > 0,
     get streamId() {
@@ -150,6 +162,7 @@ function createLivePresenceTicker({
   questStore,
   uptimeTickMs,
   uptimeMaxTickMs,
+  deferPresenceWrites = false,
 }) {
   if (!db || !tokenManager || !clientId || !broadcasterId || !moderatorId) {
     throw new Error("createLivePresenceTicker: parametres manquants");
@@ -239,6 +252,22 @@ function createLivePresenceTicker({
       const results = await Promise.all(
         slice.map(async (entry) => {
           try {
+            if (
+              deferPresenceWrites &&
+              typeof store.noteLiveActivity === "function"
+            ) {
+              return await store.noteLiveActivity(entry.login, safeStreamId, {
+                startedAt: uptime.startedAt,
+                uptimeMs: entry.accumulatedMs,
+                presenceFirstSeenAtMs: entry.firstSeenAtMs,
+                presenceLastSeenAtMs: entry.lastSeenAtMs,
+                flushId:
+                  `live-activity:${safeStreamId}:${entry.login}:` +
+                  `uptime-${safeStreamId}-${entry.login}-${entry.firstSeenAtMs || 0}-` +
+                  `${entry.lastSeenAtMs || 0}-${entry.accumulatedMs || 0}`,
+                reason,
+              });
+            }
             return await store.finalizeLiveUptime(entry.login, safeStreamId, {
               uptimeMs: entry.accumulatedMs,
               startedAt: uptime.startedAt,
@@ -330,23 +359,30 @@ function createLivePresenceTicker({
 
       for (let i = 0; i < toProcess.length; i += CHUNK) {
         const slice = toProcess.slice(i, i + CHUNK);
-        await Promise.all(
-          slice.map(async (login) => {
-            try {
-              await store.notePresence(login, CURRENT_STREAM_ID, {
-                startedAt: CURRENT_STARTED_AT,
-                context: null,
-              });
-              uptime.markPresenceNoted(login);
-              processed += 1;
-            } catch (e) {
-              console.warn(
-                `[ticker] presence+1 failed for ${login}:`,
-                e?.message || e,
-              );
-            }
-          }),
-        );
+        if (deferPresenceWrites) {
+          slice.forEach((login) => {
+            uptime.markPresenceNoted(login);
+            processed += 1;
+          });
+        } else {
+          await Promise.all(
+            slice.map(async (login) => {
+              try {
+                await store.notePresence(login, CURRENT_STREAM_ID, {
+                  startedAt: CURRENT_STARTED_AT,
+                  context: null,
+                });
+                uptime.markPresenceNoted(login);
+                processed += 1;
+              } catch (e) {
+                console.warn(
+                  `[ticker] presence+1 failed for ${login}:`,
+                  e?.message || e,
+                );
+              }
+            }),
+          );
+        }
       }
 
       console.log(
@@ -364,7 +400,10 @@ function createLivePresenceTicker({
     startedAt: CURRENT_STARTED_AT,
   });
   runTick.flushStreamUptime = flushStreamUptime;
-  runTick.getPendingUptime = () => uptime.snapshot();
+  runTick.getPendingUptime = (targetStreamId = uptime.streamId) =>
+    uptime.snapshot(targetStreamId);
+  runTick.clearPendingUptime = (entries = []) => uptime.removeLogins(entries);
+  runTick.isPresenceDeferred = () => !!deferPresenceWrites;
 
   return runTick;
 }

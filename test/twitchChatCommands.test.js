@@ -256,3 +256,105 @@ test("ignores target arguments and reads only the sender profile", async () => {
   assert.deepEqual(db.reads, ["alice"]);
   assert.match(sent[0], /^@Alice Niveau 42/);
 });
+
+test("caches Twitch command profile reads within the configured ttl", async () => {
+  const db = new FakeDb({
+    alice: { communityLevel: { level: 42, rank: 7, xpTotal: 1234 } },
+  });
+  const sent = [];
+  let now = 1000;
+  const commands = createTwitchChatCommands({
+    db,
+    config: {
+      userCooldownMs: 0,
+      globalCooldownMs: 0,
+      profileCacheTtlMs: 60_000,
+    },
+    sendTwitchChatMessage: async (message) => sent.push(message),
+    now: () => now,
+  });
+
+  await commands.handleMessage({
+    login: "alice",
+    displayName: "Alice",
+    message: "!lvl",
+  });
+  now += 1000;
+  await commands.handleMessage({
+    login: "alice",
+    displayName: "Alice",
+    message: "!rank",
+  });
+
+  assert.deepEqual(db.reads, ["alice"]);
+  assert.equal(sent.length, 2);
+});
+
+test("level command includes pending live chat deltas", async () => {
+  const db = new FakeDb({
+    alice: {
+      communityLevel: {
+        level: 1,
+        rank: 1,
+        xpTotal: 0,
+        xpInLevel: 0,
+        xpForNext: 100,
+      },
+      live_presence: {},
+    },
+  });
+
+  const response = await buildTwitchCommandResponse({
+    db,
+    login: "alice",
+    displayName: "Alice",
+    type: "level",
+    getCommunityLevelConfig: async () => ({ chatCooldownMs: 0 }),
+    pendingEntries: [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        startedAt: new Date("2026-05-16T10:00:00.000Z"),
+        chatEvents: [
+          { atMs: Date.parse("2026-05-16T11:00:00.000Z") },
+          { atMs: Date.parse("2026-05-16T11:01:00.000Z") },
+        ],
+      },
+    ],
+  });
+
+  assert.match(response, /^@Alice Niveau 1/);
+  assert.match(response, /XP 20 \(20\/100\)$/);
+});
+
+test("uptime command includes pending live uptime delta", async () => {
+  const db = new FakeDb({
+    alice: {
+      communityLevel: {
+        level: 1,
+        uptimeMinutes: 60,
+        uptimeText: "1h",
+      },
+      live_presence: {},
+    },
+  });
+
+  const response = await buildTwitchCommandResponse({
+    db,
+    login: "alice",
+    displayName: "Alice",
+    type: "uptime",
+    pendingEntries: [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        startedAt: new Date("2026-05-16T10:00:00.000Z"),
+        accumulatedMs: 30 * 60 * 1000,
+        firstSeenAtMs: Date.parse("2026-05-16T10:05:00.000Z"),
+        lastSeenAtMs: Date.parse("2026-05-16T10:35:00.000Z"),
+      },
+    ],
+  });
+
+  assert.equal(response, "@Alice Uptime communautaire: 1h 30m");
+});

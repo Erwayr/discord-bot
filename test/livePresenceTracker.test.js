@@ -37,3 +37,19 @@ test("uptime accumulator credits seen ticks, caps long gaps and skips absences",
   assert.equal(snapshot[0].streamId, "stream-1");
   assert.equal(snapshot[0].accumulatedMs, 540_000);
 });
+
+test("uptime accumulator can clear flushed logins", () => {
+  const acc = createUptimeAccumulator({
+    tickMs: 120_000,
+    maxTickMs: 300_000,
+  });
+  acc.reset("stream-1", new Date("2026-05-16T10:00:00.000Z"));
+
+  acc.markSeen(["alice", "bob"], 1_000);
+  const removed = acc.removeLogins([{ login: "alice" }]);
+  const snapshot = acc.snapshot();
+
+  assert.deepEqual(removed, ["alice"]);
+  assert.equal(snapshot.length, 1);
+  assert.equal(snapshot[0].login, "bob");
+});

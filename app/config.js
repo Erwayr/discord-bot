@@ -205,8 +205,16 @@ const config = {
   },
 
   twitchLiveActivity: {
+    flushMode: process.env.TWITCH_LIVE_ACTIVITY_FLUSH_MODE || "live-end",
     flushMs: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_MS", 20 * 60 * 1000),
     flushChunkSize: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_CHUNK_SIZE", 25),
+    persistenceDir:
+      process.env.TWITCH_LIVE_ACTIVITY_PERSIST_DIR ||
+      ".runtime/live-activity",
+    profileCacheTtlMs: numberEnv(
+      "TWITCH_COMMAND_PROFILE_CACHE_TTL_MS",
+      5 * 60 * 1000,
+    ),
   },
 
   twitchCommands: {

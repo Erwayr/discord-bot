@@ -131,14 +131,31 @@ function createJobs({
     }
   }
 
-  async function flushTwitchLiveActivity(reason) {
+  async function flushTwitchLiveActivity(reason, options = {}) {
     if (typeof twitchChat?.flushLiveActivity !== "function") return null;
     try {
-      return await twitchChat.flushLiveActivity({ reason });
+      const result = await twitchChat.flushLiveActivity({ reason, ...options });
+      if (
+        Array.isArray(options.uptimeEntries) &&
+        typeof livePresenceTick?.clearPendingUptime === "function" &&
+        Array.isArray(result?.flushedEntries)
+      ) {
+        livePresenceTick.clearPendingUptime(result.flushedEntries);
+      }
+      return result;
     } catch (e) {
       console.error("[live-activity] flush failed:", e?.message || e);
       return null;
     }
+  }
+
+  async function flushRestoredStaleLiveActivity(currentStreamId) {
+    if (typeof twitchChat?.getPendingLiveActivityStreams !== "function") return;
+    const currentId = currentStreamId || "";
+    const pendingStreams = twitchChat.getPendingLiveActivityStreams();
+    const staleStreams = pendingStreams.filter((streamId) => streamId !== currentId);
+    if (!staleStreams.length) return;
+    await flushTwitchLiveActivity("stale-stream", { streamIds: staleStreams });
   }
 
   async function refreshCommunityLevelRanks() {
@@ -387,10 +404,13 @@ function createJobs({
 
       if (currentId) {
         offlineStreak = 0;
+        await flushRestoredStaleLiveActivity(currentId);
 
         if (announcedStreamId !== currentId) {
           if (announcedStreamId) {
-            await flushTwitchLiveActivity("stream-switch");
+            await flushTwitchLiveActivity("stream-switch", {
+              streamId: announcedStreamId,
+            });
           }
 
           announcedStreamId = currentId;
@@ -416,6 +436,15 @@ function createJobs({
 
       offlineStreak += 1;
       if (
+        !announcedStreamId &&
+        offlineStreak >= config.timing.offlineConfirmTicks &&
+        typeof twitchChat?.getPendingLiveActivityStreams === "function" &&
+        twitchChat.getPendingLiveActivityStreams().length > 0
+      ) {
+        await flushTwitchLiveActivity("startup-offline");
+      }
+
+      if (
         announcedStreamId &&
         offlineStreak === config.timing.offlineConfirmTicks
       ) {
@@ -431,7 +460,14 @@ function createJobs({
         announcedStreamId = null;
         announcedStartedAt = null;
 
-        await flushTwitchLiveActivity("live-end");
+        const uptimeEntries =
+          typeof livePresenceTick.getPendingUptime === "function"
+            ? livePresenceTick.getPendingUptime(endedStreamId)
+            : [];
+        await flushTwitchLiveActivity("live-end", {
+          streamId: endedStreamId,
+          uptimeEntries,
+        });
 
         if (typeof livePresenceTick.flushStreamUptime === "function") {
           await livePresenceTick

@@ -109,6 +109,8 @@ const livePresenceTick = createLivePresenceTicker({
   questStore,
   uptimeTickMs: config.communityLevel.uptimeTickMs,
   uptimeMaxTickMs: config.communityLevel.uptimeMaxTickMs,
+  deferPresenceWrites:
+    String(config.twitchLiveActivity.flushMode || "").toLowerCase() !== "interval",
 });
 
 const pollClipsTick = createClipPoller({
@@ -248,7 +250,9 @@ async function shutdown(signal) {
   console.log(`[shutdown] ${signal} received, flushing live activity...`);
   try {
     twitchChat.stopLiveActivityBuffer?.();
-    await twitchChat.flushLiveActivity?.({ reason: "shutdown" });
+    if (twitchChat.shouldFlushLiveActivityOnShutdown?.()) {
+      await twitchChat.flushLiveActivity?.({ reason: "shutdown" });
+    }
   } catch (e) {
     console.error("[shutdown] live activity flush failed:", e?.message || e);
   } finally {

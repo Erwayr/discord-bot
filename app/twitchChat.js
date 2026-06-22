@@ -153,8 +153,10 @@ function createTwitchChat({
 
   const liveActivityBuffer = createLiveActivityBuffer({
     questStore,
+    flushMode: config.twitchLiveActivity?.flushMode,
     flushIntervalMs: config.twitchLiveActivity?.flushMs,
     flushChunkSize: config.twitchLiveActivity?.flushChunkSize,
+    persistenceDir: config.twitchLiveActivity?.persistenceDir,
     onLevelUp: async ({ login, displayName, level, rankName }) => {
       const levelUpMessage = buildCommunityLevelUpMessage({
         displayName,
@@ -173,9 +175,17 @@ function createTwitchChat({
 
   const twitchChatCommands = createTwitchChatCommands({
     db,
-    config: config.twitchCommands,
+    config: {
+      ...config.twitchCommands,
+      profileCacheTtlMs: config.twitchLiveActivity?.profileCacheTtlMs,
+    },
     getCommunityLevelConfig,
     sendTwitchChatMessage,
+    getPendingLiveActivity: liveActivityBuffer.pendingForLogin,
+    getPendingUptime:
+      typeof livePresenceTick?.getPendingUptime === "function"
+        ? () => livePresenceTick.getPendingUptime()
+        : null,
   });
 
   const tmiClient = new tmi.Client({
@@ -370,6 +380,10 @@ function createTwitchChat({
     flushLiveActivity: liveActivityBuffer.flush,
     stopLiveActivityBuffer: liveActivityBuffer.stop,
     getPendingLiveActivity: liveActivityBuffer.pendingSnapshot,
+    getPendingLiveActivityForLogin: liveActivityBuffer.pendingForLogin,
+    getPendingLiveActivityStreams: liveActivityBuffer.pendingStreamIds,
+    shouldFlushLiveActivityOnShutdown: () =>
+      !!liveActivityBuffer.shouldFlushOnShutdown,
   };
 }
 

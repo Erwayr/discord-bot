@@ -210,6 +210,21 @@ function finalizedUptimeStreamIds(entry) {
     : [];
 }
 
+function activityFlushIds(entry) {
+  const raw = entry?.activity_flush_ids;
+  return Array.isArray(raw)
+    ? raw.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+}
+
+function rememberActivityFlushId(entry, flushId) {
+  const safeId = String(flushId || "").trim();
+  if (!entry || !safeId) return;
+  const ids = activityFlushIds(entry);
+  if (!ids.includes(safeId)) ids.push(safeId);
+  entry.activity_flush_ids = ids.slice(-50);
+}
+
 function normalizeActivityEvents(events = []) {
   return (Array.isArray(events) ? events : [])
     .map((event) => {
@@ -650,20 +665,44 @@ function createQuestStorage(db, options = {}) {
   async function noteLiveActivity(
     login,
     streamId,
-    { startedAt, chatEvents = [], emoteCount = 0 } = {},
+    {
+      startedAt,
+      chatEvents = [],
+      emoteCount = 0,
+      uptimeMs = 0,
+      presenceFirstSeenAtMs = 0,
+      presenceLastSeenAtMs = 0,
+      flushId = "",
+    } = {},
   ) {
     const docId = String(login || "").trim().toLowerCase();
     const safeStreamId = normalizeStreamId(streamId);
     const normalizedChatEvents = normalizeActivityEvents(chatEvents);
     const safeEmoteCount = Math.max(0, Math.floor(Number(emoteCount) || 0));
+    const safeUptimeMinutes = uptimeMinutesFromMs(uptimeMs);
+    const safePresenceFirstSeenAtMs = Math.max(
+      0,
+      Math.floor(Number(presenceFirstSeenAtMs) || 0),
+    );
+    const safePresenceLastSeenAtMs = Math.max(
+      safePresenceFirstSeenAtMs,
+      Math.floor(Number(presenceLastSeenAtMs) || 0),
+    );
+    const safeFlushId = String(flushId || "").trim();
     if (!docId || !safeStreamId) {
       return { applied: false, reason: "invalid_target" };
     }
-    if (!normalizedChatEvents.length && safeEmoteCount <= 0) {
+    if (
+      !normalizedChatEvents.length &&
+      safeEmoteCount <= 0 &&
+      safeUptimeMinutes <= 0 &&
+      safePresenceFirstSeenAtMs <= 0
+    ) {
       return { applied: false, reason: "empty_activity" };
     }
 
     const ref = col.doc(docId);
+    const participantRef = db.collection("participants").doc(docId);
     const mk = monthKeyUTC();
     let result = {
       applied: false,
@@ -679,13 +718,23 @@ function createQuestStorage(db, options = {}) {
       rankName: "",
       leveledUp: false,
       levelUps: [],
+      presenceApplied: false,
+      presenceXp: 0,
+      uptimeApplied: false,
+      uptimeMinutesAdded: 0,
+      participantMirrored: false,
     };
-    const effectiveCommunityLevelConfig = normalizedChatEvents.length
+    const effectiveCommunityLevelConfig =
+      normalizedChatEvents.length || safePresenceFirstSeenAtMs > 0
       ? await getCommunityLevelConfig()
       : null;
 
     await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+      const shouldReadParticipant = safeUptimeMinutes > 0;
+      const [snap, participantSnap] = await Promise.all([
+        tx.get(ref),
+        shouldReadParticipant ? tx.get(participantRef) : Promise.resolve(null),
+      ]);
       const data = snap.exists ? snap.data() || {} : {};
       const workingData = { ...data };
       const lp = { ...(data.live_presence || {}) };
@@ -702,6 +751,65 @@ function createQuestStorage(db, options = {}) {
       let latestAtMs = Date.now();
       let latestLevelResult = null;
       const patch = { live_presence: lp };
+
+      if (safeFlushId && activityFlushIds(entry).includes(safeFlushId)) {
+        result = {
+          ...result,
+          applied: false,
+          reason: "already_flushed",
+          streamCreated: !!created,
+        };
+        return;
+      }
+
+      if (safePresenceFirstSeenAtMs > 0) {
+        entry.presence = {
+          seen: false,
+          first_at: null,
+          last_at: null,
+          ...(entry.presence || {}),
+        };
+        const wasSeen = !!entry.presence.seen;
+        entry.presence.seen = true;
+        if (!wasSeen) {
+          month.count = Math.max(0, Number(month.count || 0)) + 1;
+        }
+        if (!entry.presence.first_at) {
+          entry.presence.first_at = safePresenceFirstSeenAtMs;
+        }
+        entry.presence.last_at = Math.max(
+          Math.floor(Number(entry.presence.last_at || 0)),
+          safePresenceLastSeenAtMs || safePresenceFirstSeenAtMs,
+        );
+        latestAtMs = Math.max(
+          latestAtMs,
+          safePresenceLastSeenAtMs || safePresenceFirstSeenAtMs,
+        );
+
+        if (!wasSeen) {
+          const presenceLevelResult = applyCommunityLevelXpProgress({
+            data: workingData,
+            entry,
+            streamId: safeStreamId,
+            nowMs: safePresenceFirstSeenAtMs,
+            rawConfig: effectiveCommunityLevelConfig,
+            source: "presence",
+          });
+          if (presenceLevelResult.awarded) {
+            latestLevelResult = presenceLevelResult;
+            workingData.communityLevel = presenceLevelResult.communityLevel;
+            Object.assign(workingData, presenceLevelResult.legacyFields);
+            result.presenceApplied = true;
+            result.presenceXp = presenceLevelResult.awardXp || 0;
+            if (presenceLevelResult.leveledUp) {
+              result.levelUps.push({
+                level: presenceLevelResult.level,
+                rankName: presenceLevelResult.communityLevel?.rankName || "",
+              });
+            }
+          }
+        }
+      }
 
       if (normalizedChatEvents.length) {
         entry.chat_message = {
@@ -774,10 +882,55 @@ function createQuestStorage(db, options = {}) {
         entry.emote.last_at = latestAtMs;
       }
 
+      if (safeUptimeMinutes > 0) {
+        entry.presence = {
+          seen: false,
+          first_at: null,
+          last_at: null,
+          ...(entry.presence || {}),
+        };
+        const finalizedIds = finalizedUptimeStreamIds(entry);
+        if (!finalizedIds.includes(safeStreamId)) {
+          entry.presence.seen = true;
+          if (!entry.presence.first_at && safePresenceFirstSeenAtMs > 0) {
+            entry.presence.first_at = safePresenceFirstSeenAtMs;
+          }
+          entry.presence.last_at = Math.max(
+            Math.floor(Number(entry.presence.last_at || 0)),
+            safePresenceLastSeenAtMs || latestAtMs,
+          );
+          entry.presence.uptime_minutes =
+            Math.max(0, Math.floor(Number(entry.presence.uptime_minutes || 0))) +
+            safeUptimeMinutes;
+          entry.presence.uptime_finalized_stream_ids = [
+            ...finalizedIds,
+            safeStreamId,
+          ];
+
+          const uptimeResult = applyCommunityLevelUptime({
+            data: workingData,
+            uptimeMinutes: safeUptimeMinutes,
+            nowMs: latestAtMs,
+          });
+          if (uptimeResult.applied) {
+            workingData.communityLevel = uptimeResult.communityLevel;
+            result.uptimeApplied = true;
+            result.uptimeMinutesAdded = uptimeResult.uptimeMinutesAdded || 0;
+            result.uptimeMinutes = uptimeResult.uptimeMinutes;
+            result.uptimeText = uptimeResult.uptimeText;
+          }
+        }
+      }
+
       month.last_update_at = latestAtMs;
+      if (latestLevelResult?.awarded || result.uptimeApplied) {
+        patch.communityLevel = workingData.communityLevel;
+      }
       if (latestLevelResult?.awarded) {
-        patch.communityLevel = latestLevelResult.communityLevel;
         Object.assign(patch, latestLevelResult.legacyFields);
+      }
+      if (safeFlushId) {
+        rememberActivityFlushId(entry, safeFlushId);
       }
 
       if (snap.exists) {
@@ -793,9 +946,26 @@ function createQuestStorage(db, options = {}) {
         );
       }
 
+      if (result.uptimeApplied && participantSnap?.exists) {
+        tx.set(
+          participantRef,
+          {
+            communityLevel: {
+              uptimeMinutes: result.uptimeMinutes,
+              uptimeText: result.uptimeText,
+              source: "twitch_presence_uptime",
+              updatedAt: latestAtMs,
+            },
+          },
+          { merge: true },
+        );
+        result.participantMirrored = true;
+      }
+
       result = {
         ...result,
         applied: true,
+        reason: "applied",
         streamCreated: !!created,
         levelAwarded: !!latestLevelResult?.awarded,
         levelXp: latestLevelResult?.awardXp || 0,
