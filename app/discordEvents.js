@@ -6,6 +6,7 @@ const messageCountHandler = require("../script/messageCountHandler");
 const presenceHandler = require("../script/presenceHandler");
 const electionHandler = require("../script/electionHandler");
 const handleVoteChange = require("../script/handleVoteChange");
+const { maybeReplyToBooty } = require("../script/bootyResponder");
 const {
   handleProfileInteraction,
   handleProfileMessage,
@@ -361,7 +362,12 @@ function registerDiscordEvents({
 
     if (command === "!rank") {
       await handleProfileMessage(message, db, config);
+      return;
     }
+
+    await maybeReplyToBooty(message).catch((err) => {
+      console.error("[discord] booty responder failed:", err);
+    });
   });
 
   client.on(Events.PresenceUpdate, async (oldP, newP) => {
