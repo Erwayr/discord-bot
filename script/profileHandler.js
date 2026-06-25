@@ -348,7 +348,7 @@ async function handleProfileInteraction(interaction, db, config = {}) {
     interaction.options.getUser("membre", false) || interaction.user;
 
   try {
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply();
     const embed = await buildProfileEmbed({
       db,
       config,
@@ -369,7 +369,7 @@ async function handleProfileInteraction(interaction, db, config = {}) {
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(content).catch(() => {});
     } else {
-      await interaction.reply({ content, ephemeral: false }).catch(() => {});
+      await interaction.reply({ content }).catch(() => {});
     }
   }
 }

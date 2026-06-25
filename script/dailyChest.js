@@ -1,6 +1,8 @@
 "use strict";
 
-const { EmbedBuilder } = require("discord.js");
+const { randomUUID } = require("node:crypto");
+const { EmbedBuilder, MessageFlags } = require("discord.js");
+const { runTransactionWithRetry } = require("../helper/firestoreRetry");
 const { applyFlatCommunityLevelXp } = require("./communityLevel");
 
 const DAILY_CHEST_SCHEMA_VERSION = 1;
@@ -394,6 +396,16 @@ async function fetchProfileByDiscordId(db, discordId) {
 
 function transactionIdForDay(dayKey) {
   return `daily_chest_${dayKey}`;
+}
+
+function openRequestIdForDay({ dayKey, discordId, now }) {
+  return [
+    "daily_chest",
+    String(dayKey || ""),
+    String(discordId || ""),
+    String(now?.getTime?.() || Date.now()),
+    randomUUID(),
+  ].join("_");
 }
 
 function dailyChestAllowedChannelIds(config = {}) {
@@ -925,97 +937,126 @@ async function openDailyChest(
   const transactionRef = profile.ref
     .collection("pops_transactions")
     .doc(transactionIdForDay(dayKey));
+  const openRequestId = openRequestIdForDay({ dayKey, discordId, now });
 
   let txResult = null;
 
-  await db.runTransaction(async (tx) => {
-    const profileSnap = await tx.get(profile.ref);
-    if (!profileSnap.exists) {
-      txResult = { status: "profile_missing", dayKey, monthKey };
-      return;
-    }
+  await runTransactionWithRetry(
+    db,
+    async (tx) => {
+      txResult = null;
+      const profileSnap = await tx.get(profile.ref);
+      if (!profileSnap.exists) {
+        txResult = { status: "profile_missing", dayKey, monthKey };
+        return;
+      }
 
-    const claimSnap = await tx.get(claimRef);
-    if (claimSnap.exists) {
-      const claim = claimSnap.data() || {};
+      const claimSnap = await tx.get(claimRef);
+      if (claimSnap.exists) {
+        const claim = claimSnap.data() || {};
+        const data = profileSnap.data() || {};
+        const sameOpenRequest =
+          claim.openRequestId && claim.openRequestId === openRequestId;
+        const rewards = rewardsOrSingle(claim.rewards, claim.reward);
+        const stats = normalizeDailyChestStats(data?.dailyChest?.stats);
+        const totalOpenings = toSafeCount(data?.dailyChest?.totalOpenings);
+        txResult = {
+          status: sameOpenRequest ? "opened" : "already_opened",
+          dayKey,
+          monthKey,
+          profile: {
+            docId: profile.docId,
+            displayName: profileDisplayName(data, profile.docId),
+          },
+          claim,
+          reward: claim.reward || null,
+          rewards,
+          ...(sameOpenRequest
+            ? {
+                stats,
+                totalOpenings,
+                rewardResult: {
+                  reward: claim.reward || null,
+                  rewards,
+                  stats,
+                  totalOpenings,
+                  transaction: null,
+                  participantPatch: null,
+                  levelResult: null,
+                  questBonus: null,
+                },
+              }
+            : {}),
+          resetAt,
+          resetRemainingMs,
+          resetRemainingText,
+        };
+        return;
+      }
+
+      const data = profileSnap.data() || {};
+      const rewardPatch = applyRewardPatch({
+        data,
+        reward: plannedReward,
+        rewards: plannedRewards,
+        dayKey,
+        monthKey,
+        now,
+        nowMs: now.getTime(),
+        communityLevelConfig,
+      });
+      const claimPayload = {
+        dayKey,
+        monthKey,
+        discordId: String(discordId || ""),
+        login: profile.docId,
+        displayName: profileDisplayName(data, profile.docId),
+        reward: rewardPatch.result.reward,
+        rewards: rewardPatch.result.rewards,
+        openRequestId,
+        createdAt: now,
+        createdAtMs: now.getTime(),
+        schemaVersion: DAILY_CHEST_SCHEMA_VERSION,
+        serverAuthoritative: true,
+      };
+
+      let participantSnap = null;
+      if (rewardPatch.result.participantPatch) {
+        participantSnap = await tx.get(participantRef);
+      }
+
+      tx.update(profile.ref, rewardPatch.patch);
+      tx.set(claimRef, claimPayload);
+
+      if (rewardPatch.result.transaction) {
+        tx.set(transactionRef, rewardPatch.result.transaction);
+      }
+
+      if (participantSnap?.exists && rewardPatch.result.participantPatch) {
+        tx.set(participantRef, rewardPatch.result.participantPatch, {
+          merge: true,
+        });
+      }
+
       txResult = {
-        status: "already_opened",
+        status: "opened",
         dayKey,
         monthKey,
         profile: {
           docId: profile.docId,
-          displayName: profileDisplayName(profileSnap.data(), profile.docId),
+          displayName: claimPayload.displayName,
         },
-        claim,
-        reward: claim.reward || null,
-        rewards: rewardsOrSingle(claim.rewards, claim.reward),
-        resetAt,
-        resetRemainingMs,
-        resetRemainingText,
+        claim: claimPayload,
+        reward: rewardPatch.result.reward,
+        rewards: rewardPatch.result.rewards,
+        stats: rewardPatch.result.stats,
+        totalOpenings: rewardPatch.result.totalOpenings,
+        rewardResult: rewardPatch.result,
+        participantSynced: !!participantSnap?.exists,
       };
-      return;
-    }
-
-    const data = profileSnap.data() || {};
-    const rewardPatch = applyRewardPatch({
-      data,
-      reward: plannedReward,
-      rewards: plannedRewards,
-      dayKey,
-      monthKey,
-      now,
-      nowMs: now.getTime(),
-      communityLevelConfig,
-    });
-    const claimPayload = {
-      dayKey,
-      monthKey,
-      discordId: String(discordId || ""),
-      login: profile.docId,
-      displayName: profileDisplayName(data, profile.docId),
-      reward: rewardPatch.result.reward,
-      rewards: rewardPatch.result.rewards,
-      createdAt: now,
-      createdAtMs: now.getTime(),
-      schemaVersion: DAILY_CHEST_SCHEMA_VERSION,
-      serverAuthoritative: true,
-    };
-
-    let participantSnap = null;
-    if (rewardPatch.result.participantPatch) {
-      participantSnap = await tx.get(participantRef);
-    }
-
-    tx.update(profile.ref, rewardPatch.patch);
-    tx.set(claimRef, claimPayload);
-
-    if (rewardPatch.result.transaction) {
-      tx.set(transactionRef, rewardPatch.result.transaction);
-    }
-
-    if (participantSnap?.exists && rewardPatch.result.participantPatch) {
-      tx.set(participantRef, rewardPatch.result.participantPatch, {
-        merge: true,
-      });
-    }
-
-    txResult = {
-      status: "opened",
-      dayKey,
-      monthKey,
-      profile: {
-        docId: profile.docId,
-        displayName: claimPayload.displayName,
-      },
-      claim: claimPayload,
-      reward: rewardPatch.result.reward,
-      rewards: rewardPatch.result.rewards,
-      stats: rewardPatch.result.stats,
-      totalOpenings: rewardPatch.result.totalOpenings,
-      rewardResult: rewardPatch.result,
-      participantSynced: !!participantSnap?.exists,
-    };
-  });
+    },
+    { label: "daily-chest-open" },
+  );
 
   return txResult || { status: "error", dayKey, monthKey };
 }
@@ -1136,7 +1177,7 @@ function rewardColor(reward) {
 async function replyDailyChestWrongChannel(interaction, config = {}) {
   const payload = {
     content: dailyChestWrongChannelMessage(config),
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   };
   if (interaction.deferred || interaction.replied) {
     await interaction.editReply({ content: payload.content, embeds: [] });
@@ -1196,7 +1237,7 @@ async function handleDailyChestInteraction(
       };
     }
 
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply();
     const result = await openDailyChest(db, {
       discordId: interaction.user?.id,
       config,
@@ -1250,7 +1291,7 @@ async function handleDailyChestInteraction(
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(content).catch(() => {});
     } else {
-      await interaction.reply({ content, ephemeral: false }).catch(() => {});
+      await interaction.reply({ content }).catch(() => {});
     }
     return { status: "error", error: err };
   }
@@ -1266,7 +1307,7 @@ async function handleDailyChestStatsInteraction(interaction, db, config = {}) {
       };
     }
 
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply();
     const targetUser =
       interaction.options?.getUser?.("membre") || interaction.user || null;
     const result = await getDailyChestStats(db, {
@@ -1299,7 +1340,7 @@ async function handleDailyChestStatsInteraction(interaction, db, config = {}) {
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(content).catch(() => {});
     } else {
-      await interaction.reply({ content, ephemeral: false }).catch(() => {});
+      await interaction.reply({ content }).catch(() => {});
     }
     return { status: "error", error: err };
   }

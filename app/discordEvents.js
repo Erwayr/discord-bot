@@ -1,6 +1,6 @@
 "use strict";
 
-const { ActivityType, Events } = require("discord.js");
+const { ActivityType, Events, MessageFlags } = require("discord.js");
 const welcomeHandler = require("../script/welcomeHandler");
 const messageCountHandler = require("../script/messageCountHandler");
 const presenceHandler = require("../script/presenceHandler");
@@ -132,7 +132,7 @@ function registerDiscordEvents({
       ) {
         await interaction.reply({
           content: "❌ Tu n'as pas la permission pour valider le planning.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
@@ -140,12 +140,12 @@ function registerDiscordEvents({
       if (!weeklyPlanningPublisher) {
         await interaction.reply({
           content: "❌ Le module planning n'est pas disponible.",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
         return;
       }
 
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       try {
         if (planningAction.action === "approve") {
           await weeklyPlanningPublisher.approvePlanning({

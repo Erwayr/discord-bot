@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { MessageFlags } = require("discord.js");
 
 const {
   buildDailyChestAnimationFrames,
@@ -194,10 +195,13 @@ class FakeTransaction {
 }
 
 class FakeDb {
-  constructor(initialDocs = {}) {
+  constructor(initialDocs = {}, options = {}) {
     this.store = new Map(
       Object.entries(initialDocs).map(([path, data]) => [path, clone(data)]),
     );
+    this.transactionFailures = Array.isArray(options.transactionFailures)
+      ? options.transactionFailures.slice()
+      : [];
     this.resetCalls();
   }
 
@@ -223,7 +227,10 @@ class FakeDb {
 
   async runTransaction(callback) {
     this.calls.runTransactions += 1;
-    return callback(new FakeTransaction(this));
+    const result = await callback(new FakeTransaction(this));
+    const failure = this.transactionFailures.shift();
+    if (failure) throw failure;
+    return result;
   }
 
   setDoc(path, payload, options = {}) {
@@ -318,7 +325,7 @@ test("daily chest slash command is restricted to chest and log channels", async 
   assert.equal(result.status, "wrong_channel");
   assert.equal(result.allowedChannelIds.length, 2);
   assert.equal(replies.length, 1);
-  assert.equal(replies[0].ephemeral, true);
+  assert.equal(replies[0].flags, MessageFlags.Ephemeral);
   assert.match(replies[0].content, /1516374903203565621/);
   assert.match(replies[0].content, /log-channel/);
   assert.equal(db.calls.gets.length, 0);
@@ -345,7 +352,7 @@ test("daily chest slash command is allowed in log channel", async () => {
   const result = await handleDailyChestInteraction(interaction, db, BASE_CONFIG);
 
   assert.equal(result.status, "profile_missing");
-  assert.equal(interaction.deferPayload.ephemeral, false);
+  assert.equal(interaction.deferPayload, undefined);
   assert.equal(edits.length, 1);
   assert.match(String(edits[0]), /Profil introuvable/);
 });
@@ -382,7 +389,7 @@ test("daily chest stats slash command is restricted to chest and log channels", 
 
   assert.equal(result.status, "wrong_channel");
   assert.equal(replies.length, 1);
-  assert.equal(replies[0].ephemeral, true);
+  assert.equal(replies[0].flags, MessageFlags.Ephemeral);
   assert.match(replies[0].content, /1516374903203565621/);
   assert.equal(db.calls.queries.length, 0);
   assert.equal(db.calls.runTransactions, 0);
@@ -417,7 +424,7 @@ test("daily chest stats slash command handles missing linked profile", async () 
   );
 
   assert.equal(result.status, "profile_missing");
-  assert.equal(interaction.deferPayload.ephemeral, false);
+  assert.equal(interaction.deferPayload, undefined);
   assert.equal(db.calls.queries.length, 1);
   assert.equal(db.calls.runTransactions, 0);
   assert.equal(db.calls.txUpdates.length, 0);
@@ -663,6 +670,51 @@ test("daily chest credits POPS and writes an idempotent ledger entry", async () 
     result.stats,
     db.data("followers_all_time/alice").dailyChest.stats,
   );
+});
+
+test("daily chest retries expired transactions without double credit", async () => {
+  const expiredTransactionError = Object.assign(
+    new Error(
+      "3 INVALID_ARGUMENT: The referenced transaction has expired or is no longer valid.",
+    ),
+    { code: 3 },
+  );
+  const db = new FakeDb(
+    {
+      "followers_all_time/alice": follower(),
+    },
+    { transactionFailures: [expiredTransactionError] },
+  );
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "pops", amount: 37 },
+  });
+
+  const claim = db.data(
+    "followers_all_time/alice/daily_chest_claims/2026-06-16",
+  );
+  const transaction = db.data(
+    "followers_all_time/alice/pops_transactions/daily_chest_2026-06-16",
+  );
+
+  assert.equal(result.status, "opened");
+  assert.equal(db.calls.runTransactions, 2);
+  assert.equal(db.data("followers_all_time/alice").pops.balance, 47);
+  assert.equal(db.data("followers_all_time/alice").pops.lifetimeEarned, 57);
+  assert.equal(db.data("followers_all_time/alice").dailyChest.totalOpenings, 1);
+  assert.equal(
+    db.data("followers_all_time/alice").dailyChest.stats.trackedOpenings,
+    1,
+  );
+  assert.equal(claim.reward.amount, 37);
+  assert.match(
+    claim.openRequestId,
+    /^daily_chest_2026-06-16_111111111111111111_/,
+  );
+  assert.equal(transaction.amount, 37);
 });
 
 test("daily chest POPS embed uses casino panel and ruby icon", () => {
@@ -947,7 +999,7 @@ test("daily chest slash command shows remaining time when already opened", async
   );
 
   assert.equal(result.status, "already_opened");
-  assert.equal(interaction.deferPayload.ephemeral, false);
+  assert.equal(interaction.deferPayload, undefined);
   assert.equal(edits.length, 1);
   assert.match(String(edits[0]), /Coffre deja ouvert aujourd'hui/);
   assert.match(String(edits[0]), /Alice, reviens dans 14 h\./);
