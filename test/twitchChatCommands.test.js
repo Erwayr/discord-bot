@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const {
+  COMMAND_DEFINITIONS,
+  buildTwitchHelpResponse,
   buildTwitchCommandResponse,
   createTwitchChatCommands,
   parseTwitchChatCommand,
@@ -48,6 +50,7 @@ test("parses Twitch community command aliases", () => {
     ["!rang", "rank"],
     ["!uptime", "uptime"],
     ["!watchtime", "uptime"],
+    ["!cmd", "help"],
     [" !Lvl ignored-target ", "level"],
   ];
 
@@ -55,6 +58,47 @@ test("parses Twitch community command aliases", () => {
     assert.equal(parseTwitchChatCommand(message)?.type, type);
   }
   assert.equal(parseTwitchChatCommand("hello !lvl"), null);
+});
+
+test("builds Twitch help response from visible command definitions", () => {
+  const response = buildTwitchHelpResponse();
+
+  for (const definition of COMMAND_DEFINITIONS) {
+    const aliases = definition.aliases.join("/");
+    if (definition.showInHelp) {
+      assert.equal(response.includes(aliases), true);
+      assert.equal(response.includes(definition.description), true);
+    } else {
+      assert.equal(response.includes(aliases), false);
+    }
+  }
+});
+
+test("help command lists Twitch live commands without reading profile", async () => {
+  const db = new FakeDb({
+    alice: { communityLevel: { level: 42, xpTotal: 1234 } },
+  });
+  const sent = [];
+  const commands = createTwitchChatCommands({
+    db,
+    config: { userCooldownMs: 0, globalCooldownMs: 0 },
+    sendTwitchChatMessage: async (message) => sent.push(message),
+    now: () => 1000,
+  });
+
+  const result = await commands.handleMessage({
+    login: "alice",
+    displayName: "Alice",
+    message: "!cmd",
+  });
+
+  assert.equal(result.responded, true);
+  assert.equal(result.type, "help");
+  assert.deepEqual(db.reads, []);
+  assert.equal(sent[0], buildTwitchHelpResponse());
+  assert.match(sent[0], /!lvl\/!level\/!niveau/);
+  assert.match(sent[0], /!rank\/!rang/);
+  assert.match(sent[0], /!uptime\/!watchtime/);
 });
 
 test("formats level command from communityLevel data first", async () => {

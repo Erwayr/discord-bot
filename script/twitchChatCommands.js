@@ -9,15 +9,49 @@ const {
   xpRequiredForNextLevel,
 } = require("./communityLevel");
 
-const COMMAND_ALIASES = Object.freeze({
-  "!lvl": "level",
-  "!level": "level",
-  "!niveau": "level",
-  "!rank": "rank",
-  "!rang": "rank",
-  "!uptime": "uptime",
-  "!watchtime": "uptime",
-});
+const COMMAND_DEFINITIONS = Object.freeze([
+  Object.freeze({
+    type: "level",
+    aliases: Object.freeze(["!lvl", "!level", "!niveau"]),
+    label: "!lvl",
+    description: "niveau communautaire",
+    showInHelp: true,
+  }),
+  Object.freeze({
+    type: "rank",
+    aliases: Object.freeze(["!rank", "!rang"]),
+    label: "!rank",
+    description: "classement communautaire",
+    showInHelp: true,
+  }),
+  Object.freeze({
+    type: "uptime",
+    aliases: Object.freeze(["!uptime", "!watchtime"]),
+    label: "!uptime",
+    description: "temps de presence",
+    showInHelp: true,
+  }),
+  Object.freeze({
+    type: "help",
+    aliases: Object.freeze(["!cmd"]),
+    label: "!cmd",
+    description: "liste des commandes live",
+    showInHelp: false,
+  }),
+]);
+
+function buildCommandAliases(definitions = COMMAND_DEFINITIONS) {
+  return Object.freeze(
+    definitions.reduce((aliases, definition) => {
+      for (const alias of definition.aliases || []) {
+        aliases[String(alias).toLowerCase()] = definition.type;
+      }
+      return aliases;
+    }, {}),
+  );
+}
+
+const COMMAND_ALIASES = buildCommandAliases();
 
 const DEFAULT_USER_COOLDOWN_MS = 10_000;
 const DEFAULT_GLOBAL_COOLDOWN_MS = 2_000;
@@ -306,6 +340,24 @@ function parseTwitchChatCommand(message) {
   return type ? { type, alias: firstToken } : null;
 }
 
+function commandHelpEntries(definitions = COMMAND_DEFINITIONS) {
+  return definitions.filter(
+    (definition) =>
+      definition?.showInHelp &&
+      Array.isArray(definition.aliases) &&
+      definition.aliases.length > 0,
+  );
+}
+
+function buildTwitchHelpResponse(definitions = COMMAND_DEFINITIONS) {
+  const entries = commandHelpEntries(definitions).map((definition) => {
+    const aliases = definition.aliases.join("/");
+    const description = String(definition.description || "").trim();
+    return description ? `${aliases} (${description})` : aliases;
+  });
+  return `Commandes live: ${entries.join(" | ")}`;
+}
+
 function resolveUptimeText(communityLevel) {
   const uptimeText = String(communityLevel?.uptimeText || "").trim();
   if (uptimeText) return uptimeText;
@@ -365,6 +417,8 @@ async function buildTwitchCommandResponse({
   pendingEntries,
 }) {
   const mention = displayMention(displayName || login);
+  if (type === "help") return buildTwitchHelpResponse();
+
   const data =
     typeof loadProfile === "function"
       ? await loadProfile(login)
@@ -508,9 +562,11 @@ function createTwitchChatCommands({
 }
 
 module.exports = {
+  COMMAND_DEFINITIONS,
   COMMAND_ALIASES,
   parseTwitchChatCommand,
   applyPendingLiveDeltas,
+  buildTwitchHelpResponse,
   buildTwitchCommandResponse,
   createTwitchChatCommands,
   resolveUptimeText,
