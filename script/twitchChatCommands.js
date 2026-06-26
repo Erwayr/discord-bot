@@ -157,6 +157,10 @@ function normalizePendingActivityEntry(entry = {}) {
     streamId,
     startedAt: entry.startedAt || null,
     chatEvents: Array.isArray(entry.chatEvents) ? entry.chatEvents : [],
+    channelPointsCount: Math.max(
+      0,
+      Math.floor(Number(entry.channelPointsCount) || 0),
+    ),
     uptimeMs: Math.max(
       0,
       Math.floor(Number(entry.uptimeMs ?? entry.accumulatedMs) || 0),
@@ -240,6 +244,33 @@ function applyPendingLiveDeltas(data, pendingEntries = [], communityConfig = {})
         nowMs: event.atMs,
         rawConfig: communityConfig,
         eventCount: event.count,
+      });
+      if (result.awarded) {
+        workingData.communityLevel = result.communityLevel;
+        Object.assign(workingData, result.legacyFields);
+      }
+    }
+
+    if (pending.channelPointsCount > 0) {
+      stream.channel_points = {
+        used: false,
+        redemptions: 0,
+        last_at: null,
+        ...(stream.channel_points || {}),
+      };
+      stream.channel_points.used = true;
+      stream.channel_points.redemptions =
+        Math.max(0, Math.floor(Number(stream.channel_points.redemptions || 0))) +
+        pending.channelPointsCount;
+      stream.channel_points.last_at = Date.now();
+      const result = applyCommunityLevelXpProgress({
+        data: workingData,
+        entry: stream,
+        streamId: pending.streamId,
+        nowMs: stream.channel_points.last_at,
+        rawConfig: communityConfig,
+        source: "channel_points",
+        eventCount: pending.channelPointsCount,
       });
       if (result.awarded) {
         workingData.communityLevel = result.communityLevel;

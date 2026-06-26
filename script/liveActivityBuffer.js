@@ -62,6 +62,7 @@ function cloneEntry(entry) {
     displayName: entry.displayName || entry.login,
     chatEvents: entry.chatEvents.map(cloneEvent),
     emoteCount: nonNegativeInt(entry.emoteCount, 0),
+    channelPointsCount: nonNegativeInt(entry.channelPointsCount, 0),
     uptimeMs: nonNegativeInt(entry.uptimeMs, 0),
     presenceFirstSeenAtMs: nonNegativeInt(entry.presenceFirstSeenAtMs, 0),
     presenceLastSeenAtMs: nonNegativeInt(entry.presenceLastSeenAtMs, 0),
@@ -78,6 +79,7 @@ function createEmptyEntry({ login, streamId, segmentId, startedAt, displayName }
     displayName: displayName || login,
     chatEvents: [],
     emoteCount: 0,
+    channelPointsCount: 0,
     uptimeMs: 0,
     presenceFirstSeenAtMs: 0,
     presenceLastSeenAtMs: 0,
@@ -93,7 +95,8 @@ function mergeEntries(target, source) {
     !target.flushId &&
     source.flushId &&
     target.chatEvents.length <= 0 &&
-    target.emoteCount <= 0
+    target.emoteCount <= 0 &&
+    target.channelPointsCount <= 0
   ) {
     target.flushId = source.flushId;
   }
@@ -101,6 +104,7 @@ function mergeEntries(target, source) {
   target.chatEvents.push(...source.chatEvents.map(cloneEvent));
   target.chatEvents.sort((a, b) => a.atMs - b.atMs);
   target.emoteCount += nonNegativeInt(source.emoteCount, 0);
+  target.channelPointsCount += nonNegativeInt(source.channelPointsCount, 0);
   target.uptimeMs += nonNegativeInt(source.uptimeMs, 0);
 
   const first = nonNegativeInt(source.presenceFirstSeenAtMs, 0);
@@ -209,6 +213,14 @@ function createLiveActivityBuffer({
         inc: nonNegativeInt(entry.emoteCount, 0),
       });
     }
+    if (entry.channelPointsCount > 0) {
+      events.push({
+        ...base,
+        type: "channel_points",
+        atMs: Date.now(),
+        inc: nonNegativeInt(entry.channelPointsCount, 0),
+      });
+    }
     if (entry.uptimeMs > 0 || entry.presenceFirstSeenAtMs > 0) {
       events.push({
         ...base,
@@ -297,6 +309,11 @@ function createLiveActivityBuffer({
       return;
     }
 
+    if (raw.type === "channel_points") {
+      entry.channelPointsCount += Math.max(1, nonNegativeInt(raw.inc, 1));
+      return;
+    }
+
     if (raw.type === "uptime") {
       entry.flushId = raw.flushId || entry.flushId || null;
       entry.uptimeMs += nonNegativeInt(raw.uptimeMs, 0);
@@ -379,6 +396,30 @@ function createLiveActivityBuffer({
       login: entry.login,
       streamId: entry.streamId,
       pendingEmotes: entry.emoteCount,
+    };
+  }
+
+  function noteChannelPoints(login, streamId, inc = 1, meta = {}) {
+    const entry = ensureEntry(login, streamId, meta);
+    if (!entry) return { buffered: false, reason: "invalid_target" };
+    const safeInc = Math.max(1, Math.floor(Number(inc) || 1));
+    entry.channelPointsCount += safeInc;
+    appendJournal({
+      v: 1,
+      type: "channel_points",
+      login: entry.login,
+      streamId: entry.streamId,
+      segmentId: entry.segmentId,
+      startedAt: entry.startedAt,
+      displayName: entry.displayName,
+      atMs: Math.max(1, Math.floor(Number(now()) || Date.now())),
+      inc: safeInc,
+    });
+    return {
+      buffered: true,
+      login: entry.login,
+      streamId: entry.streamId,
+      pendingChannelPoints: entry.channelPointsCount,
     };
   }
 
@@ -483,6 +524,7 @@ function createLiveActivityBuffer({
       startedAt: entry.startedAt,
       chatEvents: entry.chatEvents,
       emoteCount: entry.emoteCount,
+      channelPointsCount: entry.channelPointsCount,
       uptimeMs: entry.uptimeMs,
       presenceFirstSeenAtMs: entry.presenceFirstSeenAtMs,
       presenceLastSeenAtMs: entry.presenceLastSeenAtMs,
@@ -604,6 +646,7 @@ function createLiveActivityBuffer({
   return {
     noteChatMessage,
     noteEmoteUsage,
+    noteChannelPoints,
     flush,
     start,
     stop,

@@ -99,6 +99,28 @@ test("emotes are accumulated with chat events", async () => {
   assert.equal(calls[0][2].emoteCount, 5);
 });
 
+test("channel points are buffered with live activity", async () => {
+  const calls = [];
+  const buffer = createLiveActivityBuffer({
+    questStore: {
+      noteLiveActivity: async (...args) => {
+        calls.push(args);
+        return { applied: true };
+      },
+    },
+    now: () => 1000,
+  });
+
+  buffer.noteChatMessage("alice", "stream-1");
+  buffer.noteChannelPoints("alice", "stream-1", 2);
+  buffer.noteChannelPoints("alice", "stream-1", 3);
+
+  await buffer.flush({ reason: "manual" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][2].chatEvents.length, 1);
+  assert.equal(calls[0][2].channelPointsCount, 5);
+});
+
 test("timer flush uses the 20 minute default", async () => {
   const scheduler = createFakeScheduler();
   const calls = [];
@@ -185,6 +207,49 @@ test("pending chat is restored from the local journal", async () => {
     assert.equal(calls[0][0], "alice");
     assert.equal(calls[0][2].chatEvents.length, 1);
     assert.match(calls[0][2].flushId, /^live-activity:stream-1:alice:/);
+    assert.equal(fs.existsSync(path.join(dir, "pending.jsonl")), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pending channel points are restored from the local journal", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "live-activity-"));
+  const calls = [];
+
+  try {
+    const first = createLiveActivityBuffer({
+      questStore: {
+        noteLiveActivity: async (...args) => {
+          calls.push(args);
+          return { applied: true };
+        },
+      },
+      persistenceDir: dir,
+      now: () => 1234,
+    });
+    first.noteChannelPoints("Alice", "stream-1", 2, {
+      displayName: "Alice",
+      startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    });
+
+    const restored = createLiveActivityBuffer({
+      questStore: {
+        noteLiveActivity: async (...args) => {
+          calls.push(args);
+          return { applied: true };
+        },
+      },
+      persistenceDir: dir,
+      now: () => 2000,
+      logger: { log() {}, warn() {} },
+    });
+
+    assert.equal(restored.pendingSize(), 1);
+    await restored.flush({ reason: "manual" });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], "alice");
+    assert.equal(calls[0][2].channelPointsCount, 2);
     assert.equal(fs.existsSync(path.join(dir, "pending.jsonl")), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

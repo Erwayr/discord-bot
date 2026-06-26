@@ -212,6 +212,10 @@ const config = {
     flushMode: process.env.TWITCH_LIVE_ACTIVITY_FLUSH_MODE || "live-end",
     flushMs: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_MS", 20 * 60 * 1000),
     flushChunkSize: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_CHUNK_SIZE", 25),
+    minNewProfilePresenceMs: numberEnv(
+      "TWITCH_LIVE_ACTIVITY_MIN_NEW_PROFILE_PRESENCE_MS",
+      10 * 60 * 1000,
+    ),
     persistenceDir:
       process.env.TWITCH_LIVE_ACTIVITY_PERSIST_DIR ||
       ".runtime/live-activity",

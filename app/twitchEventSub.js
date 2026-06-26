@@ -80,6 +80,7 @@ function createTwitchEventSub({
   livePresenceTick,
   postDiscord,
   sendTwitchChatMessage,
+  bufferLiveChannelPoints,
 }) {
   const seenDeliveries = new Map();
   const subTimers = new Map();
@@ -326,8 +327,27 @@ function createTwitchEventSub({
             login,
             streamId,
             1,
-            { startedAt },
+            { startedAt, createIfMissing: false },
           );
+          if (channelPointsProgress?.reason === "missing_follower") {
+            const buffered =
+              typeof bufferLiveChannelPoints === "function"
+                ? bufferLiveChannelPoints(login, streamId, 1, {
+                    startedAt,
+                    displayName: r.user_name || login,
+                  })
+                : null;
+            if (buffered?.buffered) {
+              console.log(
+                `[live-activity] ChannelPoints buffered for new live profile ${login} (stream ${streamId})`,
+              );
+            } else {
+              console.log(
+                `[live-activity] ChannelPoints skipped for missing follower ${login} (no live buffer)`,
+              );
+            }
+            return res.sendStatus(200);
+          }
           if (
             channelPointsProgress?.leveledUp &&
             typeof sendTwitchChatMessage === "function"

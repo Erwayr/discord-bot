@@ -404,6 +404,7 @@ function createTwitchChat({
     sendTwitchChatMessage,
     flushLiveActivity: liveActivityBuffer.flush,
     stopLiveActivityBuffer: liveActivityBuffer.stop,
+    noteLiveChannelPoints: liveActivityBuffer.noteChannelPoints,
     getPendingLiveActivity: liveActivityBuffer.pendingSnapshot,
     getPendingLiveActivityForLogin: liveActivityBuffer.pendingForLogin,
     getPendingLiveActivityStreams: liveActivityBuffer.pendingStreamIds,

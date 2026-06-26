@@ -243,6 +243,10 @@ function normalizeActivityEvents(events = []) {
 function createQuestStorage(db, options = {}) {
   const col = db.collection("followers_all_time");
   const communityLevelConfig = resolveCommunityLevelConfig(options.communityLevel || {});
+  const minNewProfilePresenceMs = Math.max(
+    0,
+    Math.floor(Number(options.minNewProfilePresenceMs) || 0),
+  );
 
   async function getCommunityLevelConfig() {
     if (typeof options.getCommunityLevelConfig !== "function") {
@@ -669,6 +673,7 @@ function createQuestStorage(db, options = {}) {
       startedAt,
       chatEvents = [],
       emoteCount = 0,
+      channelPointsCount = 0,
       uptimeMs = 0,
       presenceFirstSeenAtMs = 0,
       presenceLastSeenAtMs = 0,
@@ -679,7 +684,12 @@ function createQuestStorage(db, options = {}) {
     const safeStreamId = normalizeStreamId(streamId);
     const normalizedChatEvents = normalizeActivityEvents(chatEvents);
     const safeEmoteCount = Math.max(0, Math.floor(Number(emoteCount) || 0));
-    const safeUptimeMinutes = uptimeMinutesFromMs(uptimeMs);
+    const safeChannelPointsCount = Math.max(
+      0,
+      Math.floor(Number(channelPointsCount) || 0),
+    );
+    const safeUptimeMs = Math.max(0, Math.floor(Number(uptimeMs) || 0));
+    const safeUptimeMinutes = uptimeMinutesFromMs(safeUptimeMs);
     const safePresenceFirstSeenAtMs = Math.max(
       0,
       Math.floor(Number(presenceFirstSeenAtMs) || 0),
@@ -695,6 +705,7 @@ function createQuestStorage(db, options = {}) {
     if (
       !normalizedChatEvents.length &&
       safeEmoteCount <= 0 &&
+      safeChannelPointsCount <= 0 &&
       safeUptimeMinutes <= 0 &&
       safePresenceFirstSeenAtMs <= 0
     ) {
@@ -712,6 +723,7 @@ function createQuestStorage(db, options = {}) {
       chatCount: 0,
       chatCapped: false,
       emoteCount: safeEmoteCount,
+      channelPointsCount: safeChannelPointsCount,
       levelAwarded: false,
       levelXp: 0,
       level: null,
@@ -725,7 +737,9 @@ function createQuestStorage(db, options = {}) {
       participantMirrored: false,
     };
     const effectiveCommunityLevelConfig =
-      normalizedChatEvents.length || safePresenceFirstSeenAtMs > 0
+      normalizedChatEvents.length ||
+      safePresenceFirstSeenAtMs > 0 ||
+      safeChannelPointsCount > 0
       ? await getCommunityLevelConfig()
       : null;
 
@@ -735,6 +749,26 @@ function createQuestStorage(db, options = {}) {
         tx.get(ref),
         shouldReadParticipant ? tx.get(participantRef) : Promise.resolve(null),
       ]);
+      const presenceDurationMs =
+        safePresenceFirstSeenAtMs > 0 && safePresenceLastSeenAtMs > 0
+          ? Math.max(0, safePresenceLastSeenAtMs - safePresenceFirstSeenAtMs)
+          : 0;
+      const newProfilePresenceMs = Math.max(safeUptimeMs, presenceDurationMs);
+      if (
+        !snap.exists &&
+        minNewProfilePresenceMs > 0 &&
+        newProfilePresenceMs < minNewProfilePresenceMs
+      ) {
+        result = {
+          ...result,
+          applied: false,
+          reason: "new_profile_presence_below_threshold",
+          presenceMs: newProfilePresenceMs,
+          minPresenceMs: minNewProfilePresenceMs,
+        };
+        return;
+      }
+
       const data = snap.exists ? snap.data() || {} : {};
       const workingData = { ...data };
       const lp = { ...(data.live_presence || {}) };
@@ -866,6 +900,41 @@ function createQuestStorage(db, options = {}) {
           Math.floor(Number(entry.chat_message.count || 0)),
         );
         result.chatCapped = result.chatCount >= CHAT_MESSAGE_CAP_PER_STREAM;
+      }
+
+      if (safeChannelPointsCount > 0) {
+        entry.channel_points = {
+          used: false,
+          redemptions: 0,
+          last_at: null,
+          ...(entry.channel_points || {}),
+        };
+        entry.channel_points.used = true;
+        entry.channel_points.redemptions =
+          Math.max(0, Math.floor(Number(entry.channel_points.redemptions || 0))) +
+          safeChannelPointsCount;
+        entry.channel_points.last_at = latestAtMs;
+
+        const channelPointsLevelResult = applyCommunityLevelXpProgress({
+          data: workingData,
+          entry,
+          streamId: safeStreamId,
+          nowMs: latestAtMs,
+          rawConfig: effectiveCommunityLevelConfig,
+          source: "channel_points",
+          eventCount: safeChannelPointsCount,
+        });
+        if (channelPointsLevelResult.awarded) {
+          latestLevelResult = channelPointsLevelResult;
+          workingData.communityLevel = channelPointsLevelResult.communityLevel;
+          Object.assign(workingData, channelPointsLevelResult.legacyFields);
+          if (channelPointsLevelResult.leveledUp) {
+            result.levelUps.push({
+              level: channelPointsLevelResult.level,
+              rankName: channelPointsLevelResult.communityLevel?.rankName || "",
+            });
+          }
+        }
       }
 
       if (safeEmoteCount > 0) {
@@ -1016,18 +1085,23 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     redemptionsInc = 1,
-    { startedAt } = {}
+    { startedAt, createIfMissing = true } = {}
   ) {
     const docId = login.toLowerCase();
     const ref = col.doc(docId);
     const safeInc = Math.max(1, Math.floor(Number(redemptionsInc) || 1));
     let channelPointsLevelResult = null;
+    let skippedReason = null;
     const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
 
       // 🔧 crée le doc minimal si absent
       if (!snap.exists) {
+        if (!createIfMissing) {
+          skippedReason = "missing_follower";
+          return;
+        }
         tx.set(
           ref,
           { pseudo: docId, live_presence: {} },
@@ -1072,6 +1146,17 @@ function createQuestStorage(db, options = {}) {
       }
       tx.update(ref, patch);
     });
+
+    if (skippedReason) {
+      return {
+        levelAwarded: false,
+        levelXp: 0,
+        level: null,
+        rankName: "",
+        leveledUp: false,
+        reason: skippedReason,
+      };
+    }
 
     return {
       levelAwarded: !!channelPointsLevelResult?.awarded,

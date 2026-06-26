@@ -1,9 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { test } = require("node:test");
 
-const { _test } = require("../app/twitchEventSub");
+const { createTwitchEventSub, _test } = require("../app/twitchEventSub");
 const {
   parseTwitchPollInput,
   processTwitchPollRedemption,
@@ -61,6 +62,91 @@ function fakeLivePresenceTick(streamId = "stream-1") {
       streamId,
       startedAt: new Date("2026-06-20T10:00:00Z"),
     }),
+  };
+}
+
+function fakeEventSubConfig(secret = "secret") {
+  return {
+    twitch: {
+      channelId: "broadcaster-1",
+      clientId: "client-1",
+      moderatorId: "moderator-1",
+      webhookSecret: secret,
+      ticketRewardId: "ticket-reward",
+    },
+    twitchPoll: {
+      rewardId: "poll-reward",
+      rewardTitle: "Faire un sondage",
+    },
+    overlay: {
+      cardRewardId: "overlay-card-reward",
+      cardRewardTitle: "ma carte",
+      eventsCollection: "overlay_events",
+    },
+    urls: {},
+    timing: {
+      subCooldownMs: 10_000,
+      subDebounceMs: 0,
+    },
+    discord: {
+      bootyChannelId: "booty-channel",
+    },
+  };
+}
+
+function fakeSignedRequest(body, secret = "secret", id = "message-1") {
+  const timestamp = "2026-06-20T10:00:00Z";
+  const signature = crypto
+    .createHmac("sha256", secret)
+    .update(id + timestamp + JSON.stringify(body))
+    .digest("hex");
+  const headers = new Map([
+    ["twitch-eventsub-message-id", id],
+    ["twitch-eventsub-message-timestamp", timestamp],
+    ["twitch-eventsub-message-signature", `sha256=${signature}`],
+  ]);
+  return {
+    body,
+    header(name) {
+      return headers.get(String(name || "").toLowerCase());
+    },
+  };
+}
+
+function fakeResponse() {
+  return {
+    statusCode: null,
+    body: null,
+    sendStatus(code) {
+      this.statusCode = code;
+      return this;
+    },
+    status(code) {
+      this.statusCode = code;
+      return {
+        send: (body) => {
+          this.body = body;
+          return this;
+        },
+      };
+    },
+  };
+}
+
+function channelPointBody(login = "alice") {
+  return {
+    subscription: {
+      type: "channel.channel_points_custom_reward_redemption.add",
+    },
+    event: {
+      id: `redemption-${login}`,
+      user_login: login,
+      user_name: login[0].toUpperCase() + login.slice(1),
+      reward: {
+        id: "channel-points-reward",
+        title: "Hydrate",
+      },
+    },
   };
 }
 
@@ -136,6 +222,83 @@ test("overlay card redemption payload exposes only overlay fields", () => {
 
 test("overlay card event doc ids are Firestore-safe", () => {
   assert.equal(_test.safeOverlayEventDocId("abc/123 hello"), "abc_123_hello");
+});
+
+test("channel point redemption updates existing profile immediately", async () => {
+  const noteCalls = [];
+  const bufferCalls = [];
+  const eventSub = createTwitchEventSub({
+    db: {},
+    client: {},
+    config: fakeEventSubConfig(),
+    tokenManager: {},
+    questStore: {
+      noteChannelPoints: async (...args) => {
+        noteCalls.push(args);
+        return { reason: null, leveledUp: false };
+      },
+    },
+    livePresenceTick: fakeLivePresenceTick("stream-1"),
+    postDiscord: async () => {},
+    sendTwitchChatMessage: async () => {},
+    bufferLiveChannelPoints: (...args) => {
+      bufferCalls.push(args);
+      return { buffered: true };
+    },
+  });
+  const res = fakeResponse();
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(channelPointBody("alice")),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(noteCalls.length, 1);
+  assert.equal(noteCalls[0][0], "alice");
+  assert.equal(noteCalls[0][1], "stream-1");
+  assert.equal(noteCalls[0][2], 1);
+  assert.equal(noteCalls[0][3].createIfMissing, false);
+  assert.equal(bufferCalls.length, 0);
+});
+
+test("channel point redemption buffers missing live profile", async () => {
+  const noteCalls = [];
+  const bufferCalls = [];
+  const eventSub = createTwitchEventSub({
+    db: {},
+    client: {},
+    config: fakeEventSubConfig(),
+    tokenManager: {},
+    questStore: {
+      noteChannelPoints: async (...args) => {
+        noteCalls.push(args);
+        return { reason: "missing_follower", leveledUp: false };
+      },
+    },
+    livePresenceTick: fakeLivePresenceTick("stream-1"),
+    postDiscord: async () => {},
+    sendTwitchChatMessage: async () => {},
+    bufferLiveChannelPoints: (...args) => {
+      bufferCalls.push(args);
+      return { buffered: true };
+    },
+  });
+  const res = fakeResponse();
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(channelPointBody("bob"), "secret", "message-2"),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(noteCalls.length, 1);
+  assert.equal(noteCalls[0][3].createIfMissing, false);
+  assert.equal(bufferCalls.length, 1);
+  assert.equal(bufferCalls[0][0], "bob");
+  assert.equal(bufferCalls[0][1], "stream-1");
+  assert.equal(bufferCalls[0][2], 1);
+  assert.equal(bufferCalls[0][3].displayName, "Bob");
 });
 
 test("twitch poll parser accepts question and 2-5 slash choices", () => {

@@ -91,6 +91,7 @@ const cardNotifications = createCardNotificationQueue({
 const questStore = createQuestStorage(db, {
   communityLevel: config.communityLevel,
   getCommunityLevelConfig,
+  minNewProfilePresenceMs: config.twitchLiveActivity.minNewProfilePresenceMs,
 });
 const tokenManager = createTokenManager(db, {
   docPath: config.twitch.tokenDocPath,
@@ -177,6 +178,7 @@ const twitchEventSub = createTwitchEventSub({
   livePresenceTick,
   postDiscord,
   sendTwitchChatMessage: twitchChat.sendTwitchChatMessage,
+  bufferLiveChannelPoints: twitchChat.noteLiveChannelPoints,
 });
 
 const jobs = createJobs({

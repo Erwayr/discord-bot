@@ -779,3 +779,87 @@ test("batched live activity applies deferred presence and uptime together", asyn
   assert.equal(participant.communityLevel.uptimeMinutes, 90);
   assert.equal(participant.communityLevel.uptimeText, "1h 30m");
 });
+
+test("batched live activity does not create new profile below presence threshold", async () => {
+  const db = new FakeDb();
+  const store = createQuestStorage(db, {
+    minNewProfilePresenceMs: 10 * 60 * 1000,
+    communityLevel: { chatCooldownMs: 0 },
+  });
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    chatEvents: [{ atMs: Date.parse("2026-05-16T10:02:00.000Z") }],
+    emoteCount: 2,
+    channelPointsCount: 1,
+    uptimeMs: 9 * 60 * 1000 + 59 * 1000,
+    presenceFirstSeenAtMs: Date.parse("2026-05-16T10:00:00.000Z"),
+    presenceLastSeenAtMs: Date.parse("2026-05-16T10:09:59.000Z"),
+    flushId: "below-threshold",
+  });
+
+  assert.equal(result.applied, false);
+  assert.equal(result.reason, "new_profile_presence_below_threshold");
+  assert.equal(db.doc("alice"), undefined);
+});
+
+test("batched live activity creates new profile at presence threshold", async () => {
+  const db = new FakeDb();
+  const store = createQuestStorage(db, {
+    minNewProfilePresenceMs: 10 * 60 * 1000,
+    communityLevel: { chatCooldownMs: 0 },
+  });
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    startedAt: new Date("2026-05-16T10:00:00.000Z"),
+    chatEvents: [{ atMs: Date.parse("2026-05-16T10:02:00.000Z") }],
+    emoteCount: 2,
+    channelPointsCount: 2,
+    uptimeMs: 10 * 60 * 1000,
+    presenceFirstSeenAtMs: Date.parse("2026-05-16T10:00:00.000Z"),
+    presenceLastSeenAtMs: Date.parse("2026-05-16T10:10:00.000Z"),
+    flushId: "at-threshold",
+  });
+
+  const doc = db.doc("alice");
+  const stream = monthNodeFor(db, "alice").streams[0];
+  assert.equal(result.applied, true);
+  assert.equal(doc.pseudo, "alice");
+  assert.equal(doc.communityLevel.chatMessages, 1);
+  assert.equal(doc.communityLevel.channelPointsRedemptions, 2);
+  assert.equal(doc.communityLevel.uptimeMinutes, 10);
+  assert.equal(stream.chat_message.count, 1);
+  assert.equal(stream.emote.count, 2);
+  assert.equal(stream.channel_points.redemptions, 2);
+  assert.equal(stream.presence.uptime_minutes, 10);
+});
+
+test("batched live activity updates existing profile below presence threshold", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
+  const store = createQuestStorage(db, {
+    minNewProfilePresenceMs: 10 * 60 * 1000,
+    communityLevel: { chatCooldownMs: 0 },
+  });
+
+  const result = await store.noteLiveActivity("alice", "stream-1", {
+    chatEvents: [{ atMs: Date.parse("2026-05-16T10:02:00.000Z") }],
+    uptimeMs: 60 * 1000,
+    presenceFirstSeenAtMs: Date.parse("2026-05-16T10:00:00.000Z"),
+    presenceLastSeenAtMs: Date.parse("2026-05-16T10:01:00.000Z"),
+  });
+
+  assert.equal(result.applied, true);
+  assert.equal(db.doc("alice").communityLevel.chatMessages, 1);
+});
+
+test("channel points can skip creating missing follower profiles", async () => {
+  const db = new FakeDb();
+  const store = createQuestStorage(db);
+
+  const result = await store.noteChannelPoints("alice", "stream-1", 1, {
+    createIfMissing: false,
+  });
+
+  assert.equal(result.reason, "missing_follower");
+  assert.equal(db.doc("alice"), undefined);
+});
