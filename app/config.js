@@ -198,6 +198,10 @@ const config = {
     legacyDoubleWrite: boolEnv("COMMUNITY_LEVEL_LEGACY_DOUBLE_WRITE", false),
     rankCron: process.env.CRON_COMMUNITY_LEVEL_RANKS || "0",
     rankBatchSize: numberEnv("COMMUNITY_LEVEL_RANK_BATCH_SIZE", 400),
+    rankRefreshOnLiveStart: boolEnv(
+      "COMMUNITY_LEVEL_RANK_REFRESH_ON_LIVE_START",
+      true,
+    ),
     rankRefreshOnLiveEnd: boolEnv(
       "COMMUNITY_LEVEL_RANK_REFRESH_ON_LIVE_END",
       true,

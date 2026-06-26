@@ -31,11 +31,44 @@ function createLivePresenceTick(states, calls, pendingUptime = []) {
   return livePresenceTick;
 }
 
-function createTestJobs({ states, calls, pendingUptime = [], flushPayloads = [] }) {
+function createEmptyRankRefreshDb(rankReads) {
+  return {
+    collection(name) {
+      assert.equal(name, "followers_all_time");
+      return {
+        get: async () => {
+          rankReads.push("followers_all_time");
+          return { forEach() {} };
+        },
+      };
+    },
+    batch() {
+      return {
+        set() {},
+        commit: async () => {},
+      };
+    },
+  };
+}
+
+function createTestJobs({
+  states,
+  calls,
+  pendingUptime = [],
+  flushPayloads = [],
+  db = {},
+  communityLevel = {
+    enabled: false,
+    rankCron: "0",
+    rankRefreshOnLiveStart: false,
+    rankRefreshOnLiveEnd: false,
+  },
+  getCommunityLevelConfig = async () => ({}),
+}) {
   const livePresenceTick = createLivePresenceTick(states, calls, pendingUptime);
 
   return createJobs({
-    db: {},
+    db,
     admin: {},
     client: { guilds: { cache: new Map() } },
     config: {
@@ -48,11 +81,7 @@ function createTestJobs({ states, calls, pendingUptime = [], flushPayloads = [] 
         birthdayRefresh: "birthday-refresh",
         emoteRefresh: "emote-refresh",
       },
-      communityLevel: {
-        enabled: false,
-        rankCron: "0",
-        rankRefreshOnLiveEnd: false,
-      },
+      communityLevel,
       timing: {
         offlineConfirmTicks: 2,
       },
@@ -86,7 +115,7 @@ function createTestJobs({ states, calls, pendingUptime = [], flushPayloads = [] 
       refreshChannelEmotesThrottled: async () => {},
       getPendingLiveActivityStreams: () => [],
     },
-    getCommunityLevelConfig: async () => ({}),
+    getCommunityLevelConfig,
     cardNotifications: null,
     githubActions: {
       dispatchLiveEndWorkflows: async ({ streamId }) => {
@@ -203,4 +232,64 @@ test("live-end flush passes pending uptime entries before uptime fallback", asyn
     "uptime:stream-1:live-end",
     "dispatch:stream-1",
   ]);
+});
+
+test("community rank refresh runs at live start and end only", async (t) => {
+  const originalSchedule = cron.schedule;
+  const scheduled = [];
+  cron.schedule = (expr, fn, options) => {
+    scheduled.push({ expr, fn, options });
+    return {
+      start: () => {},
+      stop: () => {},
+    };
+  };
+  t.after(() => {
+    cron.schedule = originalSchedule;
+  });
+
+  const calls = [];
+  const rankReads = [];
+  const jobs = createTestJobs({
+    calls,
+    db: createEmptyRankRefreshDb(rankReads),
+    communityLevel: {
+      enabled: true,
+      rankCron: "*/1 * * * *",
+      rankRefreshOnLiveStart: true,
+      rankRefreshOnLiveEnd: true,
+    },
+    states: [
+      {
+        streamId: "stream-1",
+        startedAt: new Date("2026-06-19T20:00:00.000Z"),
+      },
+      {
+        streamId: "stream-1",
+        startedAt: new Date("2026-06-19T20:00:00.000Z"),
+      },
+      { streamId: null, startedAt: null },
+      { streamId: null, startedAt: null },
+    ],
+  });
+
+  jobs.scheduleCoreJobs();
+  const liveJob = scheduled.find((entry) => entry.expr === "live-presence");
+  assert.ok(liveJob, "live presence cron job should be scheduled");
+
+  await liveJob.fn();
+  assert.equal(rankReads.length, 1);
+  assert.equal(
+    scheduled.filter((entry) => entry.expr === "*/1 * * * *").length,
+    0,
+  );
+
+  await liveJob.fn();
+  assert.equal(rankReads.length, 1);
+
+  await liveJob.fn();
+  assert.equal(rankReads.length, 1);
+
+  await liveJob.fn();
+  assert.equal(rankReads.length, 2);
 });
