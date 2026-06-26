@@ -6,8 +6,8 @@ const { isExcludedLogin } = require("../helper/excludedUsers");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
 const { createLiveActivityBuffer } = require("../script/liveActivityBuffer");
 const {
-  buildCommunityLevelUpMessage,
-} = require("../script/twitchLevelAnnouncements");
+  createLiveLevelAnnouncer,
+} = require("../script/liveLevelAnnouncer");
 
 function createTwitchChat({
   config,
@@ -157,21 +157,36 @@ function createTwitchChat({
     flushIntervalMs: config.twitchLiveActivity?.flushMs,
     flushChunkSize: config.twitchLiveActivity?.flushChunkSize,
     persistenceDir: config.twitchLiveActivity?.persistenceDir,
-    onLevelUp: async ({ login, displayName, level, rankName }) => {
-      const levelUpMessage = buildCommunityLevelUpMessage({
-        displayName,
-        login,
-        level,
-        rankName,
-      });
-      if (!levelUpMessage) return;
-      try {
-        await sendTwitchChatMessage(levelUpMessage);
-      } catch (e) {
-        console.warn("level-up chat message failed:", e?.message || e);
-      }
-    },
   });
+
+  const getPendingUptime =
+    typeof livePresenceTick?.getPendingUptime === "function"
+      ? () => livePresenceTick.getPendingUptime()
+      : null;
+  const liveLevelAnnouncer = createLiveLevelAnnouncer({
+    db,
+    getCommunityLevelConfig,
+    sendTwitchChatMessage,
+    getPendingLiveActivity: liveActivityBuffer.pendingForLogin,
+    getPendingUptime,
+    persistenceDir: config.twitchLiveActivity?.persistenceDir,
+    profileCacheTtlMs: config.twitchLiveActivity?.profileCacheTtlMs,
+  });
+
+  if (typeof livePresenceTick?.setDeferredPresenceHandler === "function") {
+    livePresenceTick.setDeferredPresenceHandler(async ({ login, streamId }) => {
+      try {
+        await liveLevelAnnouncer.checkAndAnnounce({
+          login,
+          displayName: login,
+          streamId,
+          source: "presence",
+        });
+      } catch (e) {
+        console.warn("live presence level announcement failed:", e?.message || e);
+      }
+    });
+  }
 
   const twitchChatCommands = createTwitchChatCommands({
     db,
@@ -182,10 +197,7 @@ function createTwitchChat({
     getCommunityLevelConfig,
     sendTwitchChatMessage,
     getPendingLiveActivity: liveActivityBuffer.pendingForLogin,
-    getPendingUptime:
-      typeof livePresenceTick?.getPendingUptime === "function"
-        ? () => livePresenceTick.getPendingUptime()
-        : null,
+    getPendingUptime,
   });
 
   const tmiClient = new tmi.Client({
@@ -244,6 +256,19 @@ function createTwitchChat({
         console.log(
           `[community-level] buffered chat ${login} stream=${streamId} pending=${chatProgress.pendingChatEvents}`,
         );
+      }
+      if (chatProgress?.buffered) {
+        liveLevelAnnouncer
+          .checkAndAnnounce({
+            login,
+            displayName:
+              tags["display-name"] || tags.displayName || tags.username || login,
+            streamId,
+            source: "chat",
+          })
+          .catch((e) =>
+            console.warn("live chat level announcement failed:", e?.message || e),
+          );
       }
     } catch (e) {
       console.warn("buffer noteChatMessage failed:", e?.message || e);

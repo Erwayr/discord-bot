@@ -163,6 +163,7 @@ function createLivePresenceTicker({
   uptimeTickMs,
   uptimeMaxTickMs,
   deferPresenceWrites = false,
+  onDeferredPresence,
 }) {
   if (!db || !tokenManager || !clientId || !broadcasterId || !moderatorId) {
     throw new Error("createLivePresenceTicker: parametres manquants");
@@ -173,6 +174,8 @@ function createLivePresenceTicker({
     tickMs: uptimeTickMs,
     maxTickMs: uptimeMaxTickMs,
   });
+  let deferredPresenceHandler =
+    typeof onDeferredPresence === "function" ? onDeferredPresence : null;
 
   let CURRENT_STREAM_ID = null;
   let CURRENT_STARTED_AT = null;
@@ -360,10 +363,25 @@ function createLivePresenceTicker({
       for (let i = 0; i < toProcess.length; i += CHUNK) {
         const slice = toProcess.slice(i, i + CHUNK);
         if (deferPresenceWrites) {
-          slice.forEach((login) => {
-            uptime.markPresenceNoted(login);
-            processed += 1;
-          });
+          await Promise.all(
+            slice.map(async (login) => {
+              uptime.markPresenceNoted(login);
+              processed += 1;
+              if (typeof deferredPresenceHandler !== "function") return;
+              try {
+                await deferredPresenceHandler({
+                  login,
+                  streamId: CURRENT_STREAM_ID,
+                  startedAt: CURRENT_STARTED_AT,
+                });
+              } catch (e) {
+                console.warn(
+                  `[ticker] deferred presence handler failed for ${login}:`,
+                  e?.message || e,
+                );
+              }
+            }),
+          );
         } else {
           await Promise.all(
             slice.map(async (login) => {
@@ -404,6 +422,9 @@ function createLivePresenceTicker({
     uptime.snapshot(targetStreamId);
   runTick.clearPendingUptime = (entries = []) => uptime.removeLogins(entries);
   runTick.isPresenceDeferred = () => !!deferPresenceWrites;
+  runTick.setDeferredPresenceHandler = (handler) => {
+    deferredPresenceHandler = typeof handler === "function" ? handler : null;
+  };
 
   return runTick;
 }

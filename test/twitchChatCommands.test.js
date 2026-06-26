@@ -327,6 +327,78 @@ test("level command includes pending live chat deltas", async () => {
   assert.match(response, /XP 20 \(20\/100\)$/);
 });
 
+test("level command includes pending chat and presence deltas", async () => {
+  const db = new FakeDb({
+    alice: {
+      communityLevel: {
+        level: 1,
+        rank: 1,
+        xpTotal: 0,
+        xpInLevel: 0,
+        xpForNext: 100,
+      },
+      live_presence: {},
+    },
+  });
+
+  const response = await buildTwitchCommandResponse({
+    db,
+    login: "alice",
+    displayName: "Alice",
+    type: "level",
+    getCommunityLevelConfig: async () => ({ chatCooldownMs: 0 }),
+    pendingEntries: [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        startedAt: new Date("2026-05-16T10:00:00.000Z"),
+        firstSeenAtMs: Date.parse("2026-05-16T10:05:00.000Z"),
+        lastSeenAtMs: Date.parse("2026-05-16T10:05:00.000Z"),
+        accumulatedMs: 120_000,
+        chatEvents: [
+          { atMs: Date.parse("2026-05-16T11:00:00.000Z") },
+          { atMs: Date.parse("2026-05-16T11:01:00.000Z") },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(response, "@Alice Niveau 2 - minimoys - XP 220 (120/125)");
+});
+
+test("rank command keeps DB rank while using pending live level", async () => {
+  const db = new FakeDb({
+    alice: {
+      communityLevel: {
+        level: 1,
+        rank: 7,
+        rankName: "minimoys",
+        xpTotal: 90,
+        xpInLevel: 90,
+        xpForNext: 100,
+      },
+      live_presence: {},
+    },
+  });
+
+  const response = await buildTwitchCommandResponse({
+    db,
+    login: "alice",
+    displayName: "Alice",
+    type: "rank",
+    getCommunityLevelConfig: async () => ({ chatCooldownMs: 0 }),
+    pendingEntries: [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        chatEvents: [{ atMs: Date.parse("2026-05-16T11:00:00.000Z") }],
+      },
+    ],
+  });
+
+  assert.equal(response, "@Alice #7 au classement communautaire - Niveau 2");
+});
+
 test("uptime command includes pending live uptime delta", async () => {
   const db = new FakeDb({
     alice: {
