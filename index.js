@@ -10,6 +10,9 @@ const { createClipPoller } = require("./script/clipPoller");
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const { createQuestStorage } = require("./script/questStorage");
 const { createTokenManager } = require("./script/tokenManager");
+const {
+  createTwitchExtensionStatsSync,
+} = require("./script/twitchExtensionStatsSync");
 const { createWeeklyFollowersRecap } = require("./script/weeklyFollowersRecap");
 const {
   createWeeklyPlanningPublisher,
@@ -101,6 +104,11 @@ const helix = makeHelix({
   clientId: config.twitch.clientId,
 });
 
+const twitchExtensionStatsSync = createTwitchExtensionStatsSync({
+  ...config.twitchExtensionStats,
+  tokenManager,
+});
+
 const livePresenceTick = createLivePresenceTicker({
   db,
   tokenManager,
@@ -158,6 +166,7 @@ const twitchChat = createTwitchChat({
   livePresenceTick,
   birthdays,
   getCommunityLevelConfig,
+  twitchExtensionStatsSync,
 });
 
 const authHealth = createAuthHealth({
@@ -179,6 +188,7 @@ const twitchEventSub = createTwitchEventSub({
   postDiscord,
   sendTwitchChatMessage: twitchChat.sendTwitchChatMessage,
   bufferLiveChannelPoints: twitchChat.noteLiveChannelPoints,
+  twitchExtensionStatsSync,
 });
 
 const jobs = createJobs({

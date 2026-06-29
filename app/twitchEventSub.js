@@ -81,6 +81,7 @@ function createTwitchEventSub({
   postDiscord,
   sendTwitchChatMessage,
   bufferLiveChannelPoints,
+  twitchExtensionStatsSync,
 }) {
   const seenDeliveries = new Map();
   const subTimers = new Map();
@@ -335,6 +336,7 @@ function createTwitchEventSub({
                 ? bufferLiveChannelPoints(login, streamId, 1, {
                     startedAt,
                     displayName: r.user_name || login,
+                    twitchUserId: r.user_id || "",
                   })
                 : null;
             if (buffered?.buffered) {
@@ -347,6 +349,21 @@ function createTwitchEventSub({
               );
             }
             return res.sendStatus(200);
+          }
+          if (typeof twitchExtensionStatsSync?.syncEntry === "function") {
+            await twitchExtensionStatsSync
+              .syncEntry({
+                twitchUserId: r.user_id || "",
+                login,
+                displayName: r.user_name || login,
+                channelPointsCount: 1,
+              })
+              .catch((e) =>
+                console.warn(
+                  "twitch extension channel point stats sync failed:",
+                  e?.message || e,
+                ),
+              );
           }
           if (
             channelPointsProgress?.leveledUp &&

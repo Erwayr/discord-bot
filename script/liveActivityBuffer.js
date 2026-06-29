@@ -41,6 +41,11 @@ function normalizeStartedAt(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function normalizeTwitchUserId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_-]+$/.test(text) ? text : "";
+}
+
 function entryKey(login, streamId) {
   return `${login}::${streamId}`;
 }
@@ -60,6 +65,7 @@ function cloneEntry(entry) {
     flushId: entry.flushId || null,
     startedAt: entry.startedAt || null,
     displayName: entry.displayName || entry.login,
+    twitchUserId: entry.twitchUserId || "",
     chatEvents: entry.chatEvents.map(cloneEvent),
     emoteCount: nonNegativeInt(entry.emoteCount, 0),
     channelPointsCount: nonNegativeInt(entry.channelPointsCount, 0),
@@ -69,7 +75,14 @@ function cloneEntry(entry) {
   };
 }
 
-function createEmptyEntry({ login, streamId, segmentId, startedAt, displayName }) {
+function createEmptyEntry({
+  login,
+  streamId,
+  segmentId,
+  startedAt,
+  displayName,
+  twitchUserId,
+}) {
   return {
     login,
     streamId,
@@ -77,6 +90,7 @@ function createEmptyEntry({ login, streamId, segmentId, startedAt, displayName }
     flushId: null,
     startedAt: normalizeStartedAt(startedAt),
     displayName: displayName || login,
+    twitchUserId: normalizeTwitchUserId(twitchUserId),
     chatEvents: [],
     emoteCount: 0,
     channelPointsCount: 0,
@@ -90,6 +104,9 @@ function mergeEntries(target, source) {
   if (!target || !source) return target || source;
   if (!target.startedAt && source.startedAt) target.startedAt = source.startedAt;
   if (source.displayName) target.displayName = source.displayName;
+  if (!target.twitchUserId && source.twitchUserId) {
+    target.twitchUserId = source.twitchUserId;
+  }
   if (!target.segmentId && source.segmentId) target.segmentId = source.segmentId;
   if (
     !target.flushId &&
@@ -149,6 +166,7 @@ function createLiveActivityBuffer({
   flushMode = DEFAULT_FLUSH_MODE,
   persistenceDir = "",
   onLevelUp,
+  onFlushSuccess,
   now = () => Date.now(),
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -198,6 +216,7 @@ function createLiveActivityBuffer({
       segmentId: entry.segmentId,
       startedAt: entry.startedAt || null,
       displayName: entry.displayName || entry.login,
+      twitchUserId: entry.twitchUserId || "",
     };
     const events = entry.chatEvents.map((event) => ({
       ...base,
@@ -271,15 +290,19 @@ function createLiveActivityBuffer({
         login,
         streamId,
         segmentId: meta.segmentId || nextSegmentId(),
-        startedAt: meta.startedAt || null,
-        displayName: meta.displayName || login,
-      });
+      startedAt: meta.startedAt || null,
+      displayName: meta.displayName || login,
+      twitchUserId: meta.twitchUserId || meta.userId || "",
+    });
       pending.set(key, entry);
     } else {
       if (!entry.startedAt && meta.startedAt) {
         entry.startedAt = normalizeStartedAt(meta.startedAt);
       }
       if (meta.displayName) entry.displayName = meta.displayName;
+      if (!entry.twitchUserId && (meta.twitchUserId || meta.userId)) {
+        entry.twitchUserId = normalizeTwitchUserId(meta.twitchUserId || meta.userId);
+      }
       if (!entry.segmentId && meta.segmentId) entry.segmentId = meta.segmentId;
     }
 
@@ -292,6 +315,7 @@ function createLiveActivityBuffer({
       segmentId: raw.segmentId || null,
       startedAt: raw.startedAt || null,
       displayName: raw.displayName || raw.login,
+      twitchUserId: raw.twitchUserId || raw.userId || "",
     });
     if (!entry) return;
 
@@ -365,6 +389,7 @@ function createLiveActivityBuffer({
       segmentId: entry.segmentId,
       startedAt: entry.startedAt,
       displayName: entry.displayName,
+      twitchUserId: entry.twitchUserId || "",
       ...event,
     });
     return {
@@ -388,6 +413,7 @@ function createLiveActivityBuffer({
       segmentId: entry.segmentId,
       startedAt: entry.startedAt,
       displayName: entry.displayName,
+      twitchUserId: entry.twitchUserId || "",
       atMs: Math.max(1, Math.floor(Number(now()) || Date.now())),
       inc: safeInc,
     });
@@ -412,6 +438,7 @@ function createLiveActivityBuffer({
       segmentId: entry.segmentId,
       startedAt: entry.startedAt,
       displayName: entry.displayName,
+      twitchUserId: entry.twitchUserId || "",
       atMs: Math.max(1, Math.floor(Number(now()) || Date.now())),
       inc: safeInc,
     });
@@ -438,7 +465,8 @@ function createLiveActivityBuffer({
         raw.segmentId ||
         `uptime-${streamId}-${login}-${firstSeen || "0"}-${lastSeen || "0"}-${uptimeMs}`,
       startedAt: raw.startedAt || null,
-      displayName: raw.displayName || login,
+      displayName: raw.displayName || raw.login || login,
+      twitchUserId: raw.twitchUserId || raw.userId || "",
     });
   }
 
@@ -506,6 +534,18 @@ function createLiveActivityBuffer({
     }
   }
 
+  async function notifyFlushSuccess(entry, result, reason) {
+    if (typeof onFlushSuccess !== "function") return;
+    try {
+      await onFlushSuccess(cloneEntry(entry), result, reason);
+    } catch (e) {
+      logger.warn(
+        `[live-activity] post-flush hook failed for ${entry.login}/${entry.streamId}:`,
+        e?.message || e,
+      );
+    }
+  }
+
   function ensureFlushId(entry) {
     if (!entry.flushId) {
       entry.flushId = `live-activity:${entry.streamId}:${entry.login}:${entry.segmentId || nextSegmentId()}`;
@@ -532,6 +572,7 @@ function createLiveActivityBuffer({
       reason,
     });
     await notifyLevelUps(entry, result);
+    await notifyFlushSuccess(entry, result, reason);
     return result;
   }
 

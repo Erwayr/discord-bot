@@ -18,6 +18,7 @@ function createTwitchChat({
   livePresenceTick,
   birthdays,
   getCommunityLevelConfig,
+  twitchExtensionStatsSync,
 }) {
   let CHANNEL_EMOTE_IDS = new Set();
   let CHANNEL_EMOTE_NAMES = new Set();
@@ -157,6 +158,7 @@ function createTwitchChat({
     flushIntervalMs: config.twitchLiveActivity?.flushMs,
     flushChunkSize: config.twitchLiveActivity?.flushChunkSize,
     persistenceDir: config.twitchLiveActivity?.persistenceDir,
+    onFlushSuccess: twitchExtensionStatsSync?.syncEntry,
   });
 
   const getPendingUptime =
@@ -251,6 +253,7 @@ function createTwitchChat({
       const chatProgress = liveActivityBuffer.noteChatMessage(login, streamId, {
         startedAt: liveState.startedAt,
         displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        twitchUserId: tags["user-id"] || tags.userId || "",
       });
       if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.buffered) {
         console.log(
@@ -319,6 +322,7 @@ function createTwitchChat({
             startedAt: liveState.startedAt,
             displayName:
               tags["display-name"] || tags.displayName || tags.username || login,
+            twitchUserId: tags["user-id"] || tags.userId || "",
           });
           console.log(
             `[emotes→buffer] OK fallback-name | ${login} +${incByName} stream=${streamId}`,
@@ -382,6 +386,7 @@ function createTwitchChat({
       liveActivityBuffer.noteEmoteUsage(login, streamId, inc, {
         startedAt: liveState.startedAt,
         displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        twitchUserId: tags["user-id"] || tags.userId || "",
       });
       console.log(`[emotes→buffer] OK | ${login} +${inc} stream=${streamId}`);
     } catch (e) {

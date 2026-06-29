@@ -225,6 +225,15 @@ const config = {
     ),
   },
 
+  twitchExtensionStats: {
+    enabled: boolEnv("TWITCH_EXTENSION_STATS_ENABLED", true),
+    endpoint: process.env.TWITCH_EXTENSION_STATS_ENDPOINT || "",
+    includeTokenInBody: boolEnv("TWITCH_EXTENSION_STATS_INCLUDE_TOKEN_IN_BODY", true),
+    source:
+      process.env.TWITCH_EXTENSION_STATS_SOURCE || "discord-bot-live-activity",
+    writeMode: process.env.TWITCH_EXTENSION_STATS_WRITE_MODE || "increment",
+  },
+
   twitchCommands: {
     userCooldownMs: numberEnv("TWITCH_COMMAND_USER_COOLDOWN_MS", 10_000),
     globalCooldownMs: numberEnv("TWITCH_COMMAND_GLOBAL_COOLDOWN_MS", 2_000),

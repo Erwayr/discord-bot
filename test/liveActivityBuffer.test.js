@@ -318,3 +318,65 @@ test("level-up notifications are emitted after flush", async () => {
     },
   ]);
 });
+
+test("post-flush hook receives Twitch user id and live stats", async () => {
+  const hooks = [];
+  const buffer = createLiveActivityBuffer({
+    questStore: {
+      noteLiveActivity: async () => ({ applied: true }),
+    },
+    onFlushSuccess: async (...args) => hooks.push(args),
+    now: () => 1000,
+  });
+
+  buffer.noteChatMessage("Alice", "stream-1", {
+    displayName: "Alice",
+    twitchUserId: "12345",
+  });
+  buffer.noteEmoteUsage("Alice", "stream-1", 2);
+  buffer.noteChannelPoints("Alice", "stream-1", 1);
+
+  await buffer.flush({
+    reason: "manual",
+    uptimeEntries: [
+      {
+        login: "Alice",
+        streamId: "stream-1",
+        twitchUserId: "12345",
+        accumulatedMs: 120_000,
+      },
+    ],
+  });
+
+  assert.equal(hooks.length, 1);
+  assert.equal(hooks[0][0].login, "alice");
+  assert.equal(hooks[0][0].displayName, "Alice");
+  assert.equal(hooks[0][0].twitchUserId, "12345");
+  assert.equal(hooks[0][0].chatEvents.length, 1);
+  assert.equal(hooks[0][0].emoteCount, 2);
+  assert.equal(hooks[0][0].channelPointsCount, 1);
+  assert.equal(hooks[0][0].uptimeMs, 120_000);
+  assert.equal(hooks[0][2], "manual");
+});
+
+test("post-flush hook failures do not requeue successful live activity", async () => {
+  const warnings = [];
+  const buffer = createLiveActivityBuffer({
+    questStore: {
+      noteLiveActivity: async () => ({ applied: true }),
+    },
+    onFlushSuccess: async () => {
+      throw new Error("extension EBS down");
+    },
+    logger: { log() {}, warn: (...args) => warnings.push(args) },
+    now: () => 1000,
+  });
+
+  buffer.noteChatMessage("Alice", "stream-1", { twitchUserId: "12345" });
+  const result = await buffer.flush({ reason: "manual" });
+
+  assert.equal(result.flushed, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(buffer.pendingSize(), 0);
+  assert.match(String(warnings[0]?.[0] || ""), /post-flush hook failed/);
+});

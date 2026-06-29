@@ -38,6 +38,42 @@ test("uptime accumulator credits seen ticks, caps long gaps and skips absences",
   assert.equal(snapshot[0].accumulatedMs, 540_000);
 });
 
+test("uptime accumulator keeps Twitch ids from Helix chatters", () => {
+  const acc = createUptimeAccumulator({
+    tickMs: 60_000,
+    maxTickMs: 300_000,
+  });
+  acc.reset("stream-1", new Date("2026-05-16T10:00:00.000Z"));
+
+  acc.markSeen(
+    [
+      {
+        user_id: "12345",
+        user_login: "Alice",
+        user_name: "Alice Display",
+      },
+    ],
+    1_000,
+  );
+  acc.markSeen(
+    [
+      {
+        user_id: "12345",
+        user_login: "alice",
+        user_name: "Alice Display",
+      },
+    ],
+    61_000,
+  );
+
+  const snapshot = acc.snapshot();
+  assert.equal(snapshot.length, 1);
+  assert.equal(snapshot[0].login, "alice");
+  assert.equal(snapshot[0].twitchUserId, "12345");
+  assert.equal(snapshot[0].displayName, "Alice Display");
+  assert.equal(snapshot[0].accumulatedMs, 120_000);
+});
+
 test("uptime accumulator can clear flushed logins", () => {
   const acc = createUptimeAccumulator({
     tickMs: 120_000,

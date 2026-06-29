@@ -140,6 +140,7 @@ function channelPointBody(login = "alice") {
     },
     event: {
       id: `redemption-${login}`,
+      user_id: `id-${login}`,
       user_login: login,
       user_name: login[0].toUpperCase() + login.slice(1),
       reward: {
@@ -227,6 +228,7 @@ test("overlay card event doc ids are Firestore-safe", () => {
 test("channel point redemption updates existing profile immediately", async () => {
   const noteCalls = [];
   const bufferCalls = [];
+  const syncCalls = [];
   const eventSub = createTwitchEventSub({
     db: {},
     client: {},
@@ -245,6 +247,11 @@ test("channel point redemption updates existing profile immediately", async () =
       bufferCalls.push(args);
       return { buffered: true };
     },
+    twitchExtensionStatsSync: {
+      syncEntry: async (entry) => {
+        syncCalls.push(entry);
+      },
+    },
   });
   const res = fakeResponse();
 
@@ -260,11 +267,19 @@ test("channel point redemption updates existing profile immediately", async () =
   assert.equal(noteCalls[0][2], 1);
   assert.equal(noteCalls[0][3].createIfMissing, false);
   assert.equal(bufferCalls.length, 0);
+  assert.equal(syncCalls.length, 1);
+  assert.deepEqual(syncCalls[0], {
+    twitchUserId: "id-alice",
+    login: "alice",
+    displayName: "Alice",
+    channelPointsCount: 1,
+  });
 });
 
 test("channel point redemption buffers missing live profile", async () => {
   const noteCalls = [];
   const bufferCalls = [];
+  const syncCalls = [];
   const eventSub = createTwitchEventSub({
     db: {},
     client: {},
@@ -283,6 +298,11 @@ test("channel point redemption buffers missing live profile", async () => {
       bufferCalls.push(args);
       return { buffered: true };
     },
+    twitchExtensionStatsSync: {
+      syncEntry: async (entry) => {
+        syncCalls.push(entry);
+      },
+    },
   });
   const res = fakeResponse();
 
@@ -299,6 +319,8 @@ test("channel point redemption buffers missing live profile", async () => {
   assert.equal(bufferCalls[0][1], "stream-1");
   assert.equal(bufferCalls[0][2], 1);
   assert.equal(bufferCalls[0][3].displayName, "Bob");
+  assert.equal(bufferCalls[0][3].twitchUserId, "id-bob");
+  assert.equal(syncCalls.length, 0);
 });
 
 test("twitch poll parser accepts question and 2-5 slash choices", () => {

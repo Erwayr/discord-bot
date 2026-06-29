@@ -20,6 +20,25 @@ function normalizeStreamId(value) {
   return String(value || "").trim();
 }
 
+function normalizeTwitchUserId(value) {
+  const text = String(value || "").trim();
+  return /^[A-Za-z0-9_-]+$/.test(text) ? text : "";
+}
+
+function normalizeChatter(raw) {
+  if (typeof raw === "string") {
+    const login = normalizeLogin(raw);
+    return login ? { login, twitchUserId: "", displayName: raw } : null;
+  }
+  const login = normalizeLogin(raw?.user_login || raw?.login || raw?.userName);
+  if (!login) return null;
+  return {
+    login,
+    twitchUserId: normalizeTwitchUserId(raw?.user_id || raw?.userId),
+    displayName: String(raw?.user_name || raw?.displayName || raw?.user_login || login).trim(),
+  };
+}
+
 function normalizeDate(value) {
   if (!value) return null;
   if (value instanceof Date) {
@@ -47,12 +66,12 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
 
   function markSeen(logins = [], nowMs = Date.now()) {
     const seenAtMs = Math.max(0, Math.floor(Number(nowMs) || Date.now()));
-    const present = new Set();
+    const present = new Map();
 
     for (const rawLogin of Array.isArray(logins) ? logins : []) {
-      const login = normalizeLogin(rawLogin);
-      if (!login || isExcludedLogin(login)) continue;
-      present.add(login);
+      const chatter = normalizeChatter(rawLogin);
+      if (!chatter?.login || isExcludedLogin(chatter.login)) continue;
+      present.set(chatter.login, chatter);
     }
 
     entries.forEach((entry, login) => {
@@ -62,7 +81,7 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
     const presenceLogins = [];
     let creditedMs = 0;
 
-    for (const login of present) {
+    for (const [login, chatter] of present.entries()) {
       let entry = entries.get(login);
       if (!entry) {
         entry = {
@@ -71,8 +90,15 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
           accumulatedMs: 0,
           seenInLastTick: false,
           presenceNoted: false,
+          twitchUserId: chatter.twitchUserId || "",
+          displayName: chatter.displayName || login,
         };
         entries.set(login, entry);
+      } else {
+        if (!entry.twitchUserId && chatter.twitchUserId) {
+          entry.twitchUserId = chatter.twitchUserId;
+        }
+        if (chatter.displayName) entry.displayName = chatter.displayName;
       }
 
       const deltaMs = Math.max(0, seenAtMs - entry.lastSeenAtMs);
@@ -89,7 +115,7 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
     }
 
     return {
-      presentLogins: Array.from(present),
+      presentLogins: Array.from(present.keys()),
       presenceLogins,
       creditedMs,
       trackedLogins: entries.size,
@@ -110,6 +136,8 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
         firstSeenAtMs: entry.firstSeenAtMs,
         lastSeenAtMs: entry.lastSeenAtMs,
         accumulatedMs: Math.max(0, Math.floor(entry.accumulatedMs || 0)),
+        twitchUserId: entry.twitchUserId || "",
+        displayName: entry.displayName || login,
       }))
       .filter((entry) => entry.login && entry.streamId && entry.accumulatedMs > 0);
   }
@@ -191,7 +219,7 @@ function createLivePresenceTicker({
   }
 
   async function fetchAllChatters() {
-    const logins = [];
+    const chatters = [];
     let cursor = null;
     let guard = 0;
 
@@ -208,13 +236,20 @@ function createLivePresenceTicker({
       const arr = data?.data || [];
       arr.forEach((c) => {
         const login = normalizeLogin(c?.user_login);
-        if (login) logins.push(login);
+        if (login) {
+          chatters.push({
+            login,
+            user_login: login,
+            user_name: c?.user_name || c?.user_login || login,
+            user_id: c?.user_id || "",
+          });
+        }
       });
       cursor = data?.pagination?.cursor || null;
       guard += 1;
     } while (cursor && guard < 20);
 
-    return logins;
+    return chatters;
   }
 
   async function flushStreamUptime(streamId, { reason = "live-end" } = {}) {
