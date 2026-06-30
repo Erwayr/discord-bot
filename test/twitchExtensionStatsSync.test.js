@@ -17,6 +17,7 @@ test("entryToViewerStatsPayload converts live activity entries to EBS stats", ()
       emoteCount: 5,
       channelPointsCount: 2,
       uptimeMs: 125_000,
+      presenceFirstSeenAtMs: Date.parse("2026-06-29T10:00:00.000Z"),
     },
     { source: "bot-test" },
   );
@@ -28,6 +29,7 @@ test("entryToViewerStatsPayload converts live activity entries to EBS stats", ()
     source: "bot-test",
     mode: "increment",
     stats: {
+      presenceStreams: 1,
       liveMinutes: 2,
       chatMessages: 4,
       emotesUsed: 5,
@@ -114,6 +116,7 @@ test("syncEntry posts payload with broadcaster OAuth token", async () => {
   assert.equal(calls[0].body.userId, "12345");
   assert.equal(calls[0].body.mode, "increment");
   assert.deepEqual(calls[0].body.stats, {
+    presenceStreams: 0,
     liveMinutes: 0,
     chatMessages: 1,
     emotesUsed: 0,

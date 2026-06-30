@@ -50,6 +50,7 @@ function entryToViewerStatsPayload(
   if (!userId) return null;
 
   const stats = {
+    presenceStreams: safeInt(entry.presenceFirstSeenAtMs) > 0 ? 1 : 0,
     liveMinutes: Math.floor(safeInt(entry.uptimeMs) / MS_PER_MINUTE),
     chatMessages: sumChatEvents(entry.chatEvents),
     emotesUsed: safeInt(entry.emoteCount),
@@ -101,7 +102,7 @@ function createTwitchExtensionStatsSync({
     }
     if (logger?.log) {
       logger.log(
-        `[twitch-extension-stats] synced ${payload.login || payload.userId} live=${payload.stats.liveMinutes} chat=${payload.stats.chatMessages} emotes=${payload.stats.emotesUsed} points=${payload.stats.channelPointsRedeemed}`,
+        `[twitch-extension-stats] synced ${payload.login || payload.userId} presence=${payload.stats.presenceStreams} live=${payload.stats.liveMinutes} chat=${payload.stats.chatMessages} emotes=${payload.stats.emotesUsed} points=${payload.stats.channelPointsRedeemed}`,
       );
     }
     return { synced: true, payload, response: response?.data || null };
