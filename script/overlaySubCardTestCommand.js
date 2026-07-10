@@ -30,9 +30,11 @@ function parseOverlaySubCardTestCommand(message, senderLogin = "") {
   if (!OVERLAY_SUB_CARD_TEST_ALIASES.includes(alias)) return null;
 
   const targetLogin = normalizeLogin(parts[1] || senderLogin);
+  const subMessage = parts.slice(2).join(" ").replace(/\s+/g, " ").trim().slice(0, 500);
   return {
     alias,
     targetLogin,
+    subMessage,
   };
 }
 
@@ -79,6 +81,7 @@ async function publishOverlaySubCardTestEvent({
   targetLogin = "",
   targetDisplayName = "",
   requestedBy = "",
+  subMessage = "",
   now = () => Date.now(),
 } = {}) {
   const login = normalizeLogin(targetLogin);
@@ -96,6 +99,7 @@ async function publishOverlaySubCardTestEvent({
   const eventKey = safeDocId(`test_${login}_${eventMs}`);
   const docId = `${eventType}_${eventKey}`;
   const displayName = String(targetDisplayName || login).replace(/^@+/, "").trim() || login;
+  const safeSubMessage = String(subMessage || "").replace(/\s+/g, " ").trim().slice(0, 500);
 
   await db.collection(collectionName).doc(docId).set(
     {
@@ -108,6 +112,7 @@ async function publishOverlaySubCardTestEvent({
       displayName,
       test: true,
       requestedBy: normalizeLogin(requestedBy),
+      subMessage: safeSubMessage,
     },
     { merge: true },
   );
@@ -118,6 +123,7 @@ async function publishOverlaySubCardTestEvent({
     docId,
     login,
     displayName,
+    subMessage: safeSubMessage,
   };
 }
 
@@ -154,6 +160,7 @@ async function handleOverlaySubCardTestCommand({
     targetLogin: parsed.targetLogin,
     targetDisplayName: parsed.targetLogin,
     requestedBy: login,
+    subMessage: parsed.subMessage,
     now,
   });
 

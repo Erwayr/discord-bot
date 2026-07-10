@@ -35,6 +35,22 @@ function safeOverlayEventDocId(value) {
   return cleaned || `event_${Date.now()}`;
 }
 
+function safeOverlayText(value, maxLength = 500) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function subscriptionMessageTextFromEvent(event) {
+  const message = event?.message;
+  if (typeof message === "string") return safeOverlayText(message);
+  if (message && typeof message === "object") {
+    return safeOverlayText(message.text || message.body || message.message || "");
+  }
+  return safeOverlayText(event?.message_text || event?.messageText || "");
+}
+
 function redemptionEventMs(redemption) {
   const parsed = Date.parse(redemption?.redeemed_at || "");
   return Number.isFinite(parsed) ? parsed : Date.now();
@@ -103,6 +119,7 @@ function buildOverlaySubCardEvent(
     subTier: String(event?.tier || ""),
     isGift: !!event?.is_gift,
     subMonths: subscriptionMonthsFromEvent(event),
+    subMessage: subscriptionMessageTextFromEvent(event),
   };
 }
 

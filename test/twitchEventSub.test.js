@@ -370,6 +370,7 @@ test("channel.subscribe publishes one overlay sub card event", async () => {
   assert.equal(writes[0].data.twitchEventType, "channel.subscribe");
   assert.equal(writes[0].data.subTier, "Prime");
   assert.equal(writes[0].data.subMonths, 1);
+  assert.equal(writes[0].data.subMessage, "");
 });
 
 test("channel.subscription.message publishes one overlay sub card event", async () => {
@@ -382,6 +383,7 @@ test("channel.subscription.message publishes one overlay sub card event", async 
       subscriptionBody("channel.subscription.message", "bob", {
         cumulative_months: 14,
         tier: "3000",
+        message: { text: "Merci pour le stream !" },
       }),
       "secret",
       "resub-message-1",
@@ -398,6 +400,7 @@ test("channel.subscription.message publishes one overlay sub card event", async 
   assert.equal(writes[0].data.twitchEventType, "channel.subscription.message");
   assert.equal(writes[0].data.subTier, "3000");
   assert.equal(writes[0].data.subMonths, 14);
+  assert.equal(writes[0].data.subMessage, "Merci pour le stream !");
 });
 
 test("sub then resub for same login is deduped for overlay card", async () => {

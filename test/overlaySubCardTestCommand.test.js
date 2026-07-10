@@ -48,15 +48,26 @@ test("parses overlay sub card test command and target login", () => {
   assert.deepEqual(parseOverlaySubCardTestCommand("!testsubcard Alice", "erwayr"), {
     alias: "!testsubcard",
     targetLogin: "alice",
+    subMessage: "",
   });
   assert.deepEqual(parseOverlaySubCardTestCommand("!testcarteabo @Bob", "erwayr"), {
     alias: "!testcarteabo",
     targetLogin: "bob",
+    subMessage: "",
   });
   assert.deepEqual(parseOverlaySubCardTestCommand("!testsub", "Erwayr"), {
     alias: "!testsub",
     targetLogin: "erwayr",
+    subMessage: "",
   });
+  assert.deepEqual(
+    parseOverlaySubCardTestCommand("!testsubcard Alice Merci pour le live !", "erwayr"),
+    {
+      alias: "!testsubcard",
+      targetLogin: "alice",
+      subMessage: "Merci pour le live !",
+    },
+  );
   assert.equal(parseOverlaySubCardTestCommand("!lvl", "erwayr"), null);
 });
 
@@ -117,8 +128,25 @@ test("publishOverlaySubCardTestEvent writes a sub_card overlay event", async () 
     displayName: "alice",
     test: true,
     requestedBy: "erwayr",
+    subMessage: "",
   });
   assert.deepEqual(db.writes[0].options, { merge: true });
+});
+
+test("publishOverlaySubCardTestEvent can include a Twitch message preview", async () => {
+  const db = fakeDb();
+  const result = await publishOverlaySubCardTestEvent({
+    db,
+    config: fakeConfig(),
+    targetLogin: "Alice",
+    requestedBy: "erwayr",
+    subMessage: "Merci pour le live !",
+    now: () => 1781510000000,
+  });
+
+  assert.equal(result.published, true);
+  assert.equal(result.subMessage, "Merci pour le live !");
+  assert.equal(db.writes[0].data.subMessage, "Merci pour le live !");
 });
 
 test("handleOverlaySubCardTestCommand writes and replies for authorized user", async () => {
