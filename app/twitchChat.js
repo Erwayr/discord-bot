@@ -6,6 +6,9 @@ const { isExcludedLogin } = require("../helper/excludedUsers");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
 const { createLiveActivityBuffer } = require("../script/liveActivityBuffer");
 const {
+  handleOverlaySubCardTestCommand,
+} = require("../script/overlaySubCardTestCommand");
+const {
   createLiveLevelAnnouncer,
 } = require("../script/liveLevelAnnouncer");
 
@@ -224,6 +227,22 @@ function createTwitchChat({
 
     if (!CHANNEL_EMOTE_IDS.size && !CHANNEL_EMOTE_NAMES.size) {
       await refreshChannelEmotesThrottled();
+    }
+
+    try {
+      const overlayTestResult = await handleOverlaySubCardTestCommand({
+        db,
+        config,
+        login,
+        displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        message: msg,
+        tags,
+        sendTwitchChatMessage,
+      });
+      if (overlayTestResult?.handled) return;
+    } catch (e) {
+      console.warn("overlay sub card test command failed:", e?.message || e);
+      return;
     }
 
     const liveState = await getLiveStreamStateForEmotes();

@@ -82,6 +82,8 @@ function fakeEventSubConfig(secret = "secret") {
       cardRewardId: "overlay-card-reward",
       cardRewardTitle: "ma carte",
       eventsCollection: "overlay_events",
+      subCardEventType: "sub_card",
+      subCardDedupeMs: 15_000,
     },
     urls: {},
     timing: {
@@ -149,6 +151,126 @@ function channelPointBody(login = "alice") {
       },
     },
   };
+}
+
+function cloneData(data) {
+  return data == null ? data : JSON.parse(JSON.stringify(data));
+}
+
+function fakeFirestore(initial = {}) {
+  const docs = new Map(
+    Object.entries(initial).map(([path, data]) => [path, cloneData(data)]),
+  );
+  const writes = [];
+
+  function ref(path) {
+    return {
+      path,
+      async get() {
+        const data = docs.get(path);
+        return {
+          exists: data != null,
+          data: () => cloneData(data),
+        };
+      },
+      async set(data, options = {}) {
+        const next = options.merge
+          ? { ...(docs.get(path) || {}), ...cloneData(data) }
+          : cloneData(data);
+        docs.set(path, next);
+        writes.push({
+          type: "set",
+          path,
+          data: cloneData(data),
+          options: { ...options },
+        });
+      },
+      async update(data) {
+        if (!docs.has(path)) throw new Error(`missing document: ${path}`);
+        docs.set(path, { ...docs.get(path), ...cloneData(data) });
+        writes.push({ type: "update", path, data: cloneData(data) });
+      },
+    };
+  }
+
+  return {
+    writes,
+    data(path) {
+      return cloneData(docs.get(path));
+    },
+    collection(name) {
+      return {
+        doc(id) {
+          return ref(`${name}/${id}`);
+        },
+      };
+    },
+    doc(path) {
+      return ref(path);
+    },
+    async runTransaction(fn) {
+      return fn({
+        get: (docRef) => docRef.get(),
+        set: (docRef, data, options) => docRef.set(data, options),
+        update: (docRef, data) => docRef.update(data),
+      });
+    },
+  };
+}
+
+function subscriptionBody(type, login = "alice", eventOverrides = {}) {
+  const displayName = login[0].toUpperCase() + login.slice(1);
+  return {
+    subscription: { type },
+    event: {
+      user_id: `id-${login}`,
+      user_login: login,
+      user_name: displayName,
+      tier: "Prime",
+      is_gift: false,
+      ...(type === "channel.subscription.message"
+        ? { cumulative_months: 6, streak_months: 3, duration_months: 1 }
+        : {}),
+      ...eventOverrides,
+    },
+  };
+}
+
+function overlayWrites(db) {
+  return db.writes.filter(
+    (write) =>
+      write.type === "set" &&
+      write.path.startsWith("overlay_events/") &&
+      write.data?.type === "sub_card",
+  );
+}
+
+function createOverlayEventSub(db, configPatch = {}) {
+  const baseConfig = fakeEventSubConfig();
+  const config = {
+    ...baseConfig,
+    ...configPatch,
+    overlay: {
+      ...baseConfig.overlay,
+      ...(configPatch.overlay || {}),
+    },
+    timing: {
+      ...baseConfig.timing,
+      ...(configPatch.timing || {}),
+    },
+  };
+  return createTwitchEventSub({
+    db,
+    client: {},
+    config,
+    tokenManager: {},
+    questStore: {},
+    livePresenceTick: fakeLivePresenceTick("stream-1"),
+    postDiscord: async () => {},
+    sendTwitchChatMessage: async () => {},
+    bufferLiveChannelPoints: () => null,
+    twitchExtensionStatsSync: null,
+  });
 }
 
 test("overlay card redemption matches configured reward id first", () => {
@@ -223,6 +345,134 @@ test("overlay card redemption payload exposes only overlay fields", () => {
 
 test("overlay card event doc ids are Firestore-safe", () => {
   assert.equal(_test.safeOverlayEventDocId("abc/123 hello"), "abc_123_hello");
+});
+
+test("channel.subscribe publishes one overlay sub card event", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db);
+  const res = fakeResponse();
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscribe", "alice"),
+      "secret",
+      "sub-message-1",
+    ),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  const writes = overlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "overlay_events/sub_card_sub-message-1");
+  assert.equal(writes[0].data.login, "alice");
+  assert.equal(writes[0].data.displayName, "Alice");
+  assert.equal(writes[0].data.twitchEventType, "channel.subscribe");
+  assert.equal(writes[0].data.subTier, "Prime");
+  assert.equal(writes[0].data.subMonths, 1);
+});
+
+test("channel.subscription.message publishes one overlay sub card event", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db);
+  const res = fakeResponse();
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscription.message", "bob", {
+        cumulative_months: 14,
+        tier: "3000",
+      }),
+      "secret",
+      "resub-message-1",
+    ),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  const writes = overlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "overlay_events/sub_card_resub-message-1");
+  assert.equal(writes[0].data.login, "bob");
+  assert.equal(writes[0].data.displayName, "Bob");
+  assert.equal(writes[0].data.twitchEventType, "channel.subscription.message");
+  assert.equal(writes[0].data.subTier, "3000");
+  assert.equal(writes[0].data.subMonths, 14);
+});
+
+test("sub then resub for same login is deduped for overlay card", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db);
+  const subRes = fakeResponse();
+  const resubRes = fakeResponse();
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscribe", "carol"),
+      "secret",
+      "combo-sub-1",
+    ),
+    subRes,
+  );
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscription.message", "carol"),
+      "secret",
+      "combo-resub-1",
+    ),
+    resubRes,
+  );
+
+  assert.equal(subRes.statusCode, 200);
+  assert.equal(resubRes.statusCode, 200);
+  const writes = overlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].data.login, "carol");
+  assert.equal(writes[0].data.twitchEventType, "channel.subscribe");
+});
+
+test("same login can publish overlay sub card after dedupe window", async () => {
+  const originalNow = Date.now;
+  let now = Date.parse("2026-06-20T10:00:00Z");
+  Date.now = () => now;
+  try {
+    const db = fakeFirestore();
+    const eventSub = createOverlayEventSub(db, {
+      overlay: { subCardDedupeMs: 15_000 },
+    });
+
+    await eventSub.handleTwitchCallback(
+      fakeSignedRequest(
+        subscriptionBody("channel.subscription.message", "diane"),
+        "secret",
+        "resub-window-1",
+      ),
+      fakeResponse(),
+    );
+    now += 16_000;
+    await eventSub.handleTwitchCallback(
+      fakeSignedRequest(
+        subscriptionBody("channel.subscription.message", "diane", {
+          cumulative_months: 7,
+        }),
+        "secret",
+        "resub-window-2",
+      ),
+      fakeResponse(),
+    );
+
+    const writes = overlayWrites(db);
+    assert.equal(writes.length, 2);
+    assert.deepEqual(
+      writes.map((write) => write.path),
+      [
+        "overlay_events/sub_card_resub-window-1",
+        "overlay_events/sub_card_resub-window-2",
+      ],
+    );
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("channel point redemption updates existing profile immediately", async () => {

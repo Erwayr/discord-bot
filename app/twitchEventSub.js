@@ -71,6 +71,41 @@ function buildOverlayCardRedemptionEvent(redemption, overlayConfig = {}) {
   };
 }
 
+function safePositiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function subscriptionMonthsFromEvent(event) {
+  const months = Number(
+    event?.cumulative_months ?? event?.duration_months ?? event?.streak_months,
+  );
+  return Number.isFinite(months) && months > 0 ? Math.floor(months) : 1;
+}
+
+function buildOverlaySubCardEvent(
+  event,
+  { overlayConfig = {}, twitchEventType = "", deliveryId = "" } = {},
+) {
+  const eventMs = Date.now();
+  const login = String(
+    event?.user_login || event?.user?.login || event?.user_name || "",
+  ).toLowerCase();
+  return {
+    type: overlayConfig.subCardEventType || "sub_card",
+    eventMs,
+    createdAtMs: eventMs,
+    source: "twitch_eventsub",
+    twitchEventType,
+    deliveryId: safeOverlayEventDocId(deliveryId || ""),
+    login,
+    displayName: event?.user_name || event?.user?.name || login,
+    subTier: String(event?.tier || ""),
+    isGift: !!event?.is_gift,
+    subMonths: subscriptionMonthsFromEvent(event),
+  };
+}
+
 function createTwitchEventSub({
   db,
   client,
@@ -86,6 +121,7 @@ function createTwitchEventSub({
   const seenDeliveries = new Map();
   const subTimers = new Map();
   const lastSubNotified = new Map();
+  const lastOverlaySubCardPublished = new Map();
 
   function cleanupSeenDeliveries() {
     const now = Date.now();
@@ -183,6 +219,36 @@ function createTwitchEventSub({
     return e?.user_name || e?.user?.name || fallbackLogin;
   }
 
+  function cleanupOverlaySubCardDedupe(dedupeMs) {
+    const now = Date.now();
+    const maxAge = Math.max(dedupeMs * 4, 5 * 60_000);
+    for (const [login, ts] of lastOverlaySubCardPublished) {
+      if (now - ts > maxAge) lastOverlaySubCardPublished.delete(login);
+    }
+  }
+
+  function getOverlaySubCardDedupeMs() {
+    return safePositiveNumber(
+      config.overlay?.subCardDedupeMs,
+      safePositiveNumber(config.timing?.overlaySubCardDedupeMs, 15_000),
+    );
+  }
+
+  function markOverlaySubCardForPublish(login) {
+    const dedupeMs = getOverlaySubCardDedupeMs();
+    if (!login || dedupeMs <= 0) return true;
+
+    const now = Date.now();
+    const last = lastOverlaySubCardPublished.get(login) || 0;
+    if (now - last < dedupeMs) return false;
+
+    lastOverlaySubCardPublished.set(login, now);
+    if (lastOverlaySubCardPublished.size > 2000) {
+      cleanupOverlaySubCardDedupe(dedupeMs);
+    }
+    return true;
+  }
+
   async function publishOverlayCardRedemptionEvent(redemption) {
     const overlayConfig = config.overlay || {};
     if (!isOverlayCardRedemption(redemption, overlayConfig)) return false;
@@ -196,6 +262,39 @@ function createTwitchEventSub({
     await db.collection(collectionName).doc(docId).set(payload, { merge: true });
     console.log(
       `[overlay] Ma carte event published: login=${payload.login} doc=${docId}`,
+    );
+    return true;
+  }
+
+  async function publishOverlaySubCardEvent(event, twitchEventType, deliveryId) {
+    const overlayConfig = config.overlay || {};
+    const payload = buildOverlaySubCardEvent(event, {
+      overlayConfig,
+      twitchEventType,
+      deliveryId,
+    });
+    if (!payload.login) return false;
+    if (!markOverlaySubCardForPublish(payload.login)) {
+      console.log(
+        `[overlay] Sub card event deduped: login=${payload.login} type=${twitchEventType}`,
+      );
+      return false;
+    }
+
+    const collectionName = overlayConfig.eventsCollection || "overlay_events";
+    const eventKey = safeOverlayEventDocId(
+      deliveryId ||
+        `${twitchEventType}_${payload.login}_${payload.eventMs}`,
+    );
+    const docId = `${payload.type}_${eventKey}`;
+    try {
+      await db.collection(collectionName).doc(docId).set(payload, { merge: true });
+    } catch (error) {
+      lastOverlaySubCardPublished.delete(payload.login);
+      throw error;
+    }
+    console.log(
+      `[overlay] Sub card event published: login=${payload.login} doc=${docId}`,
     );
     return true;
   }
@@ -419,6 +518,11 @@ function createTwitchEventSub({
       try {
         await upsertParticipantFromSubscription(db, event);
         await upsertFollowerMonthsFromSub(db, event);
+        await publishOverlaySubCardEvent(
+          event,
+          subscription.type,
+          req.header("Twitch-Eventsub-Message-Id"),
+        );
 
         const login = getLoginFromEvent(event);
         const display = getDisplayFromEvent(event, login);
@@ -443,6 +547,11 @@ function createTwitchEventSub({
       try {
         await upsertParticipantFromSubscription(db, event);
         await upsertFollowerMonthsFromSub(db, event);
+        await publishOverlaySubCardEvent(
+          event,
+          subscription.type,
+          req.header("Twitch-Eventsub-Message-Id"),
+        );
 
         const login = getLoginFromEvent(event);
         const display = getDisplayFromEvent(event, login);
@@ -660,6 +769,7 @@ module.exports = {
   createTwitchEventSub,
   _test: {
     buildOverlayCardRedemptionEvent,
+    buildOverlaySubCardEvent,
     isOverlayCardRedemption,
     normalizeRewardText,
     safeOverlayEventDocId,
