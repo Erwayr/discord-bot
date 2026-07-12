@@ -5,6 +5,7 @@ const { FieldValue } = require("firebase-admin/firestore");
 
 // Scopes minimaux pour ton use-case: FULFILL + lecture rédemptions + subscriptions + chat
 const CORE_SCOPES = [
+  "channel:moderate",
   "channel:manage:redemptions",
   "channel:read:redemptions",
   "channel:manage:polls",
@@ -34,6 +35,7 @@ const CORE_SCOPES = [
 
 // Scopes larges — ne demander que ce dont tu as besoin.
 const BROAD_SCOPES = [
+  "channel:moderate",
   // Analytics/Bits/Ads
   "analytics:read:extensions",
   "analytics:read:games",

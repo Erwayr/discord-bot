@@ -83,6 +83,7 @@ function fakeEventSubConfig(secret = "secret") {
       cardRewardTitle: "ma carte",
       eventsCollection: "overlay_events",
       subCardEventType: "sub_card",
+      moderationEventType: "moderation_trash",
       subCardDedupeMs: 15_000,
     },
     urls: {},
@@ -245,6 +246,15 @@ function overlayWrites(db) {
   );
 }
 
+function moderationOverlayWrites(db) {
+  return db.writes.filter(
+    (write) =>
+      write.type === "set" &&
+      write.path.startsWith("overlay_events/") &&
+      write.data?.type === "moderation_trash",
+  );
+}
+
 function createOverlayEventSub(db, configPatch = {}) {
   const baseConfig = fakeEventSubConfig();
   const config = {
@@ -401,6 +411,97 @@ test("channel.subscription.message publishes one overlay sub card event", async 
   assert.equal(writes[0].data.subTier, "3000");
   assert.equal(writes[0].data.subMonths, 14);
   assert.equal(writes[0].data.subMessage, "Merci pour le stream !");
+});
+
+test("channel.ban publishes a privacy-safe permanent moderation event", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db);
+  const res = fakeResponse();
+  const body = {
+    subscription: { type: "channel.ban" },
+    event: {
+      user_id: "private-user-id",
+      user_login: "bad_user",
+      user_name: "Bad_User",
+      moderator_user_id: "private-moderator-id",
+      moderator_user_login: "secret_mod",
+      reason: "private reason",
+      banned_at: "2026-06-20T10:00:00Z",
+      ends_at: null,
+      is_permanent: true,
+    },
+  };
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(body, "secret", "ban-message-1"),
+    res,
+  );
+
+  assert.equal(res.statusCode, 200);
+  const writes = moderationOverlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(
+    writes[0].path,
+    "overlay_events/moderation_trash_ban-message-1",
+  );
+  assert.equal(writes[0].data.login, "bad_user");
+  assert.equal(writes[0].data.displayName, "Bad_User");
+  assert.equal(writes[0].data.isPermanent, true);
+  assert.equal(writes[0].data.endsAt, null);
+  assert.equal(Object.hasOwn(writes[0].data, "reason"), false);
+  assert.equal(Object.hasOwn(writes[0].data, "moderator_user_id"), false);
+  assert.equal(Object.hasOwn(writes[0].data, "moderator_user_login"), false);
+  assert.equal(Object.hasOwn(writes[0].data, "user_id"), false);
+});
+
+test("channel.ban publishes timeout metadata and dedupes delivery retries", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db);
+  const body = {
+    subscription: { type: "channel.ban" },
+    event: {
+      user_login: "timed_user",
+      user_name: "Timed_User",
+      reason: "private reason",
+      is_permanent: false,
+      ends_at: "2026-06-20T10:10:00Z",
+    },
+  };
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(body, "secret", "timeout-message-1"),
+    fakeResponse(),
+  );
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(body, "secret", "timeout-message-1"),
+    fakeResponse(),
+  );
+
+  const writes = moderationOverlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].data.isPermanent, false);
+  assert.equal(writes[0].data.endsAt, "2026-06-20T10:10:00Z");
+  assert.equal(Object.hasOwn(writes[0].data, "reason"), false);
+});
+
+test("channel ban subscription payload uses the public webhook contract", () => {
+  const payload = _test.buildChannelBanSubscriptionPayload({
+    twitch: {
+      channelId: "broadcaster-1",
+      eventsubCallback: "https://example.test/twitch-callback",
+      webhookSecret: "secret",
+    },
+  });
+  assert.deepEqual(payload, {
+    type: "channel.ban",
+    version: "1",
+    condition: { broadcaster_user_id: "broadcaster-1" },
+    transport: {
+      method: "webhook",
+      callback: "https://example.test/twitch-callback",
+      secret: "secret",
+    },
+  });
 });
 
 test("sub then resub for same login is deduped for overlay card", async () => {

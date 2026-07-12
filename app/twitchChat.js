@@ -9,6 +9,9 @@ const {
   handleOverlaySubCardTestCommand,
 } = require("../script/overlaySubCardTestCommand");
 const {
+  handleOverlayModerationTestCommand,
+} = require("../script/overlayModerationTestCommand");
+const {
   createLiveLevelAnnouncer,
 } = require("../script/liveLevelAnnouncer");
 
@@ -227,6 +230,22 @@ function createTwitchChat({
 
     if (!CHANNEL_EMOTE_IDS.size && !CHANNEL_EMOTE_NAMES.size) {
       await refreshChannelEmotesThrottled();
+    }
+
+    try {
+      const moderationTestResult = await handleOverlayModerationTestCommand({
+        db,
+        config,
+        login,
+        displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        message: msg,
+        tags,
+        sendTwitchChatMessage,
+      });
+      if (moderationTestResult?.handled) return;
+    } catch (e) {
+      console.warn("overlay moderation test command failed:", e?.message || e);
+      return;
     }
 
     try {

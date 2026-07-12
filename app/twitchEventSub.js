@@ -123,6 +123,39 @@ function buildOverlaySubCardEvent(
   };
 }
 
+function buildOverlayModerationEvent(
+  event,
+  { overlayConfig = {}, deliveryId = "" } = {},
+) {
+  const eventMs = Date.now();
+  const login = String(event?.user_login || event?.user_name || "").toLowerCase();
+  return {
+    type: overlayConfig.moderationEventType || "moderation_trash",
+    eventMs,
+    createdAtMs: eventMs,
+    source: "twitch_eventsub",
+    twitchEventType: "channel.ban",
+    deliveryId: safeOverlayEventDocId(deliveryId || ""),
+    login,
+    displayName: event?.user_name || login,
+    isPermanent: event?.is_permanent === true,
+    endsAt: event?.is_permanent === true ? null : event?.ends_at || null,
+  };
+}
+
+function buildChannelBanSubscriptionPayload(config) {
+  return {
+    type: "channel.ban",
+    version: "1",
+    condition: { broadcaster_user_id: config.twitch.channelId },
+    transport: {
+      method: "webhook",
+      callback: config.twitch.eventsubCallback,
+      secret: config.twitch.webhookSecret,
+    },
+  };
+}
+
 function createTwitchEventSub({
   db,
   client,
@@ -316,6 +349,25 @@ function createTwitchEventSub({
     return true;
   }
 
+  async function publishOverlayModerationEvent(event, deliveryId) {
+    const overlayConfig = config.overlay || {};
+    const payload = buildOverlayModerationEvent(event, {
+      overlayConfig,
+      deliveryId,
+    });
+    if (!payload.login) return false;
+    const collectionName = overlayConfig.eventsCollection || "overlay_events";
+    const eventKey = safeOverlayEventDocId(
+      deliveryId || `channel_ban_${payload.login}_${payload.eventMs}`,
+    );
+    const docId = `${payload.type}_${eventKey}`;
+    await db.collection(collectionName).doc(docId).set(payload, { merge: true });
+    console.log(
+      `[overlay] Moderation event published: login=${payload.login} permanent=${payload.isPermanent} doc=${docId}`,
+    );
+    return true;
+  }
+
   async function buildSubMention(login, display) {
     try {
       const snap = await db.collection("participants").doc(login).get();
@@ -354,6 +406,18 @@ function createTwitchEventSub({
     if (isDuplicateDelivery(req)) return res.sendStatus(200);
 
     const { subscription, event } = req.body;
+
+    if (subscription.type === "channel.ban") {
+      try {
+        await publishOverlayModerationEvent(
+          event,
+          req.header("Twitch-Eventsub-Message-Id"),
+        );
+      } catch (e) {
+        console.warn("overlay moderation event publish failed:", e?.message || e);
+      }
+      return res.sendStatus(200);
+    }
     console.log("🔔 Événement Twitch reçu:", subscription.type);
 
     if (
@@ -763,10 +827,29 @@ function createTwitchEventSub({
     await ensure("channel.subscription.message");
   }
 
+  async function subscribeToBans() {
+    const appToken = await fetchAppAccessToken();
+    const headers = buildTwitchHeaders(appToken);
+    const list = await axios.get(config.urls.eventsub, { headers });
+    const exists = list.data.data.find(
+      (subscription) =>
+        subscription.type === "channel.ban" &&
+        subscription.version === "1" &&
+        subscription.condition?.broadcaster_user_id === config.twitch.channelId,
+    );
+    if (exists) return;
+    await axios.post(
+      config.urls.eventsub,
+      buildChannelBanSubscriptionPayload(config),
+      { headers },
+    );
+  }
+
   async function subscribeAll() {
     await subscribeToFollows().catch(console.error);
     await subscribeToRedemptions().catch(console.error);
     await subscribeToSubs().catch(console.error);
+    await subscribeToBans().catch(console.error);
     await subscribeToRaids().catch(console.error);
   }
 
@@ -775,6 +858,7 @@ function createTwitchEventSub({
     subscribeToFollows,
     subscribeToRedemptions,
     subscribeToSubs,
+    subscribeToBans,
     subscribeToRaids,
     subscribeAll,
     fetchAppAccessToken,
@@ -787,6 +871,8 @@ module.exports = {
   _test: {
     buildOverlayCardRedemptionEvent,
     buildOverlaySubCardEvent,
+    buildOverlayModerationEvent,
+    buildChannelBanSubscriptionPayload,
     isOverlayCardRedemption,
     normalizeRewardText,
     safeOverlayEventDocId,

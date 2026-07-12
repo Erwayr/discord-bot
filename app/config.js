@@ -73,6 +73,8 @@ const config = {
     eventsCollection: process.env.OVERLAY_EVENTS_COLLECTION || "overlay_events",
     cardEventType: process.env.OVERLAY_CARD_EVENT_TYPE || "reward_ma_carte",
     subCardEventType: process.env.OVERLAY_SUB_CARD_EVENT_TYPE || "sub_card",
+    moderationEventType:
+      process.env.OVERLAY_MODERATION_EVENT_TYPE || "moderation_trash",
     subCardDedupeMs: Math.max(
       0,
       numberEnv("OVERLAY_SUB_CARD_DEDUPE_MS", 15_000),
@@ -83,6 +85,14 @@ const config = {
     ),
     subCardTestAllowedLogins:
       process.env.OVERLAY_SUB_CARD_TEST_ALLOWED_LOGINS || "",
+    moderationTestCommandEnabled: boolEnv(
+      "OVERLAY_MODERATION_TEST_COMMAND_ENABLED",
+      true,
+    ),
+    moderationTestAllowedLogins:
+      process.env.OVERLAY_MODERATION_TEST_ALLOWED_LOGINS ||
+      process.env.OVERLAY_SUB_CARD_TEST_ALLOWED_LOGINS ||
+      "",
     cardRewardId:
       process.env.OVERLAY_CARD_REWARD_ID ||
       process.env.MA_CARTE_REWARD_ID ||
