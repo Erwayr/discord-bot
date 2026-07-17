@@ -2,6 +2,7 @@
 const axios = require("axios");
 const { FieldValue } = require("firebase-admin/firestore");
 const { extractCommunityLevelFields } = require("./communityLevel");
+const { isExcludedLogin } = require("../helper/excludedUsers");
 
 const MAX_IDS = 50;
 
@@ -40,7 +41,7 @@ async function upsertParticipantFromRedemption(db, r) {
   if (!r || typeof r !== "object")
     throw new Error("payload redemption invalide");
   const login = (r.user_login || r.user?.login || "").toLowerCase();
-  if (!login) return;
+  if (!login || isExcludedLogin(login)) return;
 
   const partRef = db.collection("participants").doc(login);
   const follRef = db.collection("followers_all_time").doc(login);
@@ -98,7 +99,7 @@ async function upsertParticipantFromRedemption(db, r) {
 
 async function upsertParticipantFromSubscription(db, e) {
   const login = (e.user_login || e.user?.login || "").toLowerCase();
-  if (!login) return;
+  if (!login || isExcludedLogin(login)) return;
 
   const partRef = db.collection("participants").doc(login);
   const follRef = db.collection("followers_all_time").doc(login);
@@ -154,7 +155,7 @@ async function upsertParticipantFromSubscription(db, e) {
 async function upsertFollowerMonthsFromSub(db, e) {
   // e peut venir de "channel.subscribe" ou "channel.subscription.message"
   const login = (e.user_login || e.user?.login || "").toLowerCase();
-  if (!login) return;
+  if (!login || isExcludedLogin(login)) return;
 
   // Mois cumulés / durée / série (selon le type d’event, tout n’est pas toujours présent)
   const monthsTotal = Number(

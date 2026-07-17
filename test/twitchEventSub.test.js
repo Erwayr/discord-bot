@@ -357,6 +357,28 @@ test("overlay card event doc ids are Firestore-safe", () => {
   assert.equal(_test.safeOverlayEventDocId("abc/123 hello"), "abc_123_hello");
 });
 
+test("excluded service accounts are ignored before EventSub writes", async () => {
+  for (const login of ["StreamElements", "streamstickers"]) {
+    const db = fakeFirestore();
+    const eventSub = createOverlayEventSub(db);
+    const res = fakeResponse();
+
+    await eventSub.handleTwitchCallback(
+      fakeSignedRequest(
+        subscriptionBody("channel.follow", login, {
+          followed_at: "2026-06-20T10:00:00Z",
+        }),
+        "secret",
+        `follow-${login}`,
+      ),
+      res,
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(db.writes, []);
+  }
+});
+
 test("channel.subscribe publishes one overlay sub card event", async () => {
   const db = fakeFirestore();
   const eventSub = createOverlayEventSub(db);

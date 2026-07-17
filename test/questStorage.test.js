@@ -117,6 +117,31 @@ test("default community rank titles map level 110 through 149 to Maitre du cosmo
   assert.equal(titleForLevel(150), "Ultra instinct");
 });
 
+test("excluded service accounts never create live activity documents", async () => {
+  for (const login of ["StreamElements", "streamstickers"]) {
+    const db = new FakeDb();
+    const store = createQuestStorage(db);
+
+    const results = await Promise.all([
+      store.notePresence(login, "stream-1"),
+      store.finalizeLiveUptime(login, "stream-1", { uptimeMs: 60_000 }),
+      store.noteEmoteUsage(login, "stream-1"),
+      store.noteChatMessage(login, "stream-1"),
+      store.noteLiveActivity(login, "stream-1", { emoteCount: 1 }),
+      store.noteClipCreated(login, "stream-1"),
+      store.noteChannelPoints(login, "stream-1"),
+      store.noteRaidParticipation(login, "stream-1"),
+    ]);
+
+    assert.equal(db.transactions, 0);
+    results.forEach((result) => {
+      assert.equal(result.applied, false);
+      assert.equal(result.reason, "excluded_user");
+      assert.equal(result.login, login.toLowerCase());
+    });
+  }
+});
+
 test("same stream_id repeated keeps a single stream and count", async () => {
   const db = new FakeDb({ alice: { pseudo: "alice", live_presence: {} } });
   const store = createQuestStorage(db);

@@ -1,6 +1,10 @@
 "use strict";
 
-const EXCLUDED_USER_VALUES = new Set(["wzbot"]);
+const EXCLUDED_USER_VALUES = new Set([
+  "wzbot",
+  "streamelements",
+  "streamstickers",
+]);
 
 const DIRECT_USER_FIELDS = Object.freeze([
   "pseudo",

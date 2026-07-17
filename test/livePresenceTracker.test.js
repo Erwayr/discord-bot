@@ -14,7 +14,10 @@ test("uptime accumulator credits seen ticks, caps long gaps and skips absences",
   });
   acc.reset("stream-1", new Date("2026-05-16T10:00:00.000Z"));
 
-  const first = acc.markSeen(["Alice", "wzbot"], 1_000);
+  const first = acc.markSeen(
+    ["Alice", "wzbot", "StreamElements", "streamstickers"],
+    1_000,
+  );
   assert.deepEqual(first.presentLogins, ["alice"]);
   assert.deepEqual(first.presenceLogins, ["alice"]);
   assert.equal(first.creditedMs, 120_000);

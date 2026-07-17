@@ -2,6 +2,7 @@
 "use strict";
 
 const admin = require("firebase-admin");
+const { isExcludedLogin } = require("../helper/excludedUsers");
 const {
   applyCommunityLevelUptime,
   applyCommunityLevelXpProgress,
@@ -68,6 +69,15 @@ function timestampToMs(value) {
 
 function normalizeStreamId(streamId) {
   return String(streamId || "").trim();
+}
+
+function excludedActivityResult(login) {
+  const normalizedLogin = String(login || "")
+    .trim()
+    .toLowerCase();
+  return isExcludedLogin(normalizedLogin)
+    ? { applied: false, reason: "excluded_user", login: normalizedLogin }
+    : null;
 }
 
 function streamIdsFor(entry) {
@@ -310,7 +320,10 @@ function createQuestStorage(db, options = {}) {
   }
 
   async function notePresence(login, streamId, { startedAt, context } = {}) {
-    const ref = col.doc(login);
+    const excluded = excludedActivityResult(login);
+    if (excluded) return excluded;
+    const docId = String(login || "").trim().toLowerCase();
+    const ref = col.doc(docId);
     let presenceLevelResult = null;
     const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
 
@@ -379,6 +392,8 @@ function createQuestStorage(db, options = {}) {
     const docId = String(login || "").trim().toLowerCase();
     const safeStreamId = normalizeStreamId(streamId);
     const uptimeMinutes = uptimeMinutesFromMs(uptimeMs);
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
     if (!docId || !safeStreamId) {
       return { applied: false, reason: "invalid_target" };
     }
@@ -520,7 +535,9 @@ function createQuestStorage(db, options = {}) {
   }
 
   async function noteEmoteUsage(login, streamId, inc = 1, { startedAt } = {}) {
-    const docId = login.toLowerCase();
+    const docId = String(login || "").trim().toLowerCase();
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
     const ref = col.doc(docId);
     const mk = monthKeyUTC();
 
@@ -579,7 +596,9 @@ function createQuestStorage(db, options = {}) {
   }
 
   async function noteChatMessage(login, streamId, inc = 1, { startedAt } = {}) {
-    const docId = login.toLowerCase();
+    const docId = String(login || "").trim().toLowerCase();
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
     const ref = col.doc(docId);
     const mk = monthKeyUTC();
     const safeInc = Math.max(1, Math.floor(Number(inc) || 1));
@@ -699,6 +718,8 @@ function createQuestStorage(db, options = {}) {
       Math.floor(Number(presenceLastSeenAtMs) || 0),
     );
     const safeFlushId = String(flushId || "").trim();
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
     if (!docId || !safeStreamId) {
       return { applied: false, reason: "invalid_target" };
     }
@@ -1053,7 +1074,10 @@ function createQuestStorage(db, options = {}) {
     clipId = null,
     { startedAt } = {}
   ) {
-    const ref = col.doc(login);
+    const docId = String(login || "").trim().toLowerCase();
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
+    const ref = col.doc(docId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) return;
@@ -1087,7 +1111,9 @@ function createQuestStorage(db, options = {}) {
     redemptionsInc = 1,
     { startedAt, createIfMissing = true } = {}
   ) {
-    const docId = login.toLowerCase();
+    const docId = String(login || "").trim().toLowerCase();
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
     const ref = col.doc(docId);
     const safeInc = Math.max(1, Math.floor(Number(redemptionsInc) || 1));
     let channelPointsLevelResult = null;
@@ -1169,7 +1195,10 @@ function createQuestStorage(db, options = {}) {
   }
 
   async function noteRaidParticipation(login, streamId, { startedAt } = {}) {
-    const ref = col.doc(login);
+    const docId = String(login || "").trim().toLowerCase();
+    const excluded = excludedActivityResult(docId);
+    if (excluded) return excluded;
+    const ref = col.doc(docId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) return;

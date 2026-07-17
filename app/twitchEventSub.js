@@ -15,6 +15,7 @@ const {
   isTwitchPollRedemption,
   processTwitchPollRedemption,
 } = require("../script/twitchPolls");
+const { isExcludedLogin } = require("../helper/excludedUsers");
 
 function normalizeRewardText(value) {
   return String(value || "")
@@ -419,6 +420,14 @@ function createTwitchEventSub({
       return res.sendStatus(200);
     }
     console.log("🔔 Événement Twitch reçu:", subscription.type);
+
+    const eventLogin = getLoginFromEvent(event);
+    if (eventLogin && isExcludedLogin(eventLogin)) {
+      console.log(
+        `[twitch-eventsub] ignored excluded user ${eventLogin} (${subscription.type})`,
+      );
+      return res.sendStatus(200);
+    }
 
     if (
       subscription.type === "channel.channel_points_custom_reward_redemption.add"
