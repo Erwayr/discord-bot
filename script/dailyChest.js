@@ -4,6 +4,7 @@ const { randomUUID } = require("node:crypto");
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { runTransactionWithRetry } = require("../helper/firestoreRetry");
 const { applyFlatCommunityLevelXp } = require("./communityLevel");
+const { buildDailyChestCardUnlocks } = require("./dailyChestCards");
 
 const DAILY_CHEST_SCHEMA_VERSION = 1;
 const POPS_SCHEMA_VERSION = 1;
@@ -802,6 +803,7 @@ function applyRewardPatch({
     rewards: rewardListSummary,
     stats,
     totalOpenings,
+    grantedCards: [],
     transaction: null,
     participantPatch: null,
     levelResult: null,
@@ -885,6 +887,16 @@ function applyRewardPatch({
     stats,
     schemaVersion: DAILY_CHEST_SCHEMA_VERSION,
   };
+
+  const cardUnlocks = buildDailyChestCardUnlocks({
+    userData: data,
+    totalOpenings,
+    now,
+  });
+  if (cardUnlocks.grantedCards.length) {
+    patch.cards_generated = cardUnlocks.cards;
+    result.grantedCards = cardUnlocks.grantedCards;
+  }
 
   return { patch, result };
 }
@@ -971,6 +983,7 @@ async function openDailyChest(
           claim,
           reward: claim.reward || null,
           rewards,
+          grantedCards: [],
           ...(sameOpenRequest
             ? {
                 stats,
@@ -980,6 +993,7 @@ async function openDailyChest(
                   rewards,
                   stats,
                   totalOpenings,
+                  grantedCards: [],
                   transaction: null,
                   participantPatch: null,
                   levelResult: null,
@@ -1049,6 +1063,7 @@ async function openDailyChest(
         claim: claimPayload,
         reward: rewardPatch.result.reward,
         rewards: rewardPatch.result.rewards,
+        grantedCards: rewardPatch.result.grantedCards,
         stats: rewardPatch.result.stats,
         totalOpenings: rewardPatch.result.totalOpenings,
         rewardResult: rewardPatch.result,
@@ -1192,6 +1207,20 @@ function buildDailyChestEmbed(result, user) {
 
   if (reward.type === "nothing" && reward.message) {
     lines.push(`${reward.message} ${REWARD_ICONS.laugh}`);
+  }
+
+  const grantedCards = Array.isArray(result?.grantedCards)
+    ? result.grantedCards
+    : Array.isArray(result?.rewardResult?.grantedCards)
+      ? result.rewardResult.grantedCards
+      : [];
+  if (grantedCards.length) {
+    const labels = grantedCards
+      .map((card) => `**${String(card?.title || "Carte mystere")}**`)
+      .join(", ");
+    lines.push(
+      `\uD83C\uDCCF Carte${grantedCards.length > 1 ? "s" : ""} débloquée${grantedCards.length > 1 ? "s" : ""} : ${labels}`,
+    );
   }
 
   const statsText = dailyChestStatsText(result);

@@ -15,6 +15,9 @@ const {
   sendDailyChestTestMessage,
 } = require("../script/dailyChest");
 const {
+  DAILY_CHEST_CARD_TEMPLATES,
+} = require("../script/dailyChestCards");
+const {
   DAILY_CHEST_STATS_COMMAND_NAME,
   slashCommandPayloads,
 } = require("../app/slashCommands");
@@ -269,6 +272,10 @@ function follower(overrides = {}) {
     pops: { balance: 10, lifetimeEarned: 20, schemaVersion: 1 },
     ...overrides,
   };
+}
+
+function chestCardTemplate(id) {
+  return clone(DAILY_CHEST_CARD_TEMPLATES.find((card) => card.id === id));
 }
 
 function embedField(embed, name) {
@@ -681,7 +688,9 @@ test("daily chest retries expired transactions without double credit", async () 
   );
   const db = new FakeDb(
     {
-      "followers_all_time/alice": follower(),
+      "followers_all_time/alice": follower({
+        dailyChest: { totalOpenings: 6 },
+      }),
     },
     { transactionFailures: [expiredTransactionError] },
   );
@@ -704,7 +713,7 @@ test("daily chest retries expired transactions without double credit", async () 
   assert.equal(db.calls.runTransactions, 2);
   assert.equal(db.data("followers_all_time/alice").pops.balance, 47);
   assert.equal(db.data("followers_all_time/alice").pops.lifetimeEarned, 57);
-  assert.equal(db.data("followers_all_time/alice").dailyChest.totalOpenings, 1);
+  assert.equal(db.data("followers_all_time/alice").dailyChest.totalOpenings, 7);
   assert.equal(
     db.data("followers_all_time/alice").dailyChest.stats.trackedOpenings,
     1,
@@ -715,6 +724,12 @@ test("daily chest retries expired transactions without double credit", async () 
     /^daily_chest_2026-06-16_111111111111111111_/,
   );
   assert.equal(transaction.amount, 37);
+  assert.deepEqual(
+    db
+      .data("followers_all_time/alice")
+      .cards_generated.map((card) => card.id),
+    ["discord_chest_opener"],
+  );
 });
 
 test("daily chest POPS embed uses casino panel and ruby icon", () => {
@@ -784,6 +799,89 @@ test("daily chest stats do not backfill existing total openings", async () => {
   assert.match(embed.description, /\| Total POPS\s+\| 0 \u2666\uFE0F\s+\|/);
   assert.match(embed.description, /\| Total EXP\s+\| 0 \u2728\s+\|/);
   assert.doesNotMatch(embed.description, /Suivis/);
+});
+
+test("daily chest unlocks Ouvre-boite at 7 openings even with no reward", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      dailyChest: { totalOpenings: 6, lastOpenedDay: "2026-06-15" },
+    }),
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: {
+      type: "nothing",
+      tier: "common",
+      message: "Rien du tout.",
+    },
+  });
+  const doc = db.data("followers_all_time/alice");
+  const embed = buildDailyChestEmbed(result, { username: "Alice" }).toJSON();
+
+  assert.equal(result.totalOpenings, 7);
+  assert.deepEqual(result.grantedCards.map((card) => card.id), [
+    "discord_chest_opener",
+  ]);
+  assert.deepEqual(doc.cards_generated.map((card) => card.id), [
+    "discord_chest_opener",
+  ]);
+  assert.equal(doc.cards_generated[0].pseudo, "Alice");
+  assert.equal(doc.cards_generated[0].isAlreadyView, false);
+  assert.match(embed.description, /Ouvre-boîte/);
+});
+
+test("daily chest unlocks Accro au coffre at 30 openings", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      dailyChest: { totalOpenings: 29, lastOpenedDay: "2026-06-15" },
+      cards_generated: [chestCardTemplate("discord_chest_opener")],
+    }),
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "pops", amount: 5 },
+  });
+  const ids = db
+    .data("followers_all_time/alice")
+    .cards_generated.map((card) => card.id);
+
+  assert.equal(result.totalOpenings, 30);
+  assert.deepEqual(result.grantedCards.map((card) => card.id), [
+    "discord_chest_addict",
+  ]);
+  assert.deepEqual(ids, ["discord_chest_opener", "discord_chest_addict"]);
+});
+
+test("daily chest catches up all missing cards at 100 openings", async () => {
+  const db = new FakeDb({
+    "followers_all_time/alice": follower({
+      dailyChest: { totalOpenings: 99, lastOpenedDay: "2026-06-15" },
+    }),
+  });
+
+  const result = await openDailyChest(db, {
+    discordId: "111111111111111111",
+    config: BASE_CONFIG,
+    now: NOW,
+    reward: { type: "exp", amount: 5 },
+  });
+  const ids = db
+    .data("followers_all_time/alice")
+    .cards_generated.map((card) => card.id);
+
+  assert.equal(result.totalOpenings, 100);
+  assert.deepEqual(result.grantedCards.map((card) => card.id), [
+    "discord_chest_opener",
+    "discord_chest_addict",
+    "discord_living_vault",
+  ]);
+  assert.deepEqual(ids, result.grantedCards.map((card) => card.id));
 });
 
 test("daily chest real embed includes compact user stats", () => {
@@ -930,7 +1028,9 @@ test("daily chest test reward parser supports forced reward aliases", () => {
 
 test("daily chest does not double credit the same day", async () => {
   const db = new FakeDb({
-    "followers_all_time/alice": follower(),
+    "followers_all_time/alice": follower({
+      dailyChest: { totalOpenings: 6 },
+    }),
   });
 
   await openDailyChest(db, {
@@ -957,6 +1057,13 @@ test("daily chest does not double credit the same day", async () => {
   assert.equal(
     db.data("followers_all_time/alice").dailyChest.stats.totals.pops,
     37,
+  );
+  assert.equal(db.data("followers_all_time/alice").dailyChest.totalOpenings, 7);
+  assert.deepEqual(
+    db
+      .data("followers_all_time/alice")
+      .cards_generated.map((card) => card.id),
+    ["discord_chest_opener"],
   );
   assert.equal(db.calls.runTransactions, 1);
   assert.equal(db.calls.txUpdates.length, 0);

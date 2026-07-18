@@ -9,6 +9,9 @@ const {
   grantServerBoosterCardsByDiscordIds,
   isServerBoosterMember,
 } = require("../script/serverBoosterCards");
+const {
+  ensureDailyChestCardTemplates,
+} = require("../script/dailyChestCards");
 
 function createJobs({
   db,
@@ -469,6 +472,18 @@ function createJobs({
   }
 
   async function runClientReadyJobs() {
+    const chestCards = await ensureDailyChestCardTemplates(db).catch((e) => {
+      console.error(
+        "[daily-chest-cards] template provisioning failed:",
+        e?.message || e,
+      );
+      return null;
+    });
+    if (chestCards?.created) {
+      console.log(
+        `[daily-chest-cards] ${chestCards.created} modele(s) cree(s), ${chestCards.existing} deja present(s).`,
+      );
+    }
     await assignOldMemberCards().catch(console.error);
     await assignServerBoosterCards().catch(console.error);
     await refreshAndSendBirthdayAnnouncements().catch(console.error);
