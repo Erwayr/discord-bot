@@ -114,6 +114,9 @@ function createTestJobs({
       },
       refreshChannelEmotesThrottled: async () => {},
       getPendingLiveActivityStreams: () => [],
+      expireLiveLevelAnnouncements: (streamId) => {
+        calls.push(`expire-level:${streamId}`);
+      },
     },
     getCommunityLevelConfig,
     cardNotifications: null,
@@ -168,6 +171,7 @@ test("live-end dispatch waits for confirmed offline state and existing flushes",
   assert.deepEqual(calls, [
     "flush:live-end",
     "uptime:stream-1:live-end",
+    "expire-level:stream-1",
     "dispatch:stream-1",
   ]);
 
@@ -175,6 +179,7 @@ test("live-end dispatch waits for confirmed offline state and existing flushes",
   assert.deepEqual(calls, [
     "flush:live-end",
     "uptime:stream-1:live-end",
+    "expire-level:stream-1",
     "dispatch:stream-1",
   ]);
 });
@@ -230,6 +235,7 @@ test("live-end flush passes pending uptime entries before uptime fallback", asyn
     "flush:live-end",
     "clear-uptime:alice",
     "uptime:stream-1:live-end",
+    "expire-level:stream-1",
     "dispatch:stream-1",
   ]);
 });

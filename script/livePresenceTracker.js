@@ -12,6 +12,11 @@ function positiveInt(value, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function nonNegativeInt(value, fallback = 0) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function normalizeLogin(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -48,11 +53,19 @@ function normalizeDate(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
+function createUptimeAccumulator({
+  tickMs,
+  maxTickMs,
+  levelAnnouncementMinPresenceMs = 0,
+} = {}) {
   const safeMaxTickMs = positiveInt(maxTickMs, DEFAULT_UPTIME_MAX_TICK_MS);
   const safeTickMs = Math.min(
     positiveInt(tickMs, DEFAULT_UPTIME_TICK_MS),
     safeMaxTickMs,
+  );
+  const safeLevelAnnouncementMinPresenceMs = nonNegativeInt(
+    levelAnnouncementMinPresenceMs,
+    0,
   );
   let streamId = null;
   let startedAt = null;
@@ -79,6 +92,7 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
     });
 
     const presenceLogins = [];
+    const levelAnnouncementLogins = [];
     let creditedMs = 0;
 
     for (const [login, chatter] of present.entries()) {
@@ -90,6 +104,7 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
           accumulatedMs: 0,
           seenInLastTick: false,
           presenceNoted: false,
+          levelAnnouncementNoted: false,
           twitchUserId: chatter.twitchUserId || "",
           displayName: chatter.displayName || login,
         };
@@ -112,11 +127,19 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
       creditedMs += creditMs;
 
       if (!entry.presenceNoted) presenceLogins.push(login);
+      if (
+        safeLevelAnnouncementMinPresenceMs > 0 &&
+        !entry.levelAnnouncementNoted &&
+        entry.accumulatedMs >= safeLevelAnnouncementMinPresenceMs
+      ) {
+        levelAnnouncementLogins.push(login);
+      }
     }
 
     return {
       presentLogins: Array.from(present.keys()),
       presenceLogins,
+      levelAnnouncementLogins,
       creditedMs,
       trackedLogins: entries.size,
     };
@@ -125,6 +148,11 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
   function markPresenceNoted(login) {
     const entry = entries.get(normalizeLogin(login));
     if (entry) entry.presenceNoted = true;
+  }
+
+  function markLevelAnnouncementNoted(login) {
+    const entry = entries.get(normalizeLogin(login));
+    if (entry) entry.levelAnnouncementNoted = true;
   }
 
   function snapshot(targetStreamId = streamId) {
@@ -157,6 +185,7 @@ function createUptimeAccumulator({ tickMs, maxTickMs } = {}) {
     reset,
     markSeen,
     markPresenceNoted,
+    markLevelAnnouncementNoted,
     snapshot,
     removeLogins,
     clear: () => entries.clear(),
@@ -190,6 +219,7 @@ function createLivePresenceTicker({
   questStore,
   uptimeTickMs,
   uptimeMaxTickMs,
+  levelAnnouncementMinPresenceMs = 0,
   deferPresenceWrites = false,
   onDeferredPresence,
 }) {
@@ -201,6 +231,7 @@ function createLivePresenceTicker({
   const uptime = createUptimeAccumulator({
     tickMs: uptimeTickMs,
     maxTickMs: uptimeMaxTickMs,
+    levelAnnouncementMinPresenceMs,
   });
   let deferredPresenceHandler =
     typeof onDeferredPresence === "function" ? onDeferredPresence : null;
@@ -383,7 +414,9 @@ function createLivePresenceTicker({
       if (!uptimeTick.presentLogins.length) return;
 
       const toProcess = uptimeTick.presenceLogins;
-      if (!toProcess.length) {
+      const toRecheckLevelAnnouncements =
+        uptimeTick.levelAnnouncementLogins || [];
+      if (!toProcess.length && !toRecheckLevelAnnouncements.length) {
         console.log(
           `[ticker] uptime credited ${Math.floor(
             uptimeTick.creditedMs / 60000,
@@ -436,6 +469,32 @@ function createLivePresenceTicker({
             }),
           );
         }
+      }
+
+      if (
+        toRecheckLevelAnnouncements.length > 0 &&
+        typeof deferredPresenceHandler === "function"
+      ) {
+        const initialPresenceSet = new Set(toProcess);
+        await Promise.all(
+          toRecheckLevelAnnouncements.map(async (login) => {
+            if (deferPresenceWrites && initialPresenceSet.has(login)) return;
+            try {
+              await deferredPresenceHandler({
+                login,
+                streamId: CURRENT_STREAM_ID,
+                startedAt: CURRENT_STARTED_AT,
+                source: "presence_threshold",
+              });
+              uptime.markLevelAnnouncementNoted(login);
+            } catch (e) {
+              console.warn(
+                `[ticker] delayed level announcement failed for ${login}:`,
+                e?.message || e,
+              );
+            }
+          }),
+        );
       }
 
       console.log(

@@ -92,3 +92,30 @@ test("uptime accumulator can clear flushed logins", () => {
   assert.equal(snapshot.length, 1);
   assert.equal(snapshot[0].login, "bob");
 });
+
+test("uptime accumulator signals the 15-minute level threshold once", () => {
+  const acc = createUptimeAccumulator({
+    tickMs: 60_000,
+    maxTickMs: 300_000,
+    levelAnnouncementMinPresenceMs: 15 * 60 * 1000,
+  });
+  acc.reset("stream-1", new Date("2026-05-16T10:00:00.000Z"));
+
+  let tick = null;
+  for (let minute = 1; minute <= 14; minute += 1) {
+    tick = acc.markSeen(["alice"], 1_000 + (minute - 1) * 60_000);
+    assert.deepEqual(tick.levelAnnouncementLogins, []);
+  }
+
+  const absent = acc.markSeen([], 1_000 + 14 * 60_000);
+  assert.deepEqual(absent.levelAnnouncementLogins, []);
+  assert.equal(acc.snapshot()[0].accumulatedMs, 14 * 60 * 1000);
+
+  const threshold = acc.markSeen(["alice"], 1_000 + 15 * 60_000);
+  assert.equal(acc.snapshot()[0].accumulatedMs, 15 * 60 * 1000);
+  assert.deepEqual(threshold.levelAnnouncementLogins, ["alice"]);
+
+  acc.markLevelAnnouncementNoted("alice");
+  const later = acc.markSeen(["alice"], 1_000 + 16 * 60_000);
+  assert.deepEqual(later.levelAnnouncementLogins, []);
+});

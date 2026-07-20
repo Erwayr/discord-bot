@@ -445,6 +445,8 @@ function createJobs({
             );
         }
 
+        twitchChat?.expireLiveLevelAnnouncements?.(endedStreamId);
+
         await runCommunityLevelRankRefreshOnLiveEnd(endedStreamId).catch((e) =>
           console.error(
             "[community-level] final rank refresh failed:",

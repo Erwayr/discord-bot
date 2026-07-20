@@ -179,20 +179,22 @@ function createTwitchChat({
     getPendingUptime,
     persistenceDir: config.twitchLiveActivity?.persistenceDir,
     profileCacheTtlMs: config.twitchLiveActivity?.profileCacheTtlMs,
+    levelAnnouncementMinPresenceMs:
+      config.twitchLiveActivity?.levelAnnouncementMinPresenceMs,
   });
 
   if (typeof livePresenceTick?.setDeferredPresenceHandler === "function") {
-    livePresenceTick.setDeferredPresenceHandler(async ({ login, streamId }) => {
-      try {
-        await liveLevelAnnouncer.checkAndAnnounce({
-          login,
-          displayName: login,
-          streamId,
-          source: "presence",
-        });
-      } catch (e) {
-        console.warn("live presence level announcement failed:", e?.message || e);
-      }
+    livePresenceTick.setDeferredPresenceHandler(async ({
+      login,
+      streamId,
+      source = "presence",
+    }) => {
+      await liveLevelAnnouncer.checkAndAnnounce({
+        login,
+        displayName: login,
+        streamId,
+        source,
+      });
     });
   }
 
@@ -275,13 +277,32 @@ function createTwitchChat({
       return;
     }
 
+    const displayName =
+      tags["display-name"] || tags.displayName || tags.username || login;
+    liveLevelAnnouncer.markSpoken({ login, streamId });
+
     try {
       const commandResult = await twitchChatCommands.handleMessage({
         login,
-        displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        displayName,
         message: msg,
       });
-      if (commandResult?.handled) return;
+      if (commandResult?.handled) {
+        liveLevelAnnouncer
+          .checkAndAnnounce({
+            login,
+            displayName,
+            streamId,
+            source: "chat_command",
+          })
+          .catch((e) =>
+            console.warn(
+              "live command level announcement failed:",
+              e?.message || e,
+            ),
+          );
+        return;
+      }
     } catch (e) {
       console.warn("twitch chat command failed:", e?.message || e);
       return;
@@ -290,7 +311,7 @@ function createTwitchChat({
     try {
       const chatProgress = liveActivityBuffer.noteChatMessage(login, streamId, {
         startedAt: liveState.startedAt,
-        displayName: tags["display-name"] || tags.displayName || tags.username || login,
+        displayName,
         twitchUserId: tags["user-id"] || tags.userId || "",
       });
       if (process.env.DEBUG_COMMUNITY_LEVEL && chatProgress?.buffered) {
@@ -302,8 +323,7 @@ function createTwitchChat({
         liveLevelAnnouncer
           .checkAndAnnounce({
             login,
-            displayName:
-              tags["display-name"] || tags.displayName || tags.username || login,
+            displayName,
             streamId,
             source: "chat",
           })
@@ -451,6 +471,7 @@ function createTwitchChat({
     getPendingLiveActivity: liveActivityBuffer.pendingSnapshot,
     getPendingLiveActivityForLogin: liveActivityBuffer.pendingForLogin,
     getPendingLiveActivityStreams: liveActivityBuffer.pendingStreamIds,
+    expireLiveLevelAnnouncements: liveLevelAnnouncer.expireStream,
     shouldFlushLiveActivityOnShutdown: () =>
       !!liveActivityBuffer.shouldFlushOnShutdown,
   };

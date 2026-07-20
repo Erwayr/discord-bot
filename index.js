@@ -118,6 +118,8 @@ const livePresenceTick = createLivePresenceTicker({
   questStore,
   uptimeTickMs: config.communityLevel.uptimeTickMs,
   uptimeMaxTickMs: config.communityLevel.uptimeMaxTickMs,
+  levelAnnouncementMinPresenceMs:
+    config.twitchLiveActivity.levelAnnouncementMinPresenceMs,
   deferPresenceWrites:
     String(config.twitchLiveActivity.flushMode || "").toLowerCase() !== "interval",
 });

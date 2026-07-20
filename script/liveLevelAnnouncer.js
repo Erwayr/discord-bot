@@ -16,9 +16,14 @@ const {
 
 const JOURNAL_FILE = "level-announcements.jsonl";
 const DEFAULT_PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_MIN_PRESENCE_MS = 15 * 60 * 1000;
 
 function normalizeLogin(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeStreamId(value) {
+  return String(value || "").trim();
 }
 
 function positiveInt(value, fallback) {
@@ -40,6 +45,48 @@ function toLevel(value) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function streamIdsFor(entry) {
+  const ids = new Set();
+  const primary = normalizeStreamId(entry?.stream_id);
+  if (primary) ids.add(primary);
+  if (Array.isArray(entry?.stream_ids)) {
+    entry.stream_ids.forEach((value) => {
+      const id = normalizeStreamId(value);
+      if (id) ids.add(id);
+    });
+  }
+  return ids;
+}
+
+function storedStreamEntries(data, streamId) {
+  const safeStreamId = normalizeStreamId(streamId);
+  const livePresence = data?.live_presence;
+  if (!safeStreamId || !livePresence || typeof livePresence !== "object") {
+    return [];
+  }
+
+  const entries = [];
+  Object.values(livePresence).forEach((month) => {
+    const streams = Array.isArray(month?.streams) ? month.streams : [];
+    streams.forEach((entry) => {
+      if (streamIdsFor(entry).has(safeStreamId)) entries.push(entry);
+    });
+  });
+  return entries;
+}
+
+function pendingEntryMatchesStream(entry, streamId) {
+  return normalizeStreamId(entry?.streamId) === normalizeStreamId(streamId);
+}
+
+function pendingPresenceMs(entry) {
+  return Math.max(
+    0,
+    positiveInt(entry?.uptimeMs, 0),
+    positiveInt(entry?.accumulatedMs, 0),
+  );
+}
+
 async function loadFollowerDoc(db, login) {
   const safeLogin = normalizeLogin(login);
   if (!safeLogin || !db) return null;
@@ -55,15 +102,21 @@ function createLiveLevelAnnouncer({
   getPendingUptime,
   persistenceDir = "",
   profileCacheTtlMs = DEFAULT_PROFILE_CACHE_TTL_MS,
+  levelAnnouncementMinPresenceMs = DEFAULT_MIN_PRESENCE_MS,
   now = () => Date.now(),
   logger = console,
 } = {}) {
   const profileCache = new Map();
   const highestAnnouncedLevel = new Map();
+  const spokenLoginsByStream = new Map();
   const queues = new Map();
   const safeProfileCacheTtlMs = positiveInt(
     profileCacheTtlMs,
     DEFAULT_PROFILE_CACHE_TTL_MS,
+  );
+  const safeMinPresenceMs = positiveInt(
+    levelAnnouncementMinPresenceMs,
+    DEFAULT_MIN_PRESENCE_MS,
   );
   const journalPath = persistenceDir
     ? path.join(path.resolve(persistenceDir), JOURNAL_FILE)
@@ -166,6 +219,66 @@ function createLiveLevelAnnouncer({
     return entries.filter((entry) => normalizeLogin(entry?.login) === safeLogin);
   }
 
+  function markSpoken({ login, streamId } = {}) {
+    const safeLogin = normalizeLogin(login);
+    const safeStreamId = normalizeStreamId(streamId);
+    if (!safeLogin || !safeStreamId) return false;
+    const spoken = spokenLoginsByStream.get(safeStreamId) || new Set();
+    spoken.add(safeLogin);
+    spokenLoginsByStream.set(safeStreamId, spoken);
+    return true;
+  }
+
+  function expireStream(streamId) {
+    const safeStreamId = normalizeStreamId(streamId);
+    if (!safeStreamId) return false;
+    return spokenLoginsByStream.delete(safeStreamId);
+  }
+
+  function announcementEligibility(data, pendingEntries, login, streamId) {
+    const safeLogin = normalizeLogin(login);
+    const safeStreamId = normalizeStreamId(streamId);
+    const storedEntries = storedStreamEntries(data, safeStreamId);
+    const matchingPending = pendingEntries.filter((entry) =>
+      pendingEntryMatchesStream(entry, safeStreamId),
+    );
+    const spokenInMemory =
+      spokenLoginsByStream.get(safeStreamId)?.has(safeLogin) || false;
+    const spokenInStoredActivity = storedEntries.some(
+      (entry) =>
+        !!entry?.chat_message?.sent ||
+        positiveInt(entry?.chat_message?.count, 0) > 0,
+    );
+    const spokenInPendingActivity = matchingPending.some((entry) =>
+      (Array.isArray(entry?.chatEvents) ? entry.chatEvents : []).some(
+        (event) => positiveInt(event?.count, 1) > 0,
+      ),
+    );
+    const storedPresenceMs = storedEntries.reduce(
+      (max, entry) =>
+        Math.max(
+          max,
+          positiveInt(entry?.presence?.uptime_minutes, 0) * 60 * 1000,
+        ),
+      0,
+    );
+    const pendingUptimeMs = matchingPending.reduce(
+      (max, entry) => Math.max(max, pendingPresenceMs(entry)),
+      0,
+    );
+    const presenceMs = Math.max(storedPresenceMs, pendingUptimeMs);
+    const hasSpoken =
+      spokenInMemory || spokenInStoredActivity || spokenInPendingActivity;
+    const presenceQualified = presenceMs >= safeMinPresenceMs;
+
+    return {
+      eligible: hasSpoken || presenceQualified,
+      hasSpoken,
+      presenceMs,
+      presenceQualified,
+    };
+  }
+
   function evaluateLevels(data, pendingEntries, communityConfig) {
     const base = normalizeCommunityLevel(data || {}, communityConfig);
     const effectiveData = applyPendingLiveDeltas(
@@ -193,16 +306,22 @@ function createLiveLevelAnnouncer({
   async function runCheck({
     login,
     displayName,
+    streamId,
     pendingEntries,
   } = {}) {
     const safeLogin = normalizeLogin(login);
     if (!safeLogin) return { announced: 0, reason: "invalid_login" };
+    const safeStreamId = normalizeStreamId(streamId);
+    if (!safeStreamId) return { announced: 0, reason: "invalid_stream" };
 
     const communityConfig = await loadCommunityConfig();
     const initialData = await loadProfile(safeLogin);
     if (!initialData) return { announced: 0, reason: "missing_profile" };
 
-    const initialPending = pendingEntriesForLogin(safeLogin, pendingEntries);
+    const initialPending = pendingEntriesForLogin(
+      safeLogin,
+      pendingEntries,
+    ).filter((entry) => pendingEntryMatchesStream(entry, safeStreamId));
     const initialLevels = evaluateLevels(
       initialData,
       initialPending,
@@ -216,9 +335,27 @@ function createLiveLevelAnnouncer({
       return { announced: 0, reason: "no_level_up" };
     }
 
+    const initialEligibility = announcementEligibility(
+      initialData,
+      initialPending,
+      safeLogin,
+      safeStreamId,
+    );
+    if (!initialEligibility.eligible) {
+      return {
+        announced: 0,
+        reason: "announcement_deferred",
+        level: initialLevels.effectiveLevel,
+        presenceMs: initialEligibility.presenceMs,
+      };
+    }
+
     const freshData = await loadProfile(safeLogin, { force: true });
     if (!freshData) return { announced: 0, reason: "missing_profile" };
-    const freshPending = pendingEntriesForLogin(safeLogin, pendingEntries);
+    const freshPending = pendingEntriesForLogin(
+      safeLogin,
+      pendingEntries,
+    ).filter((entry) => pendingEntryMatchesStream(entry, safeStreamId));
     const freshLevels = evaluateLevels(
       freshData,
       freshPending,
@@ -230,6 +367,21 @@ function createLiveLevelAnnouncer({
     );
     if (freshLevels.effectiveLevel <= threshold) {
       return { announced: 0, reason: "stale_profile_refresh" };
+    }
+
+    const freshEligibility = announcementEligibility(
+      freshData,
+      freshPending,
+      safeLogin,
+      safeStreamId,
+    );
+    if (!freshEligibility.eligible) {
+      return {
+        announced: 0,
+        reason: "announcement_deferred",
+        level: freshLevels.effectiveLevel,
+        presenceMs: freshEligibility.presenceMs,
+      };
     }
 
     if (typeof sendTwitchChatMessage !== "function") {
@@ -276,6 +428,8 @@ function createLiveLevelAnnouncer({
 
   return {
     checkAndAnnounce,
+    markSpoken,
+    expireStream,
     highestAnnouncedLevel: (login) =>
       highestAnnouncedLevel.get(normalizeLogin(login)) || 0,
     journalPath,
@@ -283,8 +437,11 @@ function createLiveLevelAnnouncer({
 }
 
 module.exports = {
+  DEFAULT_MIN_PRESENCE_MS,
   createLiveLevelAnnouncer,
   _test: {
     loadFollowerDoc,
+    pendingPresenceMs,
+    storedStreamEntries,
   },
 };

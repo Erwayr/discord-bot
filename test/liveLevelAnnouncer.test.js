@@ -98,6 +98,7 @@ test("announces a live chat level-up without writing Firestore", async () => {
   const result = await announcer.checkAndAnnounce({
     login: "Alice",
     displayName: "Alice",
+    streamId: "stream-1",
   });
 
   assert.equal(result.announced, 1);
@@ -128,7 +129,7 @@ test("announces a deferred presence level-up from pending uptime", async () => {
         streamId: "stream-1",
         firstSeenAtMs: Date.parse("2026-05-16T10:05:00.000Z"),
         lastSeenAtMs: Date.parse("2026-05-16T10:05:00.000Z"),
-        accumulatedMs: 120_000,
+        accumulatedMs: 15 * 60 * 1000,
       },
     ],
     sendTwitchChatMessage: async (message) => sent.push(message),
@@ -138,11 +139,165 @@ test("announces a deferred presence level-up from pending uptime", async () => {
   const result = await announcer.checkAndAnnounce({
     login: "alice",
     displayName: "Alice",
+    streamId: "stream-1",
   });
 
   assert.equal(result.announced, 1);
   assert.deepEqual(sent, ["GG @Alice, tu passes niveau 2 - minimoys !"]);
   assert.deepEqual(db.writes, []);
+});
+
+test("defers a presence level-up before 15 minutes and announces at 15:00", async () => {
+  const db = new FakeDb({
+    alice: baseProfile({
+      communityLevel: {
+        level: 1,
+        rank: 1,
+        rankName: "minimoys",
+        xpTotal: 0,
+        xpInLevel: 0,
+        xpForNext: 100,
+      },
+    }),
+  });
+  const sent = [];
+  let accumulatedMs = 14 * 60 * 1000 + 59 * 1000;
+  const announcer = createLiveLevelAnnouncer({
+    db,
+    getPendingUptime: () => [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        firstSeenAtMs: Date.parse("2026-05-16T10:00:00.000Z"),
+        lastSeenAtMs: Date.parse("2026-05-16T10:14:59.000Z"),
+        accumulatedMs,
+      },
+    ],
+    sendTwitchChatMessage: async (message) => sent.push(message),
+    persistenceDir: "",
+  });
+
+  const deferred = await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-1",
+  });
+  assert.equal(deferred.announced, 0);
+  assert.equal(deferred.reason, "announcement_deferred");
+  assert.equal(deferred.presenceMs, 14 * 60 * 1000 + 59 * 1000);
+  assert.deepEqual(sent, []);
+
+  accumulatedMs = 15 * 60 * 1000;
+  const announced = await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-1",
+  });
+  assert.equal(announced.announced, 1);
+  assert.deepEqual(sent, ["GG @Alice, tu passes niveau 2 - minimoys !"]);
+  assert.deepEqual(db.writes, []);
+});
+
+test("a Twitch message releases a deferred level-up before 15 minutes", async () => {
+  const db = new FakeDb({ alice: baseProfile() });
+  const sent = [];
+  const announcer = createLiveLevelAnnouncer({
+    db,
+    getCommunityLevelConfig: async () => ({ presenceXp: 10 }),
+    getPendingUptime: () => [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        accumulatedMs: 2 * 60 * 1000,
+        firstSeenAtMs: Date.parse("2026-05-16T10:00:00.000Z"),
+        lastSeenAtMs: Date.parse("2026-05-16T10:02:00.000Z"),
+      },
+    ],
+    sendTwitchChatMessage: async (message) => sent.push(message),
+    persistenceDir: "",
+  });
+
+  const deferred = await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-1",
+  });
+  assert.equal(deferred.reason, "announcement_deferred");
+
+  assert.equal(
+    announcer.markSpoken({ login: "alice", streamId: "stream-1" }),
+    true,
+  );
+  const announced = await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-1",
+    source: "chat_command",
+  });
+
+  assert.equal(announced.announced, 1);
+  assert.deepEqual(sent, ["GG @Alice, tu passes niveau 2 - minimoys !"]);
+});
+
+test("speech from another stream does not release the current level-up", async () => {
+  const db = new FakeDb({ alice: baseProfile() });
+  const sent = [];
+  const announcer = createLiveLevelAnnouncer({
+    db,
+    getCommunityLevelConfig: async () => ({ chatCooldownMs: 0 }),
+    getPendingLiveActivity: () => [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        chatEvents: [{ atMs: Date.parse("2026-05-16T11:00:00.000Z") }],
+      },
+    ],
+    sendTwitchChatMessage: async (message) => sent.push(message),
+    persistenceDir: "",
+  });
+
+  announcer.markSpoken({ login: "alice", streamId: "stream-old" });
+  const result = await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-2",
+  });
+
+  assert.equal(result.announced, 0);
+  assert.equal(result.reason, "no_level_up");
+  assert.deepEqual(sent, []);
+});
+
+test("expiring a stream clears its local speech eligibility", async () => {
+  const db = new FakeDb({ alice: baseProfile() });
+  const sent = [];
+  const announcer = createLiveLevelAnnouncer({
+    db,
+    getCommunityLevelConfig: async () => ({ presenceXp: 10 }),
+    getPendingUptime: () => [
+      {
+        login: "alice",
+        streamId: "stream-1",
+        accumulatedMs: 2 * 60 * 1000,
+        firstSeenAtMs: Date.parse("2026-05-16T10:00:00.000Z"),
+        lastSeenAtMs: Date.parse("2026-05-16T10:02:00.000Z"),
+      },
+    ],
+    sendTwitchChatMessage: async (message) => sent.push(message),
+    persistenceDir: "",
+  });
+
+  announcer.markSpoken({ login: "alice", streamId: "stream-1" });
+  assert.equal(announcer.expireStream("stream-1"), true);
+  const result = await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-1",
+  });
+
+  assert.equal(result.announced, 0);
+  assert.equal(result.reason, "announcement_deferred");
+  assert.deepEqual(sent, []);
 });
 
 test("does not announce the same live level twice", async () => {
@@ -163,10 +318,15 @@ test("does not announce the same live level twice", async () => {
     persistenceDir: "",
   });
 
-  await announcer.checkAndAnnounce({ login: "alice", displayName: "Alice" });
+  await announcer.checkAndAnnounce({
+    login: "alice",
+    displayName: "Alice",
+    streamId: "stream-1",
+  });
   const result = await announcer.checkAndAnnounce({
     login: "alice",
     displayName: "Alice",
+    streamId: "stream-1",
   });
 
   assert.equal(result.announced, 0);
@@ -196,7 +356,11 @@ test("restores announced levels from the local runtime journal", async () => {
       persistenceDir: dir,
       now: () => 1000,
     });
-    await first.checkAndAnnounce({ login: "alice", displayName: "Alice" });
+    await first.checkAndAnnounce({
+      login: "alice",
+      displayName: "Alice",
+      streamId: "stream-1",
+    });
     assert.equal(firstSent.length, 1);
 
     const secondDb = new FakeDb({ alice: baseProfile() });
@@ -212,6 +376,7 @@ test("restores announced levels from the local runtime journal", async () => {
     const result = await restored.checkAndAnnounce({
       login: "alice",
       displayName: "Alice",
+      streamId: "stream-1",
     });
 
     assert.equal(result.announced, 0);
