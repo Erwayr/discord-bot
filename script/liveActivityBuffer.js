@@ -569,6 +569,7 @@ function createLiveActivityBuffer({
       presenceFirstSeenAtMs: entry.presenceFirstSeenAtMs,
       presenceLastSeenAtMs: entry.presenceLastSeenAtMs,
       flushId: ensureFlushId(entry),
+      twitchUserId: entry.twitchUserId || "",
       reason,
     });
     await notifyLevelUps(entry, result);

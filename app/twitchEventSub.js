@@ -168,6 +168,7 @@ function createTwitchEventSub({
   sendTwitchChatMessage,
   bufferLiveChannelPoints,
   twitchExtensionStatsSync,
+  resolveTwitchIdentity,
 }) {
   const seenDeliveries = new Map();
   const subTimers = new Map();
@@ -268,6 +269,26 @@ function createTwitchEventSub({
 
   function getDisplayFromEvent(e, fallbackLogin) {
     return e?.user_name || e?.user?.name || fallbackLogin;
+  }
+
+  async function canonicalEvent(event, { allowCreate = false } = {}) {
+    const login = getLoginFromEvent(event);
+    const twitchUserId = String(event?.user_id || event?.user?.id || "").trim();
+    if (!login || !twitchUserId || typeof resolveTwitchIdentity !== "function") {
+      return event;
+    }
+    const identity = await resolveTwitchIdentity({
+      login,
+      twitchUserId,
+      allowCreate,
+    });
+    return {
+      ...event,
+      user_login: identity.login,
+      user: event?.user && typeof event.user === "object"
+        ? { ...event.user, login: identity.login }
+        : event?.user,
+    };
   }
 
   function cleanupOverlaySubCardDedupe(dedupeMs) {
@@ -432,7 +453,7 @@ function createTwitchEventSub({
     if (
       subscription.type === "channel.channel_points_custom_reward_redemption.add"
     ) {
-      const r = event;
+      const r = await canonicalEvent(event, { allowCreate: true });
       const isTicket = config.twitch.ticketRewardId
         ? r.reward?.id === config.twitch.ticketRewardId
         : /ticket d'or/i.test(r.reward?.title || "");
@@ -482,7 +503,7 @@ function createTwitchEventSub({
             status: "FULFILLED",
             accessToken,
           });
-          await upsertParticipantFromRedemption(db, r);
+          await upsertParticipantFromRedemption(db, r, { resolveTwitchIdentity });
           try {
             const generalChannel = await client.channels.fetch(
               config.discord.bootyChannelId,
@@ -517,7 +538,11 @@ function createTwitchEventSub({
             login,
             streamId,
             1,
-            { startedAt, createIfMissing: false },
+            {
+              startedAt,
+              createIfMissing: false,
+              twitchUserId: r.user_id || "",
+            },
           );
           if (channelPointsProgress?.reason === "missing_follower") {
             const buffered =
@@ -584,7 +609,8 @@ function createTwitchEventSub({
     }
 
     if (subscription.type === "channel.follow") {
-      const login = event.user_login;
+      const canonical = await canonicalEvent(event, { allowCreate: true });
+      const login = canonical.user_login;
       const userId = event.user_id;
       const followedAt = new Date(event.followed_at);
 
@@ -592,10 +618,15 @@ function createTwitchEventSub({
       const snap = await ref.get();
 
       if (snap.exists) {
-        await ref.update({ lastFollowed: followedAt });
+        await ref.update({
+          lastFollowed: followedAt,
+          twitch_id: userId,
+          twitchId: userId,
+        });
       } else {
         await ref.set({
           pseudo: login.toLowerCase(),
+          twitch_id: userId,
           twitchId: userId,
           followDate: followedAt,
           cards_generated: [],
@@ -606,8 +637,9 @@ function createTwitchEventSub({
 
     if (subscription.type === "channel.subscribe") {
       try {
-        await upsertParticipantFromSubscription(db, event);
-        await upsertFollowerMonthsFromSub(db, event);
+        const canonical = await canonicalEvent(event, { allowCreate: true });
+        await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
+        await upsertFollowerMonthsFromSub(db, canonical, { resolveTwitchIdentity });
         await publishOverlaySubCardEvent(
           event,
           subscription.type,
@@ -635,8 +667,9 @@ function createTwitchEventSub({
 
     if (subscription.type === "channel.subscription.message") {
       try {
-        await upsertParticipantFromSubscription(db, event);
-        await upsertFollowerMonthsFromSub(db, event);
+        const canonical = await canonicalEvent(event, { allowCreate: true });
+        await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
+        await upsertFollowerMonthsFromSub(db, canonical, { resolveTwitchIdentity });
         await publishOverlaySubCardEvent(
           event,
           subscription.type,
@@ -672,7 +705,7 @@ function createTwitchEventSub({
           includeContentType: false,
         });
 
-        const logins = [];
+        const chatters = [];
         let after = null;
         let guard = 0;
         do {
@@ -691,15 +724,22 @@ function createTwitchEventSub({
                   first: 1000,
                 },
           });
-          (data?.data || []).forEach(
-            (c) => c?.user_login && logins.push(c.user_login.toLowerCase()),
-          );
+          (data?.data || []).forEach((c) => {
+            if (!c?.user_login) return;
+            chatters.push({
+              login: c.user_login.toLowerCase(),
+              twitchUserId: c.user_id || "",
+            });
+          });
           after = data?.pagination?.cursor || null;
         } while (after && ++guard < 5);
 
         await Promise.all(
-          logins.map((login) =>
-            questStore.noteRaidParticipation(login, streamId, { startedAt }),
+          chatters.map((chatter) =>
+            questStore.noteRaidParticipation(chatter.login, streamId, {
+              startedAt,
+              twitchUserId: chatter.twitchUserId,
+            }),
           ),
         );
       } catch (e) {

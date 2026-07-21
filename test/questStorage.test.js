@@ -888,3 +888,31 @@ test("channel points can skip creating missing follower profiles", async () => {
   assert.equal(result.reason, "missing_follower");
   assert.equal(db.doc("alice"), undefined);
 });
+
+test("live activity resolves a renamed Twitch user before choosing the document", async () => {
+  const db = new FakeDb({
+    old_login: { pseudo: "old_login", twitch_id: "stable-1", live_presence: {} },
+  });
+  const resolutions = [];
+  const store = createQuestStorage(db, {
+    communityLevel: { chatCooldownMs: 0 },
+    resolveTwitchIdentity: async (identity) => {
+      resolutions.push(identity);
+      return { login: "old_login", status: "rename_pending" };
+    },
+  });
+
+  const result = await store.noteLiveActivity("new_login", "stream-1", {
+    twitchUserId: "stable-1",
+    chatEvents: [{ atMs: Date.parse("2026-07-21T10:00:00.000Z") }],
+  });
+
+  assert.equal(result.applied, true);
+  assert.equal(db.doc("old_login").communityLevel.chatMessages, 1);
+  assert.equal(db.doc("new_login"), undefined);
+  assert.deepEqual(resolutions, [{
+    login: "new_login",
+    twitchUserId: "stable-1",
+    allowCreate: true,
+  }]);
+});

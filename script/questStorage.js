@@ -258,6 +258,24 @@ function createQuestStorage(db, options = {}) {
     Math.floor(Number(options.minNewProfilePresenceMs) || 0),
   );
 
+  async function canonicalLogin(login, twitchUserId, { allowCreate = false } = {}) {
+    const fallback = String(login || "").trim().toLowerCase();
+    if (typeof options.resolveTwitchIdentity !== "function" || !twitchUserId) {
+      return fallback;
+    }
+    const identity = await options.resolveTwitchIdentity({
+      login: fallback,
+      twitchUserId,
+      allowCreate,
+    });
+    return String(identity?.login || fallback).trim().toLowerCase();
+  }
+
+  function twitchIdentityFields(twitchUserId) {
+    const userId = String(twitchUserId || "").trim();
+    return userId ? { twitch_id: userId, twitchId: userId } : {};
+  }
+
   async function getCommunityLevelConfig() {
     if (typeof options.getCommunityLevelConfig !== "function") {
       return communityLevelConfig;
@@ -319,10 +337,14 @@ function createQuestStorage(db, options = {}) {
     return { idx: month.streams.length - 1, created: true };
   }
 
-  async function notePresence(login, streamId, { startedAt, context } = {}) {
-    const excluded = excludedActivityResult(login);
+  async function notePresence(
+    login,
+    streamId,
+    { startedAt, context, twitchUserId } = {},
+  ) {
+    const docId = await canonicalLogin(login, twitchUserId);
+    const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
-    const docId = String(login || "").trim().toLowerCase();
     const ref = col.doc(docId);
     let presenceLevelResult = null;
     const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
@@ -387,9 +409,9 @@ function createQuestStorage(db, options = {}) {
   async function finalizeLiveUptime(
     login,
     streamId,
-    { uptimeMs = 0, startedAt = null, endedAt = null } = {},
+    { uptimeMs = 0, startedAt = null, endedAt = null, twitchUserId = "" } = {},
   ) {
-    const docId = String(login || "").trim().toLowerCase();
+    const docId = await canonicalLogin(login, twitchUserId);
     const safeStreamId = normalizeStreamId(streamId);
     const uptimeMinutes = uptimeMinutesFromMs(uptimeMs);
     const excluded = excludedActivityResult(docId);
@@ -534,8 +556,13 @@ function createQuestStorage(db, options = {}) {
     return result;
   }
 
-  async function noteEmoteUsage(login, streamId, inc = 1, { startedAt } = {}) {
-    const docId = String(login || "").trim().toLowerCase();
+  async function noteEmoteUsage(
+    login,
+    streamId,
+    inc = 1,
+    { startedAt, twitchUserId } = {},
+  ) {
+    const docId = await canonicalLogin(login, twitchUserId, { allowCreate: true });
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
@@ -551,7 +578,11 @@ function createQuestStorage(db, options = {}) {
 
         if (!snap.exists) {
           console.log(`[EMOTE:TX] creating doc followers_all_time/${docId}`);
-          tx.set(ref, { pseudo: docId, live_presence: {} }, { merge: true });
+          tx.set(
+            ref,
+            { pseudo: docId, live_presence: {}, ...twitchIdentityFields(twitchUserId) },
+            { merge: true },
+          );
         }
 
         const data = snap.exists ? snap.data() : {};
@@ -595,8 +626,13 @@ function createQuestStorage(db, options = {}) {
       });
   }
 
-  async function noteChatMessage(login, streamId, inc = 1, { startedAt } = {}) {
-    const docId = String(login || "").trim().toLowerCase();
+  async function noteChatMessage(
+    login,
+    streamId,
+    inc = 1,
+    { startedAt, twitchUserId } = {},
+  ) {
+    const docId = await canonicalLogin(login, twitchUserId, { allowCreate: true });
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
@@ -611,7 +647,11 @@ function createQuestStorage(db, options = {}) {
 
       // cree le doc minimal si absent
       if (!snap.exists) {
-        tx.set(ref, { pseudo: docId, live_presence: {} }, { merge: true });
+        tx.set(
+          ref,
+          { pseudo: docId, live_presence: {}, ...twitchIdentityFields(twitchUserId) },
+          { merge: true },
+        );
       }
 
       const data = snap.exists ? snap.data() : {};
@@ -697,9 +737,10 @@ function createQuestStorage(db, options = {}) {
       presenceFirstSeenAtMs = 0,
       presenceLastSeenAtMs = 0,
       flushId = "",
+      twitchUserId = "",
     } = {},
   ) {
-    const docId = String(login || "").trim().toLowerCase();
+    const docId = await canonicalLogin(login, twitchUserId, { allowCreate: true });
     const safeStreamId = normalizeStreamId(streamId);
     const normalizedChatEvents = normalizeActivityEvents(chatEvents);
     const safeEmoteCount = Math.max(0, Math.floor(Number(emoteCount) || 0));
@@ -1030,6 +1071,7 @@ function createQuestStorage(db, options = {}) {
           ref,
           {
             pseudo: docId,
+            ...twitchIdentityFields(twitchUserId),
             ...patch,
           },
           { merge: true },
@@ -1072,9 +1114,9 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     clipId = null,
-    { startedAt } = {}
+    { startedAt, twitchUserId } = {}
   ) {
-    const docId = String(login || "").trim().toLowerCase();
+    const docId = await canonicalLogin(login, twitchUserId);
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
@@ -1109,9 +1151,11 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     redemptionsInc = 1,
-    { startedAt, createIfMissing = true } = {}
+    { startedAt, createIfMissing = true, twitchUserId = "" } = {}
   ) {
-    const docId = String(login || "").trim().toLowerCase();
+    const docId = await canonicalLogin(login, twitchUserId, {
+      allowCreate: createIfMissing,
+    });
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
@@ -1130,7 +1174,11 @@ function createQuestStorage(db, options = {}) {
         }
         tx.set(
           ref,
-          { pseudo: docId, live_presence: {} },
+          {
+            pseudo: docId,
+            live_presence: {},
+            ...twitchIdentityFields(twitchUserId),
+          },
           { merge: true }
         );
       }
@@ -1194,8 +1242,12 @@ function createQuestStorage(db, options = {}) {
     };
   }
 
-  async function noteRaidParticipation(login, streamId, { startedAt } = {}) {
-    const docId = String(login || "").trim().toLowerCase();
+  async function noteRaidParticipation(
+    login,
+    streamId,
+    { startedAt, twitchUserId } = {},
+  ) {
+    const docId = await canonicalLogin(login, twitchUserId);
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
@@ -1231,7 +1283,8 @@ function createQuestStorage(db, options = {}) {
    * (Optionnel) mets/merge le contexte du stream sur l'entrée (titre, jeu, chat…)
    */
   async function updateStreamContext(login, streamId, ctx = {}) {
-    const ref = col.doc(login);
+    const docId = await canonicalLogin(login, ctx?.twitchUserId);
+    const ref = col.doc(docId);
     await db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) return;

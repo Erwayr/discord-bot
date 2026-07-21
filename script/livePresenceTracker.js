@@ -170,6 +170,12 @@ function createUptimeAccumulator({
       .filter((entry) => entry.login && entry.streamId && entry.accumulatedMs > 0);
   }
 
+  function getEntry(login) {
+    const key = normalizeLogin(login);
+    const entry = entries.get(key);
+    return entry ? { login: key, ...entry } : null;
+  }
+
   function removeLogins(logins = []) {
     const removed = [];
     for (const rawLogin of Array.isArray(logins) ? logins : []) {
@@ -187,6 +193,7 @@ function createUptimeAccumulator({
     markPresenceNoted,
     markLevelAnnouncementNoted,
     snapshot,
+    getEntry,
     removeLogins,
     clear: () => entries.clear(),
     hasEntries: () => entries.size > 0,
@@ -330,6 +337,7 @@ function createLivePresenceTicker({
                 uptimeMs: entry.accumulatedMs,
                 presenceFirstSeenAtMs: entry.firstSeenAtMs,
                 presenceLastSeenAtMs: entry.lastSeenAtMs,
+                twitchUserId: entry.twitchUserId || "",
                 flushId:
                   `live-activity:${safeStreamId}:${entry.login}:` +
                   `uptime-${safeStreamId}-${entry.login}-${entry.firstSeenAtMs || 0}-` +
@@ -341,6 +349,7 @@ function createLivePresenceTicker({
               uptimeMs: entry.accumulatedMs,
               startedAt: uptime.startedAt,
               endedAt: new Date(),
+              twitchUserId: entry.twitchUserId || "",
             });
           } catch (e) {
             console.warn(
@@ -433,6 +442,7 @@ function createLivePresenceTicker({
         if (deferPresenceWrites) {
           await Promise.all(
             slice.map(async (login) => {
+              const presenceEntry = uptime.getEntry(login);
               uptime.markPresenceNoted(login);
               processed += 1;
               if (typeof deferredPresenceHandler !== "function") return;
@@ -441,6 +451,7 @@ function createLivePresenceTicker({
                   login,
                   streamId: CURRENT_STREAM_ID,
                   startedAt: CURRENT_STARTED_AT,
+                  twitchUserId: presenceEntry?.twitchUserId || "",
                 });
               } catch (e) {
                 console.warn(
@@ -454,9 +465,11 @@ function createLivePresenceTicker({
           await Promise.all(
             slice.map(async (login) => {
               try {
+                const presenceEntry = uptime.getEntry(login);
                 await store.notePresence(login, CURRENT_STREAM_ID, {
                   startedAt: CURRENT_STARTED_AT,
                   context: null,
+                  twitchUserId: presenceEntry?.twitchUserId || "",
                 });
                 uptime.markPresenceNoted(login);
                 processed += 1;
@@ -480,11 +493,13 @@ function createLivePresenceTicker({
           toRecheckLevelAnnouncements.map(async (login) => {
             if (deferPresenceWrites && initialPresenceSet.has(login)) return;
             try {
+              const presenceEntry = uptime.getEntry(login);
               await deferredPresenceHandler({
                 login,
                 streamId: CURRENT_STREAM_ID,
                 startedAt: CURRENT_STARTED_AT,
                 source: "presence_threshold",
+                twitchUserId: presenceEntry?.twitchUserId || "",
               });
               uptime.markLevelAnnouncementNoted(login);
             } catch (e) {

@@ -6,6 +6,19 @@ const { isExcludedLogin } = require("../helper/excludedUsers");
 
 const MAX_IDS = 50;
 
+async function canonicalLogin(login, twitchUserId, options = {}) {
+  const fallback = String(login || "").trim().toLowerCase();
+  if (!fallback || !twitchUserId || typeof options.resolveTwitchIdentity !== "function") {
+    return fallback;
+  }
+  const identity = await options.resolveTwitchIdentity({
+    login: fallback,
+    twitchUserId,
+    allowCreate: true,
+  });
+  return String(identity?.login || fallback).trim().toLowerCase();
+}
+
 /** PATCH Twitch: FULFILLED/CANCELED pour 1..n redemptions */
 async function updateRedemptionStatus({
   broadcasterId,
@@ -37,10 +50,14 @@ async function updateRedemptionStatus({
 }
 
 /** Upsert participants/{login} à partir d’un event redemption.add */
-async function upsertParticipantFromRedemption(db, r) {
+async function upsertParticipantFromRedemption(db, r, options = {}) {
   if (!r || typeof r !== "object")
     throw new Error("payload redemption invalide");
-  const login = (r.user_login || r.user?.login || "").toLowerCase();
+  const login = await canonicalLogin(
+    r.user_login || r.user?.login || "",
+    r.user_id || r.user?.id || "",
+    options,
+  );
   if (!login || isExcludedLogin(login)) return;
 
   const partRef = db.collection("participants").doc(login);
@@ -97,8 +114,12 @@ async function upsertParticipantFromRedemption(db, r) {
   });
 }
 
-async function upsertParticipantFromSubscription(db, e) {
-  const login = (e.user_login || e.user?.login || "").toLowerCase();
+async function upsertParticipantFromSubscription(db, e, options = {}) {
+  const login = await canonicalLogin(
+    e.user_login || e.user?.login || "",
+    e.user_id || e.user?.id || "",
+    options,
+  );
   if (!login || isExcludedLogin(login)) return;
 
   const partRef = db.collection("participants").doc(login);
@@ -152,9 +173,13 @@ async function upsertParticipantFromSubscription(db, e) {
   });
 }
 
-async function upsertFollowerMonthsFromSub(db, e) {
+async function upsertFollowerMonthsFromSub(db, e, options = {}) {
   // e peut venir de "channel.subscribe" ou "channel.subscription.message"
-  const login = (e.user_login || e.user?.login || "").toLowerCase();
+  const login = await canonicalLogin(
+    e.user_login || e.user?.login || "",
+    e.user_id || e.user?.id || "",
+    options,
+  );
   if (!login || isExcludedLogin(login)) return;
 
   // Mois cumulés / durée / série (selon le type d’event, tout n’est pas toujours présent)
@@ -194,7 +219,10 @@ async function upsertFollowerMonthsFromSub(db, e) {
 
     // Backfill léger s'il manque le pseudo/twitchId (optionnel)
     if (!existing.pseudo) update.pseudo = login;
-    if (!existing.twitchId && e.user_id) update.twitchId = e.user_id;
+    if (e.user_id) {
+      update.twitch_id = e.user_id;
+      update.twitchId = e.user_id;
+    }
 
     tx.set(ref, update, { merge: true });
   });

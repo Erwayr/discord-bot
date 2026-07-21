@@ -114,6 +114,7 @@ function createClipPoller({
         for (const clipId of clipIds) {
           await questStore.noteClipCreated(login, streamId, clipId, {
             startedAt,
+            twitchUserId: creatorId,
           });
         }
       }

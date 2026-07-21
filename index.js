@@ -9,6 +9,7 @@ const { makeHelix } = require("./helper/helix");
 const { createClipPoller } = require("./script/clipPoller");
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
 const { createQuestStorage } = require("./script/questStorage");
+const { createTwitchIdentityResolver } = require("./script/twitchIdentity");
 const { createTokenManager } = require("./script/tokenManager");
 const {
   createTwitchExtensionStatsSync,
@@ -91,10 +92,13 @@ const cardNotifications = createCardNotificationQueue({
   sendDMOrFallback,
 });
 
+const resolveTwitchIdentity = createTwitchIdentityResolver(db);
+
 const questStore = createQuestStorage(db, {
   communityLevel: config.communityLevel,
   getCommunityLevelConfig,
   minNewProfilePresenceMs: config.twitchLiveActivity.minNewProfilePresenceMs,
+  resolveTwitchIdentity,
 });
 const tokenManager = createTokenManager(db, {
   docPath: config.twitch.tokenDocPath,
@@ -169,6 +173,7 @@ const twitchChat = createTwitchChat({
   birthdays,
   getCommunityLevelConfig,
   twitchExtensionStatsSync,
+  resolveTwitchIdentity,
 });
 
 const authHealth = createAuthHealth({
@@ -191,6 +196,7 @@ const twitchEventSub = createTwitchEventSub({
   sendTwitchChatMessage: twitchChat.sendTwitchChatMessage,
   bufferLiveChannelPoints: twitchChat.noteLiveChannelPoints,
   twitchExtensionStatsSync,
+  resolveTwitchIdentity,
 });
 
 const jobs = createJobs({
