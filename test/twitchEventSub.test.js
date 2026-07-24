@@ -84,7 +84,8 @@ function fakeEventSubConfig(secret = "secret") {
       eventsCollection: "overlay_events",
       subCardEventType: "sub_card",
       moderationEventType: "moderation_trash",
-      subCardDedupeMs: 15_000,
+      subCardDedupeMs: 10 * 60_000,
+      subCardResubWaitMs: 0,
     },
     urls: {},
     timing: {
@@ -526,9 +527,11 @@ test("channel ban subscription payload uses the public webhook contract", () => 
   });
 });
 
-test("sub then resub for same login is deduped for overlay card", async () => {
+test("sub then resub publishes only the enriched resub overlay card", async () => {
   const db = fakeFirestore();
-  const eventSub = createOverlayEventSub(db);
+  const eventSub = createOverlayEventSub(db, {
+    overlay: { subCardResubWaitMs: 60_000 },
+  });
   const subRes = fakeResponse();
   const resubRes = fakeResponse();
 
@@ -540,9 +543,14 @@ test("sub then resub for same login is deduped for overlay card", async () => {
     ),
     subRes,
   );
+  assert.equal(overlayWrites(db).length, 0);
+
   await eventSub.handleTwitchCallback(
     fakeSignedRequest(
-      subscriptionBody("channel.subscription.message", "carol"),
+      subscriptionBody("channel.subscription.message", "carol", {
+        cumulative_months: 9,
+        message: { text: "Neuf mois deja !" },
+      }),
       "secret",
       "combo-resub-1",
     ),
@@ -554,7 +562,112 @@ test("sub then resub for same login is deduped for overlay card", async () => {
   const writes = overlayWrites(db);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].data.login, "carol");
+  assert.equal(writes[0].path, "overlay_events/sub_card_combo-resub-1");
+  assert.equal(writes[0].data.twitchEventType, "channel.subscription.message");
+  assert.equal(writes[0].data.subMonths, 9);
+  assert.equal(writes[0].data.subMessage, "Neuf mois deja !");
+});
+
+test("channel.subscribe publishes once after the resub wait window", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db, {
+    overlay: { subCardResubWaitMs: 5 },
+  });
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscribe", "delayed"),
+      "secret",
+      "delayed-sub-1",
+    ),
+    fakeResponse(),
+  );
+
+  assert.equal(overlayWrites(db).length, 0);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const writes = overlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "overlay_events/sub_card_delayed-sub-1");
   assert.equal(writes[0].data.twitchEventType, "channel.subscribe");
+});
+
+test("a resub after the wait window is suppressed by publish dedupe", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db, {
+    overlay: {
+      subCardDedupeMs: 10 * 60_000,
+      subCardResubWaitMs: 5,
+    },
+  });
+
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscribe", "late"),
+      "secret",
+      "late-sub-1",
+    ),
+    fakeResponse(),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  await eventSub.handleTwitchCallback(
+    fakeSignedRequest(
+      subscriptionBody("channel.subscription.message", "late", {
+        cumulative_months: 8,
+      }),
+      "secret",
+      "late-resub-1",
+    ),
+    fakeResponse(),
+  );
+
+  const writes = overlayWrites(db);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].path, "overlay_events/sub_card_late-sub-1");
+  assert.equal(writes[0].data.twitchEventType, "channel.subscribe");
+});
+
+test("pending sub cards are independent for different Twitch users", async () => {
+  const db = fakeFirestore();
+  const eventSub = createOverlayEventSub(db, {
+    overlay: { subCardResubWaitMs: 60_000 },
+  });
+
+  for (const login of ["eve", "frank"]) {
+    await eventSub.handleTwitchCallback(
+      fakeSignedRequest(
+        subscriptionBody("channel.subscribe", login),
+        "secret",
+        `pending-sub-${login}`,
+      ),
+      fakeResponse(),
+    );
+  }
+  assert.equal(overlayWrites(db).length, 0);
+
+  for (const login of ["eve", "frank"]) {
+    await eventSub.handleTwitchCallback(
+      fakeSignedRequest(
+        subscriptionBody("channel.subscription.message", login),
+        "secret",
+        `pending-resub-${login}`,
+      ),
+      fakeResponse(),
+    );
+  }
+
+  const writes = overlayWrites(db);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(
+    writes.map((write) => write.data.login).sort(),
+    ["eve", "frank"],
+  );
+  assert.ok(
+    writes.every(
+      (write) =>
+        write.data.twitchEventType === "channel.subscription.message",
+    ),
+  );
 });
 
 test("same login can publish overlay sub card after dedupe window", async () => {

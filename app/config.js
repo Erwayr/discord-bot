@@ -77,7 +77,11 @@ const config = {
       process.env.OVERLAY_MODERATION_EVENT_TYPE || "moderation_trash",
     subCardDedupeMs: Math.max(
       0,
-      numberEnv("OVERLAY_SUB_CARD_DEDUPE_MS", 15_000),
+      numberEnv("OVERLAY_SUB_CARD_DEDUPE_MS", 10 * 60_000),
+    ),
+    subCardResubWaitMs: Math.max(
+      0,
+      numberEnv("OVERLAY_SUB_CARD_RESUB_WAIT_MS", 60_000),
     ),
     subCardTestCommandEnabled: boolEnv(
       "OVERLAY_SUB_CARD_TEST_COMMAND_ENABLED",

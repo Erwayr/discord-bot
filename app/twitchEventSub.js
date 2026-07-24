@@ -174,6 +174,7 @@ function createTwitchEventSub({
   const subTimers = new Map();
   const lastSubNotified = new Map();
   const lastOverlaySubCardPublished = new Map();
+  const pendingOverlaySubCards = new Map();
 
   function cleanupSeenDeliveries() {
     const now = Date.now();
@@ -294,27 +295,40 @@ function createTwitchEventSub({
   function cleanupOverlaySubCardDedupe(dedupeMs) {
     const now = Date.now();
     const maxAge = Math.max(dedupeMs * 4, 5 * 60_000);
-    for (const [login, ts] of lastOverlaySubCardPublished) {
-      if (now - ts > maxAge) lastOverlaySubCardPublished.delete(login);
+    for (const [correlationKey, ts] of lastOverlaySubCardPublished) {
+      if (now - ts > maxAge) {
+        lastOverlaySubCardPublished.delete(correlationKey);
+      }
     }
   }
 
   function getOverlaySubCardDedupeMs() {
     return safePositiveNumber(
       config.overlay?.subCardDedupeMs,
-      safePositiveNumber(config.timing?.overlaySubCardDedupeMs, 15_000),
+      safePositiveNumber(config.timing?.overlaySubCardDedupeMs, 10 * 60_000),
     );
   }
 
-  function markOverlaySubCardForPublish(login) {
+  function getOverlaySubCardResubWaitMs() {
+    return safePositiveNumber(config.overlay?.subCardResubWaitMs, 60_000);
+  }
+
+  function getOverlaySubCardCorrelationKey(event) {
+    const twitchUserId = String(event?.user_id || event?.user?.id || "").trim();
+    if (twitchUserId) return `id:${twitchUserId}`;
+    const login = getLoginFromEvent(event);
+    return login ? `login:${login}` : "";
+  }
+
+  function markOverlaySubCardForPublish(correlationKey) {
     const dedupeMs = getOverlaySubCardDedupeMs();
-    if (!login || dedupeMs <= 0) return true;
+    if (!correlationKey || dedupeMs <= 0) return true;
 
     const now = Date.now();
-    const last = lastOverlaySubCardPublished.get(login) || 0;
+    const last = lastOverlaySubCardPublished.get(correlationKey) || 0;
     if (now - last < dedupeMs) return false;
 
-    lastOverlaySubCardPublished.set(login, now);
+    lastOverlaySubCardPublished.set(correlationKey, now);
     if (lastOverlaySubCardPublished.size > 2000) {
       cleanupOverlaySubCardDedupe(dedupeMs);
     }
@@ -346,7 +360,9 @@ function createTwitchEventSub({
       deliveryId,
     });
     if (!payload.login) return false;
-    if (!markOverlaySubCardForPublish(payload.login)) {
+    const correlationKey =
+      getOverlaySubCardCorrelationKey(event) || `login:${payload.login}`;
+    if (!markOverlaySubCardForPublish(correlationKey)) {
       console.log(
         `[overlay] Sub card event deduped: login=${payload.login} type=${twitchEventType}`,
       );
@@ -362,13 +378,72 @@ function createTwitchEventSub({
     try {
       await db.collection(collectionName).doc(docId).set(payload, { merge: true });
     } catch (error) {
-      lastOverlaySubCardPublished.delete(payload.login);
+      lastOverlaySubCardPublished.delete(correlationKey);
       throw error;
     }
     console.log(
       `[overlay] Sub card event published: login=${payload.login} doc=${docId}`,
     );
     return true;
+  }
+
+  function cancelPendingOverlaySubCard(correlationKey) {
+    if (!correlationKey) return null;
+    const pending = pendingOverlaySubCards.get(correlationKey) || null;
+    if (!pending) return null;
+    clearTimeout(pending.timer);
+    pendingOverlaySubCards.delete(correlationKey);
+    return pending;
+  }
+
+  async function scheduleOverlaySubCardEvent(
+    event,
+    twitchEventType,
+    deliveryId,
+  ) {
+    const waitMs = getOverlaySubCardResubWaitMs();
+    const correlationKey = getOverlaySubCardCorrelationKey(event);
+    if (!correlationKey || waitMs <= 0) {
+      return publishOverlaySubCardEvent(event, twitchEventType, deliveryId);
+    }
+
+    cancelPendingOverlaySubCard(correlationKey);
+    const timer = setTimeout(() => {
+      pendingOverlaySubCards.delete(correlationKey);
+      publishOverlaySubCardEvent(event, twitchEventType, deliveryId).catch(
+        (error) => {
+          console.warn(
+            "delayed overlay sub card publish failed:",
+            error?.message || error,
+          );
+        },
+      );
+    }, waitMs);
+    if (typeof timer.unref === "function") timer.unref();
+    pendingOverlaySubCards.set(correlationKey, {
+      timer,
+      startedAt: Date.now(),
+      deliveryId,
+    });
+    console.log(
+      `[overlay] Sub card event delayed: login=${getLoginFromEvent(event)} waitMs=${waitMs}`,
+    );
+    return true;
+  }
+
+  async function publishOverlayResubCardEvent(
+    event,
+    twitchEventType,
+    deliveryId,
+  ) {
+    const correlationKey = getOverlaySubCardCorrelationKey(event);
+    const pending = cancelPendingOverlaySubCard(correlationKey);
+    if (pending) {
+      console.log(
+        `[overlay] Pending sub card replaced by resub: login=${getLoginFromEvent(event)}`,
+      );
+    }
+    return publishOverlaySubCardEvent(event, twitchEventType, deliveryId);
   }
 
   async function publishOverlayModerationEvent(event, deliveryId) {
@@ -640,17 +715,17 @@ function createTwitchEventSub({
         const canonical = await canonicalEvent(event, { allowCreate: true });
         await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
         await upsertFollowerMonthsFromSub(db, canonical, { resolveTwitchIdentity });
-        await publishOverlaySubCardEvent(
-          event,
+        await scheduleOverlaySubCardEvent(
+          canonical,
           subscription.type,
           req.header("Twitch-Eventsub-Message-Id"),
         );
 
-        const login = getLoginFromEvent(event);
-        const display = getDisplayFromEvent(event, login);
+        const login = getLoginFromEvent(canonical);
+        const display = getDisplayFromEvent(canonical, login);
         scheduleSubscribeNotice(login, async () => {
           const mention = await buildSubMention(login, display);
-          return formatSubDiscordMessage(event, {
+          return formatSubDiscordMessage(canonical, {
             type: "channel.subscribe",
             mention,
           });
@@ -670,17 +745,17 @@ function createTwitchEventSub({
         const canonical = await canonicalEvent(event, { allowCreate: true });
         await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
         await upsertFollowerMonthsFromSub(db, canonical, { resolveTwitchIdentity });
-        await publishOverlaySubCardEvent(
-          event,
+        await publishOverlayResubCardEvent(
+          canonical,
           subscription.type,
           req.header("Twitch-Eventsub-Message-Id"),
         );
 
-        const login = getLoginFromEvent(event);
-        const display = getDisplayFromEvent(event, login);
+        const login = getLoginFromEvent(canonical);
+        const display = getDisplayFromEvent(canonical, login);
         await sendResubNow(login, async () => {
           const mention = await buildSubMention(login, display);
-          return formatSubDiscordMessage(event, {
+          return formatSubDiscordMessage(canonical, {
             type: "channel.subscription.message",
             mention,
           });
