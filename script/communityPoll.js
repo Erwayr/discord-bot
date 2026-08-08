@@ -14,23 +14,9 @@ const {
 } = require("discord.js");
 
 const COMMUNITY_POLL_COMMAND_NAME = "sondage";
-const CARD_SKIN_POLL_COMMAND_NAME = "skinsondage";
-
-const GENERIC_SOURCE = {
-  key: "generic",
-  pollsCollection: "discord_community_polls",
-  stateCollection: "discord_community_poll_state",
-  customIdPrefix: "community_poll",
-};
-
-const LEGACY_SOURCE = {
-  key: "legacy",
-  pollsCollection: "discord_card_skin_polls",
-  stateCollection: "discord_card_skin_poll_state",
-  customIdPrefix: "card_skin_poll",
-};
-
-const SOURCES = [GENERIC_SOURCE, LEGACY_SOURCE];
+const POLLS_COLLECTION = "discord_community_polls";
+const STATE_COLLECTION = "discord_community_poll_state";
+const CUSTOM_ID_PREFIX = "community_poll";
 
 const DEFAULT_MAX_PROPOSALS_PER_USER = 3;
 const DEFAULT_MAX_VOTES_PER_USER = 1;
@@ -72,33 +58,20 @@ function truncate(value, maxLength) {
   return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
-function pollWithSourceDefaults(poll, source) {
-  if (source?.key !== LEGACY_SOURCE.key) return poll || {};
-  return {
-    proposalLabel: "skin",
-    buttonLabel: "Proposer un skin",
-    maxProposalsPerUser: DEFAULT_MAX_PROPOSALS_PER_USER,
-    maxVotesPerUser: DEFAULT_MAX_VOTES_PER_USER,
-    category: "card-skin",
-    interactionNamespace: LEGACY_SOURCE.customIdPrefix,
-    ...(poll || {}),
-  };
+function stateRef(db, guildId) {
+  return db.collection(STATE_COLLECTION).doc(String(guildId));
 }
 
-function stateRef(db, guildId, source = GENERIC_SOURCE) {
-  return db.collection(source.stateCollection).doc(String(guildId));
+function pollRef(db, pollId) {
+  return db.collection(POLLS_COLLECTION).doc(String(pollId));
 }
 
-function pollRef(db, pollId, source = GENERIC_SOURCE) {
-  return db.collection(source.pollsCollection).doc(String(pollId));
+function proposalsRef(db, pollId) {
+  return pollRef(db, pollId).collection("proposals");
 }
 
-function proposalsRef(db, pollId, source = GENERIC_SOURCE) {
-  return pollRef(db, pollId, source).collection("proposals");
-}
-
-function votesRef(db, pollId, source = GENERIC_SOURCE) {
-  return pollRef(db, pollId, source).collection("votes");
+function votesRef(db, pollId) {
+  return pollRef(db, pollId).collection("votes");
 }
 
 function getProposalLabel(poll) {
@@ -124,33 +97,21 @@ function getMaxVotes(poll) {
 }
 
 function getProposeButtonLabel(poll) {
-  if (poll?.buttonLabel) return truncate(poll.buttonLabel, 70);
   const label = getProposalLabel(poll);
   if (label.toLowerCase() === "proposition") return "Faire une proposition";
   return truncate(`Proposer : ${capitalize(label)}`, 70);
 }
 
-function getNamespaceForPoll(poll, source) {
-  if (poll?.interactionNamespace === LEGACY_SOURCE.customIdPrefix) {
-    return LEGACY_SOURCE.customIdPrefix;
-  }
-  if (poll?.interactionNamespace === GENERIC_SOURCE.customIdPrefix) {
-    return GENERIC_SOURCE.customIdPrefix;
-  }
-  return source?.customIdPrefix || GENERIC_SOURCE.customIdPrefix;
-}
-
-function buildCustomId(namespace, action, pollId, proposalId = null) {
-  const base = `${namespace}:${action}:${pollId}`;
+function buildCustomId(action, pollId, proposalId = null) {
+  const base = `${CUSTOM_ID_PREFIX}:${action}:${pollId}`;
   return proposalId ? `${base}:${proposalId}` : base;
 }
 
-function buildMainComponents(pollId, poll, source, disabled = false) {
-  const namespace = getNamespaceForPoll(poll, source);
+function buildMainComponents(pollId, poll, disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(buildCustomId(namespace, "propose", pollId))
+        .setCustomId(buildCustomId("propose", pollId))
         .setLabel(getProposeButtonLabel(poll))
         .setEmoji("➕")
         .setStyle(ButtonStyle.Primary)
@@ -159,20 +120,11 @@ function buildMainComponents(pollId, poll, source, disabled = false) {
   ];
 }
 
-function buildVoteComponents(
-  pollId,
-  proposalId,
-  poll,
-  source,
-  disabled = false,
-) {
-  const namespace = getNamespaceForPoll(poll, source);
+function buildVoteComponents(pollId, proposalId, disabled = false) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(
-          buildCustomId(namespace, "vote", pollId, proposalId),
-        )
+        .setCustomId(buildCustomId("vote", pollId, proposalId))
         .setLabel(disabled ? "Vote terminé" : "Voter")
         .setEmoji("🗳️")
         .setStyle(ButtonStyle.Success)
@@ -231,9 +183,7 @@ function buildMainEmbed(poll, proposalDocs, { closed = false } = {}) {
     );
   } else {
     const description = String(poll?.description || "").trim();
-    if (description) {
-      descriptionLines.push(description, "");
-    }
+    if (description) descriptionLines.push(description, "");
     descriptionLines.push(
       `Clique sur **➕ ${getProposeButtonLabel(poll)}** pour ajouter ton idée.`,
       votingRuleText(poll),
@@ -257,7 +207,6 @@ function buildMainEmbed(poll, proposalDocs, { closed = false } = {}) {
 function buildProposalEmbed(proposal, poll, { closed = false } = {}) {
   const votes = Number(proposal.voteCount || 0);
   const maxVotes = getMaxVotes(poll);
-
   const footerText = closed
     ? "Vote terminé"
     : maxVotes === 1
@@ -280,68 +229,36 @@ function buildProposalEmbed(proposal, poll, { closed = false } = {}) {
     )
     .setFooter({ text: footerText });
 
-  if (proposal.description) {
-    embed.setDescription(proposal.description);
-  }
-
+  if (proposal.description) embed.setDescription(proposal.description);
   return embed;
 }
 
-async function getPollContextById(db, pollId) {
-  for (const source of SOURCES) {
-    const snapshot = await pollRef(db, pollId, source).get();
-    if (snapshot.exists) {
-      return { snapshot, source };
-    }
-  }
-  return null;
+async function getPollSnapshotById(db, pollId) {
+  const snapshot = await pollRef(db, pollId).get();
+  return snapshot.exists ? snapshot : null;
 }
 
-async function getStatePollContext(
-  db,
-  guildId,
-  field,
-  source,
-) {
-  const stateSnapshot = await stateRef(db, guildId, source).get();
+async function getStatePollSnapshot(db, guildId, field) {
+  const stateSnapshot = await stateRef(db, guildId).get();
   if (!stateSnapshot.exists) return null;
 
   const pollId = stateSnapshot.data()?.[field];
   if (!pollId) return null;
 
-  const snapshot = await pollRef(db, pollId, source).get();
-  if (!snapshot.exists) return null;
-
-  return { snapshot, source };
+  const snapshot = await pollRef(db, pollId).get();
+  return snapshot.exists ? snapshot : null;
 }
 
-async function getActivePollContext(db, guildId) {
-  for (const source of SOURCES) {
-    const context = await getStatePollContext(
-      db,
-      guildId,
-      "activePollId",
-      source,
-    );
-    if (context?.snapshot?.data()?.active) return context;
-  }
-  return null;
+async function getActivePollSnapshot(db, guildId) {
+  const snapshot = await getStatePollSnapshot(db, guildId, "activePollId");
+  return snapshot?.data()?.active ? snapshot : null;
 }
 
-async function getCurrentOrLastPollContext(db, guildId) {
-  const active = await getActivePollContext(db, guildId);
-  if (active) return active;
-
-  for (const source of SOURCES) {
-    const context = await getStatePollContext(
-      db,
-      guildId,
-      "lastPollId",
-      source,
-    );
-    if (context) return context;
-  }
-  return null;
+async function getCurrentOrLastPollSnapshot(db, guildId) {
+  return (
+    (await getActivePollSnapshot(db, guildId)) ||
+    (await getStatePollSnapshot(db, guildId, "lastPollId"))
+  );
 }
 
 async function fetchChannel(interaction, channelId) {
@@ -358,23 +275,14 @@ async function fetchChannel(interaction, channelId) {
   return channel?.isTextBased?.() ? channel : null;
 }
 
-async function refreshMainMessage(
-  interaction,
-  db,
-  pollId,
-  source,
-  { closed = false } = {},
-) {
-  const pollSnapshot = await pollRef(db, pollId, source).get();
+async function refreshMainMessage(interaction, db, pollId, { closed = false } = {}) {
+  const pollSnapshot = await pollRef(db, pollId).get();
   if (!pollSnapshot.exists) return;
 
-  const poll = pollWithSourceDefaults(
-    pollSnapshot.data() || {},
-    source,
-  );
+  const poll = pollSnapshot.data() || {};
   if (!poll.channelId || !poll.messageId) return;
 
-  const proposalSnapshot = await proposalsRef(db, pollId, source).get();
+  const proposalSnapshot = await proposalsRef(db, pollId).get();
   const channel = await fetchChannel(interaction, poll.channelId);
   if (!channel) return;
 
@@ -383,7 +291,7 @@ async function refreshMainMessage(
 
   await message.edit({
     embeds: [buildMainEmbed(poll, proposalSnapshot.docs, { closed })],
-    components: buildMainComponents(pollId, poll, source, closed),
+    components: buildMainComponents(pollId, poll, closed),
   });
 }
 
@@ -392,20 +300,13 @@ async function refreshProposalMessage(
   db,
   pollId,
   proposalId,
-  source,
   { closed = false } = {},
 ) {
-  const pollSnapshot = await pollRef(db, pollId, source).get();
-  const proposalSnapshot = await proposalsRef(db, pollId, source)
-    .doc(proposalId)
-    .get();
-
+  const pollSnapshot = await pollRef(db, pollId).get();
+  const proposalSnapshot = await proposalsRef(db, pollId).doc(proposalId).get();
   if (!pollSnapshot.exists || !proposalSnapshot.exists) return;
 
-  const poll = pollWithSourceDefaults(
-    pollSnapshot.data() || {},
-    source,
-  );
+  const poll = pollSnapshot.data() || {};
   const proposal = proposalSnapshot.data() || {};
   if (!proposal.channelId || !proposal.messageId) return;
 
@@ -425,32 +326,11 @@ async function refreshProposalMessage(
         { closed },
       ),
     ],
-    components: buildVoteComponents(
-      pollId,
-      proposalId,
-      poll,
-      source,
-      closed,
-    ),
+    components: buildVoteComponents(pollId, proposalId, closed),
   });
 }
 
-function creationOptions(interaction, { legacySkinAlias = false } = {}) {
-  if (legacySkinAlias) {
-    return {
-      title: String(
-        interaction.options.getString("titre") ||
-          "Quel sera le prochain skin de carte ?",
-      ).trim(),
-      description: "",
-      proposalLabel: "skin",
-      buttonLabel: "Proposer un skin",
-      maxProposalsPerUser: DEFAULT_MAX_PROPOSALS_PER_USER,
-      maxVotesPerUser: DEFAULT_MAX_VOTES_PER_USER,
-      category: "card-skin",
-    };
-  }
-
+function creationOptions(interaction) {
   return {
     title: String(interaction.options.getString("titre") || "").trim(),
     description: String(
@@ -459,7 +339,6 @@ function creationOptions(interaction, { legacySkinAlias = false } = {}) {
     proposalLabel: String(
       interaction.options.getString("libelle") || "proposition",
     ).trim(),
-    buttonLabel: null,
     maxProposalsPerUser: clampInteger(
       interaction.options.getInteger("max_propositions"),
       DEFAULT_MAX_PROPOSALS_PER_USER,
@@ -472,15 +351,10 @@ function creationOptions(interaction, { legacySkinAlias = false } = {}) {
       1,
       5,
     ),
-    category: "generic",
   };
 }
 
-async function createPoll(
-  interaction,
-  db,
-  { legacySkinAlias = false } = {},
-) {
+async function createPoll(interaction, db) {
   if (!interaction.guildId) {
     await interaction.reply({
       content: "❌ Cette commande doit être utilisée sur un serveur.",
@@ -491,8 +365,8 @@ async function createPoll(
 
   await interaction.deferReply({ ephemeral: true });
 
-  const activePoll = await getActivePollContext(db, interaction.guildId);
-  if (activePoll?.snapshot?.data()?.active) {
+  const activePoll = await getActivePollSnapshot(db, interaction.guildId);
+  if (activePoll?.data()?.active) {
     await interaction.editReply(
       "❌ Un sondage communautaire est déjà actif. Clôture-le avant d'en créer un nouveau.",
     );
@@ -508,13 +382,13 @@ async function createPoll(
     return;
   }
 
-  const options = creationOptions(interaction, { legacySkinAlias });
+  const options = creationOptions(interaction);
   if (!options.title) {
     await interaction.editReply("❌ Le titre du sondage est obligatoire.");
     return;
   }
 
-  const reference = db.collection(GENERIC_SOURCE.pollsCollection).doc();
+  const reference = db.collection(POLLS_COLLECTION).doc();
   const poll = {
     guildId: interaction.guildId,
     channelId: channel.id,
@@ -522,11 +396,8 @@ async function createPoll(
     title: options.title,
     description: options.description,
     proposalLabel: options.proposalLabel,
-    buttonLabel: options.buttonLabel,
     maxProposalsPerUser: options.maxProposalsPerUser,
     maxVotesPerUser: options.maxVotesPerUser,
-    category: options.category,
-    interactionNamespace: GENERIC_SOURCE.customIdPrefix,
     status: "open",
     active: true,
     createdBy: interaction.user.id,
@@ -535,18 +406,14 @@ async function createPoll(
 
   const message = await channel.send({
     embeds: [buildMainEmbed(poll, [])],
-    components: buildMainComponents(
-      reference.id,
-      poll,
-      GENERIC_SOURCE,
-    ),
+    components: buildMainComponents(reference.id, poll),
   });
 
   try {
     const batch = db.batch();
     batch.set(reference, { ...poll, messageId: message.id });
     batch.set(
-      stateRef(db, interaction.guildId, GENERIC_SOURCE),
+      stateRef(db, interaction.guildId),
       {
         activePollId: reference.id,
         lastPollId: reference.id,
@@ -566,8 +433,8 @@ async function createPoll(
 }
 
 async function showProposalModal(interaction, db, pollId) {
-  const context = await getPollContextById(db, pollId);
-  if (!context || !context.snapshot.data()?.active) {
+  const snapshot = await getPollSnapshotById(db, pollId);
+  if (!snapshot || !snapshot.data()?.active) {
     await interaction.reply({
       content: "❌ Ce sondage est terminé ou n'existe plus.",
       ephemeral: true,
@@ -575,10 +442,7 @@ async function showProposalModal(interaction, db, pollId) {
     return;
   }
 
-  const poll = pollWithSourceDefaults(
-    context.snapshot.data() || {},
-    context.source,
-  );
+  const poll = snapshot.data() || {};
   const label = getProposalLabel(poll);
   const modalTitle =
     label.toLowerCase() === "proposition"
@@ -586,13 +450,7 @@ async function showProposalModal(interaction, db, pollId) {
       : truncate(`Proposer : ${capitalize(label)}`, 45);
 
   const modal = new ModalBuilder()
-    .setCustomId(
-      buildCustomId(
-        getNamespaceForPoll(poll, context.source),
-        "modal",
-        pollId,
-      ),
-    )
+    .setCustomId(buildCustomId("modal", pollId))
     .setTitle(modalTitle);
 
   const nameInput = new TextInputBuilder()
@@ -623,38 +481,24 @@ async function showProposalModal(interaction, db, pollId) {
 async function submitProposal(interaction, db, pollId) {
   await interaction.deferReply({ ephemeral: true });
 
-  const context = await getPollContextById(db, pollId);
-  if (!context || !context.snapshot.data()?.active) {
+  const pollSnapshot = await getPollSnapshotById(db, pollId);
+  if (!pollSnapshot || !pollSnapshot.data()?.active) {
     await interaction.editReply("❌ Ce sondage est terminé ou n'existe plus.");
     return;
   }
 
-  const source = context.source;
-  const poll = pollWithSourceDefaults(
-    context.snapshot.data() || {},
-    source,
-  );
-
-  function readModalValue(primaryId, legacyId) {
-    try {
-      return interaction.fields.getTextInputValue(primaryId);
-    } catch (_) {
-      return interaction.fields.getTextInputValue(legacyId);
-    }
-  }
-
-  const name = readModalValue("proposal_name", "skin_name").trim();
-  const description = readModalValue(
-    "proposal_description",
-    "skin_description",
-  ).trim();
+  const poll = pollSnapshot.data() || {};
+  const name = interaction.fields.getTextInputValue("proposal_name").trim();
+  const description = interaction.fields
+    .getTextInputValue("proposal_description")
+    .trim();
 
   const normalizedName = normalizeProposalName(name);
   const proposalId = proposalIdFromName(name);
-  const reference = proposalsRef(db, pollId, source).doc(proposalId);
+  const reference = proposalsRef(db, pollId).doc(proposalId);
   const maxProposals = getMaxProposals(poll);
 
-  const ownProposals = await proposalsRef(db, pollId, source)
+  const ownProposals = await proposalsRef(db, pollId)
     .where("authorId", "==", interaction.user.id)
     .get();
 
@@ -666,7 +510,7 @@ async function submitProposal(interaction, db, pollId) {
   }
 
   await db.runTransaction(async (transaction) => {
-    const latestPoll = await transaction.get(pollRef(db, pollId, source));
+    const latestPoll = await transaction.get(pollRef(db, pollId));
     const existing = await transaction.get(reference);
 
     if (!latestPoll.exists || !latestPoll.data()?.active) {
@@ -698,9 +542,8 @@ async function submitProposal(interaction, db, pollId) {
     return;
   }
 
-  let message;
   try {
-    message = await channel.send({
+    const message = await channel.send({
       embeds: [
         buildProposalEmbed(
           {
@@ -712,13 +555,9 @@ async function submitProposal(interaction, db, pollId) {
           poll,
         ),
       ],
-      components: buildVoteComponents(
-        pollId,
-        proposalId,
-        poll,
-        source,
-      ),
+      components: buildVoteComponents(pollId, proposalId),
     });
+
     await reference.update({
       messageId: message.id,
       channelId: channel.id,
@@ -728,16 +567,14 @@ async function submitProposal(interaction, db, pollId) {
     throw error;
   }
 
-  await refreshMainMessage(interaction, db, pollId, source).catch((error) =>
+  await refreshMainMessage(interaction, db, pollId).catch((error) =>
     console.warn(
       "[community-poll] refresh main after proposal failed:",
       error?.message || error,
     ),
   );
 
-  await interaction.editReply(
-    `✅ **${name}** a été ajouté au sondage.`,
-  );
+  await interaction.editReply(`✅ **${name}** a été ajouté au sondage.`);
 }
 
 function voteIdsFromData(data) {
@@ -750,16 +587,9 @@ function voteIdsFromData(data) {
 async function vote(interaction, db, pollId, proposalId) {
   await interaction.deferReply({ ephemeral: true });
 
-  const context = await getPollContextById(db, pollId);
-  if (!context) {
-    await interaction.editReply("❌ Ce sondage n'existe plus.");
-    return;
-  }
-
-  const source = context.source;
-  const pollReference = pollRef(db, pollId, source);
-  const proposalReference = proposalsRef(db, pollId, source).doc(proposalId);
-  const userVoteReference = votesRef(db, pollId, source).doc(interaction.user.id);
+  const pollReference = pollRef(db, pollId);
+  const proposalReference = proposalsRef(db, pollId).doc(proposalId);
+  const userVoteReference = votesRef(db, pollId).doc(interaction.user.id);
 
   const result = await db.runTransaction(async (transaction) => {
     const currentPoll = await transaction.get(pollReference);
@@ -785,11 +615,7 @@ async function vote(interaction, db, pollId, proposalId) {
     if (!hasTarget && maxVotes === 1 && currentIds.length) {
       previousProposalId = currentIds[0];
       if (previousProposalId !== proposalId) {
-        previousProposalReference = proposalsRef(
-          db,
-          pollId,
-          source,
-        ).doc(previousProposalId);
+        previousProposalReference = proposalsRef(db, pollId).doc(previousProposalId);
         previousProposal = await transaction.get(previousProposalReference);
       }
     }
@@ -866,8 +692,7 @@ async function vote(interaction, db, pollId, proposalId) {
     });
 
     return {
-      action:
-        maxVotes === 1 && currentIds.length ? "changed" : "added",
+      action: maxVotes === 1 && currentIds.length ? "changed" : "added",
       changedProposalIds,
       maxVotes,
     };
@@ -875,13 +700,7 @@ async function vote(interaction, db, pollId, proposalId) {
 
   await Promise.all(
     result.changedProposalIds.map((id) =>
-      refreshProposalMessage(
-        interaction,
-        db,
-        pollId,
-        id,
-        source,
-      ).catch((error) =>
+      refreshProposalMessage(interaction, db, pollId, id).catch((error) =>
         console.warn(
           "[community-poll] refresh proposal failed:",
           error?.message || error,
@@ -890,7 +709,7 @@ async function vote(interaction, db, pollId, proposalId) {
     ),
   );
 
-  await refreshMainMessage(interaction, db, pollId, source).catch((error) =>
+  await refreshMainMessage(interaction, db, pollId).catch((error) =>
     console.warn(
       "[community-poll] refresh main after vote failed:",
       error?.message || error,
@@ -914,28 +733,16 @@ async function vote(interaction, db, pollId, proposalId) {
 async function showResults(interaction, db) {
   await interaction.deferReply({ ephemeral: true });
 
-  const context = await getCurrentOrLastPollContext(
-    db,
-    interaction.guildId,
-  );
-
-  if (!context) {
+  const pollSnapshot = await getCurrentOrLastPollSnapshot(db, interaction.guildId);
+  if (!pollSnapshot) {
     await interaction.editReply(
       "ℹ️ Aucun sondage communautaire n'a encore été créé.",
     );
     return;
   }
 
-  const poll = pollWithSourceDefaults(
-    context.snapshot.data() || {},
-    context.source,
-  );
-  const proposals = await proposalsRef(
-    db,
-    context.snapshot.id,
-    context.source,
-  ).get();
-
+  const poll = pollSnapshot.data() || {};
+  const proposals = await proposalsRef(db, pollSnapshot.id).get();
   const sorted = sortProposals(proposals.docs);
   const embed = new EmbedBuilder()
     .setTitle(`📊 ${poll.title || "Résultats du sondage"}`)
@@ -950,17 +757,16 @@ async function showResults(interaction, db) {
 async function closePoll(interaction, db) {
   await interaction.deferReply({ ephemeral: true });
 
-  const context = await getActivePollContext(db, interaction.guildId);
-  if (!context || !context.snapshot.data()?.active) {
+  const pollSnapshot = await getActivePollSnapshot(db, interaction.guildId);
+  if (!pollSnapshot || !pollSnapshot.data()?.active) {
     await interaction.editReply(
       "ℹ️ Aucun sondage communautaire n'est actuellement actif.",
     );
     return;
   }
 
-  const pollId = context.snapshot.id;
-  const source = context.source;
-  const pollReference = pollRef(db, pollId, source);
+  const pollId = pollSnapshot.id;
+  const pollReference = pollRef(db, pollId);
 
   await db.runTransaction(async (transaction) => {
     const latestPoll = await transaction.get(pollReference);
@@ -976,7 +782,7 @@ async function closePoll(interaction, db) {
     });
 
     transaction.set(
-      stateRef(db, interaction.guildId, source),
+      stateRef(db, interaction.guildId),
       {
         activePollId: null,
         lastPollId: pollId,
@@ -986,30 +792,20 @@ async function closePoll(interaction, db) {
     );
   });
 
-  const proposals = await proposalsRef(db, pollId, source).get();
+  const proposals = await proposalsRef(db, pollId).get();
 
-  await refreshMainMessage(
-    interaction,
-    db,
-    pollId,
-    source,
-    { closed: true },
-  ).catch((error) =>
-    console.warn(
-      "[community-poll] close main refresh failed:",
-      error?.message || error,
-    ),
+  await refreshMainMessage(interaction, db, pollId, { closed: true }).catch(
+    (error) =>
+      console.warn(
+        "[community-poll] close main refresh failed:",
+        error?.message || error,
+      ),
   );
 
   for (const doc of proposals.docs) {
-    await refreshProposalMessage(
-      interaction,
-      db,
-      pollId,
-      doc.id,
-      source,
-      { closed: true },
-    ).catch((error) =>
+    await refreshProposalMessage(interaction, db, pollId, doc.id, {
+      closed: true,
+    }).catch((error) =>
       console.warn(
         "[community-poll] close proposal refresh failed:",
         error?.message || error,
@@ -1029,12 +825,10 @@ async function closePoll(interaction, db) {
 }
 
 async function handleSlashCommand(interaction, db) {
-  const legacySkinAlias =
-    interaction.commandName === CARD_SKIN_POLL_COMMAND_NAME;
   const subcommand = interaction.options.getSubcommand();
 
   if (subcommand === "creer") {
-    await createPoll(interaction, db, { legacySkinAlias });
+    await createPoll(interaction, db);
     return;
   }
 
@@ -1050,15 +844,7 @@ async function handleSlashCommand(interaction, db) {
 
 function parseComponentCustomId(customId) {
   const text = String(customId || "");
-  const namespaces = [
-    GENERIC_SOURCE.customIdPrefix,
-    LEGACY_SOURCE.customIdPrefix,
-  ];
-
-  const namespace = namespaces.find((value) =>
-    text.startsWith(`${value}:`),
-  );
-  if (!namespace) return null;
+  if (!text.startsWith(`${CUSTOM_ID_PREFIX}:`)) return null;
 
   const parts = text.split(":");
   if (parts.length < 3) return null;
@@ -1071,12 +857,7 @@ function parseComponentCustomId(customId) {
     return null;
   }
 
-  return {
-    namespace,
-    action,
-    pollId,
-    proposalId,
-  };
+  return { action, pollId, proposalId };
 }
 
 const registeredClients = new WeakSet();
@@ -1091,10 +872,7 @@ function registerCommunityPollEvents({ client }) {
     try {
       if (
         interaction.isChatInputCommand?.() &&
-        [
-          COMMUNITY_POLL_COMMAND_NAME,
-          CARD_SKIN_POLL_COMMAND_NAME,
-        ].includes(interaction.commandName)
+        interaction.commandName === COMMUNITY_POLL_COMMAND_NAME
       ) {
         await handleSlashCommand(interaction, db);
         return;
@@ -1110,12 +888,7 @@ function registerCommunityPollEvents({ client }) {
         }
 
         if (parsed.action === "vote" && parsed.proposalId) {
-          await vote(
-            interaction,
-            db,
-            parsed.pollId,
-            parsed.proposalId,
-          );
+          await vote(interaction, db, parsed.pollId, parsed.proposalId);
         }
         return;
       }
@@ -1158,7 +931,6 @@ function registerCommunityPollEvents({ client }) {
 
 module.exports = {
   COMMUNITY_POLL_COMMAND_NAME,
-  CARD_SKIN_POLL_COMMAND_NAME,
   registerCommunityPollEvents,
   parseComponentCustomId,
   normalizeProposalName,
