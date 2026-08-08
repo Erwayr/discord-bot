@@ -6,13 +6,13 @@ const {
 } = require("discord.js");
 const {
   COMMUNITY_POLL_COMMAND_NAME,
-  CARD_SKIN_POLL_COMMAND_NAME,
   registerCommunityPollEvents,
 } = require("../script/communityPoll");
 
 const PROFILE_COMMAND_NAME = "profil";
 const DAILY_CHEST_COMMAND_NAME = "coffre";
 const DAILY_CHEST_STATS_COMMAND_NAME = "coffrestats";
+const DEPRECATED_SLASH_COMMANDS = ["skinsondage"];
 
 function profileCommandData() {
   return new SlashCommandBuilder()
@@ -115,49 +115,12 @@ function communityPollCommandData() {
     .toJSON();
 }
 
-function cardSkinPollCommandData() {
-  return new SlashCommandBuilder()
-    .setName(CARD_SKIN_POLL_COMMAND_NAME)
-    .setDescription("Alias historique du sondage de skin de carte.")
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("creer")
-        .setDescription("Crée un sondage de skins avec les réglages historiques.")
-        .addStringOption((option) =>
-          option
-            .setName("titre")
-            .setDescription("Titre du sondage.")
-            .setRequired(false)
-            .setMaxLength(100),
-        )
-        .addChannelOption((option) =>
-          option
-            .setName("canal")
-            .setDescription("Canal dans lequel publier le sondage.")
-            .setRequired(false),
-        ),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("resultats")
-        .setDescription("Affiche le classement actuel ou le dernier résultat."),
-    )
-    .addSubcommand((subcommand) =>
-      subcommand
-        .setName("cloturer")
-        .setDescription("Clôture le sondage actif et désactive les votes."),
-    )
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .toJSON();
-}
-
 function slashCommandPayloads() {
   return [
     profileCommandData(),
     dailyChestCommandData(),
     dailyChestStatsCommandData(),
     communityPollCommandData(),
-    cardSkinPollCommandData(),
   ];
 }
 
@@ -175,6 +138,15 @@ async function registerSlashCommands({ client, config }) {
   const guild = await client.guilds.fetch(guildId);
   const commands = await guild.commands.fetch();
   const registered = {};
+
+  for (const commandName of DEPRECATED_SLASH_COMMANDS) {
+    const deprecated = commands.find((cmd) => cmd.name === commandName);
+    if (!deprecated) continue;
+
+    await guild.commands.delete(deprecated.id);
+    console.log(`[slash] /${commandName} supprime (${guild.name})`);
+    commands.delete(deprecated.id);
+  }
 
   for (const payload of slashCommandPayloads()) {
     const existing = commands.find((cmd) => cmd.name === payload.name);
@@ -204,11 +176,9 @@ module.exports = {
   DAILY_CHEST_COMMAND_NAME,
   DAILY_CHEST_STATS_COMMAND_NAME,
   COMMUNITY_POLL_COMMAND_NAME,
-  CARD_SKIN_POLL_COMMAND_NAME,
   dailyChestCommandData,
   dailyChestStatsCommandData,
   communityPollCommandData,
-  cardSkinPollCommandData,
   slashCommandPayloads,
   registerSlashCommands,
   registerProfileSlashCommand,
