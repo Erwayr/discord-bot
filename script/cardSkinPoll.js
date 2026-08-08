@@ -122,8 +122,6 @@ function buildMainEmbed(poll, proposals, { closed = false } = {}) {
       closed
         ? "Le sondage est terminé. Voici le classement final de la communauté."
         : [
-            "Quel skin de carte aimerais-tu voir arriver ensuite ?",
-            "",
             "Clique sur **➕ Proposer un skin** pour ajouter ton idée.",
             "Chaque membre possède **un seul vote actif** et peut le changer à tout moment.",
           ].join("\n"),
