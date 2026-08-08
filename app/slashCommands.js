@@ -1,6 +1,13 @@
 "use strict";
 
-const { SlashCommandBuilder } = require("discord.js");
+const {
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+} = require("discord.js");
+const {
+  CARD_SKIN_POLL_COMMAND_NAME,
+  registerCardSkinPollEvents,
+} = require("../script/cardSkinPoll");
 
 const PROFILE_COMMAND_NAME = "profil";
 const DAILY_CHEST_COMMAND_NAME = "coffre";
@@ -39,11 +46,48 @@ function dailyChestStatsCommandData() {
     .toJSON();
 }
 
+function cardSkinPollCommandData() {
+  return new SlashCommandBuilder()
+    .setName(CARD_SKIN_POLL_COMMAND_NAME)
+    .setDescription("Gère le sondage communautaire du prochain skin de carte.")
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("creer")
+        .setDescription("Crée un nouveau sondage de skins.")
+        .addStringOption((option) =>
+          option
+            .setName("titre")
+            .setDescription("Titre du sondage.")
+            .setRequired(false)
+            .setMaxLength(100),
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("canal")
+            .setDescription("Canal dans lequel publier le sondage.")
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("resultats")
+        .setDescription("Affiche le classement actuel ou le dernier résultat."),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("cloturer")
+        .setDescription("Clôture le sondage actif et désactive les votes."),
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .toJSON();
+}
+
 function slashCommandPayloads() {
   return [
     profileCommandData(),
     dailyChestCommandData(),
     dailyChestStatsCommandData(),
+    cardSkinPollCommandData(),
   ];
 }
 
@@ -55,6 +99,8 @@ async function registerSlashCommands({ client, config }) {
     );
     return null;
   }
+
+  registerCardSkinPollEvents({ client });
 
   const guild = await client.guilds.fetch(guildId);
   const commands = await guild.commands.fetch();
@@ -87,8 +133,10 @@ module.exports = {
   PROFILE_COMMAND_NAME,
   DAILY_CHEST_COMMAND_NAME,
   DAILY_CHEST_STATS_COMMAND_NAME,
+  CARD_SKIN_POLL_COMMAND_NAME,
   dailyChestCommandData,
   dailyChestStatsCommandData,
+  cardSkinPollCommandData,
   slashCommandPayloads,
   registerSlashCommands,
   registerProfileSlashCommand,
