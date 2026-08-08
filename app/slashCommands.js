@@ -5,9 +5,10 @@ const {
   SlashCommandBuilder,
 } = require("discord.js");
 const {
+  COMMUNITY_POLL_COMMAND_NAME,
   CARD_SKIN_POLL_COMMAND_NAME,
-  registerCardSkinPollEvents,
-} = require("../script/cardSkinPoll");
+  registerCommunityPollEvents,
+} = require("../script/communityPoll");
 
 const PROFILE_COMMAND_NAME = "profil";
 const DAILY_CHEST_COMMAND_NAME = "coffre";
@@ -46,14 +47,82 @@ function dailyChestStatsCommandData() {
     .toJSON();
 }
 
-function cardSkinPollCommandData() {
+function communityPollCommandData() {
   return new SlashCommandBuilder()
-    .setName(CARD_SKIN_POLL_COMMAND_NAME)
-    .setDescription("Gère le sondage communautaire du prochain skin de carte.")
+    .setName(COMMUNITY_POLL_COMMAND_NAME)
+    .setDescription("Gère un sondage communautaire à propositions libres.")
     .addSubcommand((subcommand) =>
       subcommand
         .setName("creer")
-        .setDescription("Crée un nouveau sondage de skins.")
+        .setDescription("Crée un nouveau sondage communautaire.")
+        .addStringOption((option) =>
+          option
+            .setName("titre")
+            .setDescription("Question ou titre du sondage.")
+            .setRequired(true)
+            .setMaxLength(100),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("description")
+            .setDescription("Contexte ou consigne facultative.")
+            .setRequired(false)
+            .setMaxLength(1000),
+        )
+        .addStringOption((option) =>
+          option
+            .setName("libelle")
+            .setDescription(
+              "Type de proposition : jeu, skin, défi, idée... (défaut : proposition).",
+            )
+            .setRequired(false)
+            .setMaxLength(30),
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("max_propositions")
+            .setDescription("Nombre maximum de propositions par membre.")
+            .setRequired(false)
+            .setMinValue(1)
+            .setMaxValue(10),
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("max_votes")
+            .setDescription("Nombre maximum de votes actifs par membre.")
+            .setRequired(false)
+            .setMinValue(1)
+            .setMaxValue(5),
+        )
+        .addChannelOption((option) =>
+          option
+            .setName("canal")
+            .setDescription("Canal dans lequel publier le sondage.")
+            .setRequired(false),
+        ),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("resultats")
+        .setDescription("Affiche le classement actuel ou le dernier résultat."),
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("cloturer")
+        .setDescription("Clôture le sondage actif et désactive les votes."),
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .toJSON();
+}
+
+function cardSkinPollCommandData() {
+  return new SlashCommandBuilder()
+    .setName(CARD_SKIN_POLL_COMMAND_NAME)
+    .setDescription("Alias historique du sondage de skin de carte.")
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("creer")
+        .setDescription("Crée un sondage de skins avec les réglages historiques.")
         .addStringOption((option) =>
           option
             .setName("titre")
@@ -87,6 +156,7 @@ function slashCommandPayloads() {
     profileCommandData(),
     dailyChestCommandData(),
     dailyChestStatsCommandData(),
+    communityPollCommandData(),
     cardSkinPollCommandData(),
   ];
 }
@@ -100,7 +170,7 @@ async function registerSlashCommands({ client, config }) {
     return null;
   }
 
-  registerCardSkinPollEvents({ client });
+  registerCommunityPollEvents({ client });
 
   const guild = await client.guilds.fetch(guildId);
   const commands = await guild.commands.fetch();
@@ -133,9 +203,11 @@ module.exports = {
   PROFILE_COMMAND_NAME,
   DAILY_CHEST_COMMAND_NAME,
   DAILY_CHEST_STATS_COMMAND_NAME,
+  COMMUNITY_POLL_COMMAND_NAME,
   CARD_SKIN_POLL_COMMAND_NAME,
   dailyChestCommandData,
   dailyChestStatsCommandData,
+  communityPollCommandData,
   cardSkinPollCommandData,
   slashCommandPayloads,
   registerSlashCommands,
