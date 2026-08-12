@@ -937,15 +937,65 @@ async function closePoll(interaction, db) {
       ),
   );
 
+  let deletedProposalMessages = 0;
+  let cleanupFailures = 0;
+
   for (const doc of proposals.docs) {
-    await refreshProposalMessage(interaction, db, pollId, doc.id, {
-      closed: true,
-    }).catch((error) =>
+    const proposal = doc.data() || {};
+    if (!proposal.channelId || !proposal.messageId) continue;
+
+    const channel = await fetchChannel(interaction, proposal.channelId);
+    if (!channel) {
+      cleanupFailures += 1;
+      continue;
+    }
+
+    let fetchError = null;
+    const message = await channel.messages.fetch(proposal.messageId).catch((error) => {
+      fetchError = error;
+      return null;
+    });
+
+    if (!message) {
+      if (fetchError?.code === 10008) {
+        await doc.ref
+          .update({
+            messageId: null,
+            messageDeletedAt: new Date(),
+          })
+          .catch(() => {});
+        continue;
+      }
+
+      cleanupFailures += 1;
+      continue;
+    }
+
+    try {
+      await message.delete();
+      deletedProposalMessages += 1;
+      await doc.ref
+        .update({
+          messageId: null,
+          messageDeletedAt: new Date(),
+        })
+        .catch(() => {});
+    } catch (error) {
+      cleanupFailures += 1;
       console.warn(
-        "[community-poll] close proposal refresh failed:",
+        `[community-poll] proposal message delete failed: proposal=${doc.id}`,
         error?.message || error,
-      ),
-    );
+      );
+
+      await refreshProposalMessage(interaction, db, pollId, doc.id, {
+        closed: true,
+      }).catch((refreshError) =>
+        console.warn(
+          "[community-poll] close proposal fallback refresh failed:",
+          refreshError?.message || refreshError,
+        ),
+      );
+    }
   }
 
   const sorted = sortProposals(proposals.docs);
@@ -956,7 +1006,18 @@ async function closePoll(interaction, db) {
       ? `🏆 Sondage clôturé. **${winner.name}** arrive en tête avec **${winnerVotes} vote${winnerVotes > 1 ? "s" : ""}**.`
       : "✅ Sondage clôturé. Aucune proposition n'avait été ajoutée.",
   ];
+
+  if (deletedProposalMessages > 0) {
+    replyLines.push(
+      `🧹 ${deletedProposalMessages} message${deletedProposalMessages > 1 ? "s" : ""} de proposition supprimé${deletedProposalMessages > 1 ? "s" : ""} du salon.`,
+    );
+  }
   if (!unpinResult.ok) replyLines.push(unpinResult.warning);
+  if (cleanupFailures > 0) {
+    replyLines.push(
+      `⚠️ ${cleanupFailures} message${cleanupFailures > 1 ? "s" : ""} de proposition n'${cleanupFailures > 1 ? "ont" : "a"} pas pu être supprimé${cleanupFailures > 1 ? "s" : ""}.`,
+    );
+  }
 
   await interaction.editReply(replyLines.join("\n"));
 }
