@@ -275,6 +275,65 @@ async function fetchChannel(interaction, channelId) {
   return channel?.isTextBased?.() ? channel : null;
 }
 
+async function fetchPollMessage(interaction, poll) {
+  if (!poll?.channelId || !poll?.messageId) return null;
+  const channel = await fetchChannel(interaction, poll.channelId);
+  if (!channel) return null;
+  return channel.messages.fetch(poll.messageId).catch(() => null);
+}
+
+async function pinPollMessage(message, reference) {
+  try {
+    await message.pin("Sondage communautaire actif");
+    await reference.update({ pinned: true, pinnedAt: new Date() }).catch(() => {});
+    return { ok: true };
+  } catch (error) {
+    console.warn(
+      "[community-poll] pin failed:",
+      error?.message || error,
+    );
+    return {
+      ok: false,
+      warning:
+        "⚠️ Le sondage a été créé, mais je n'ai pas pu l'épingler. Vérifie que le bot possède la permission **Gérer les messages** dans ce salon.",
+    };
+  }
+}
+
+async function unpinPollMessage(interaction, poll, reference) {
+  const message = await fetchPollMessage(interaction, poll);
+  if (!message) {
+    return {
+      ok: false,
+      warning:
+        "⚠️ Le sondage est clôturé, mais son message principal n'a pas pu être retrouvé pour le désépingler.",
+    };
+  }
+
+  if (!message.pinned) {
+    await reference.update({ pinned: false }).catch(() => {});
+    return { ok: true };
+  }
+
+  try {
+    await message.unpin("Sondage communautaire terminé");
+    await reference
+      .update({ pinned: false, unpinnedAt: new Date() })
+      .catch(() => {});
+    return { ok: true };
+  } catch (error) {
+    console.warn(
+      "[community-poll] unpin failed:",
+      error?.message || error,
+    );
+    return {
+      ok: false,
+      warning:
+        "⚠️ Le sondage est clôturé, mais je n'ai pas pu le désépingler. Vérifie que le bot possède la permission **Gérer les messages** dans ce salon.",
+    };
+  }
+}
+
 async function refreshMainMessage(interaction, db, pollId, { closed = false } = {}) {
   const pollSnapshot = await pollRef(db, pollId).get();
   if (!pollSnapshot.exists) return;
@@ -283,10 +342,7 @@ async function refreshMainMessage(interaction, db, pollId, { closed = false } = 
   if (!poll.channelId || !poll.messageId) return;
 
   const proposalSnapshot = await proposalsRef(db, pollId).get();
-  const channel = await fetchChannel(interaction, poll.channelId);
-  if (!channel) return;
-
-  const message = await channel.messages.fetch(poll.messageId).catch(() => null);
+  const message = await fetchPollMessage(interaction, poll);
   if (!message) return;
 
   await message.edit({
@@ -400,6 +456,7 @@ async function createPoll(interaction, db) {
     maxVotesPerUser: options.maxVotesPerUser,
     status: "open",
     active: true,
+    pinned: false,
     createdBy: interaction.user.id,
     createdAt: new Date(),
   };
@@ -427,9 +484,15 @@ async function createPoll(interaction, db) {
     throw error;
   }
 
-  await interaction.editReply(
-    `✅ Sondage créé dans ${channel}. Les membres peuvent maintenant proposer leurs idées.`,
-  );
+  const pinResult = await pinPollMessage(message, reference);
+  const replyLines = [
+    `✅ Sondage créé dans ${channel}, épinglé et prêt à recevoir les propositions.`,
+  ];
+  if (!pinResult.ok) {
+    replyLines[0] = `✅ Sondage créé dans ${channel}.`;
+    replyLines.push(pinResult.warning);
+  }
+  await interaction.editReply(replyLines.join("\n"));
 }
 
 async function showProposalModal(interaction, db, pollId) {
@@ -476,6 +539,145 @@ async function showProposalModal(interaction, db, pollId) {
   );
 
   await interaction.showModal(modal);
+}
+
+function voteIdsFromData(data) {
+  if (Array.isArray(data?.proposalIds)) {
+    return data.proposalIds.filter(Boolean);
+  }
+  return data?.proposalId ? [data.proposalId] : [];
+}
+
+async function changeVoteInTransaction(
+  transaction,
+  {
+    db,
+    pollId,
+    userId,
+    proposalId,
+    toggleExisting = true,
+    replaceOldestAtLimit = false,
+  },
+) {
+  const pollReference = pollRef(db, pollId);
+  const proposalReference = proposalsRef(db, pollId).doc(proposalId);
+  const userVoteReference = votesRef(db, pollId).doc(userId);
+
+  const currentPoll = await transaction.get(pollReference);
+  const currentVote = await transaction.get(userVoteReference);
+  const targetProposal = await transaction.get(proposalReference);
+
+  if (!currentPoll.exists || !currentPoll.data()?.active) {
+    throw new Error("POLL_CLOSED");
+  }
+  if (!targetProposal.exists) {
+    throw new Error("PROPOSAL_NOT_FOUND");
+  }
+
+  const pollData = currentPoll.data() || {};
+  const maxVotes = getMaxVotes(pollData);
+  const currentIds = voteIdsFromData(currentVote.data());
+  const hasTarget = currentIds.includes(proposalId);
+  const targetCount = Math.max(
+    0,
+    Number(targetProposal.data()?.voteCount || 0),
+  );
+
+  if (hasTarget) {
+    if (!toggleExisting) {
+      return {
+        action: "unchanged",
+        changedProposalIds: [],
+        maxVotes,
+      };
+    }
+
+    const nextIds = currentIds.filter((id) => id !== proposalId);
+    if (nextIds.length) {
+      transaction.set(
+        userVoteReference,
+        {
+          proposalIds: nextIds,
+          proposalId: nextIds[0] || null,
+          userId,
+          updatedAt: new Date(),
+        },
+        { merge: true },
+      );
+    } else {
+      transaction.delete(userVoteReference);
+    }
+
+    transaction.update(proposalReference, {
+      voteCount: Math.max(0, targetCount - 1),
+    });
+
+    return {
+      action: "removed",
+      changedProposalIds: [proposalId],
+      maxVotes,
+    };
+  }
+
+  let displacedProposalId = null;
+  if (maxVotes === 1 && currentIds.length) {
+    displacedProposalId = currentIds[0];
+  } else if (maxVotes > 1 && currentIds.length >= maxVotes) {
+    if (!replaceOldestAtLimit) {
+      throw new Error("VOTE_LIMIT_REACHED");
+    }
+    displacedProposalId = currentIds[0];
+  }
+
+  let displacedProposalReference = null;
+  let displacedProposal = null;
+  if (displacedProposalId && displacedProposalId !== proposalId) {
+    displacedProposalReference = proposalsRef(db, pollId).doc(displacedProposalId);
+    displacedProposal = await transaction.get(displacedProposalReference);
+  }
+
+  let nextIds;
+  if (maxVotes === 1) {
+    nextIds = [proposalId];
+  } else if (displacedProposalId) {
+    nextIds = currentIds.filter((id) => id !== displacedProposalId);
+    nextIds.push(proposalId);
+  } else {
+    nextIds = [...currentIds, proposalId];
+  }
+
+  transaction.set(
+    userVoteReference,
+    {
+      proposalIds: nextIds,
+      proposalId: nextIds[0] || null,
+      userId,
+      updatedAt: new Date(),
+    },
+    { merge: true },
+  );
+  transaction.update(proposalReference, {
+    voteCount: targetCount + 1,
+  });
+
+  const changedProposalIds = [proposalId];
+  if (displacedProposal && displacedProposal.exists) {
+    const oldCount = Math.max(
+      0,
+      Number(displacedProposal.data()?.voteCount || 0),
+    );
+    transaction.update(displacedProposalReference, {
+      voteCount: Math.max(0, oldCount - 1),
+    });
+    changedProposalIds.push(displacedProposalId);
+  }
+
+  return {
+    action: displacedProposalId ? "changed" : "added",
+    changedProposalIds,
+    displacedProposalId,
+    maxVotes,
+  };
 }
 
 async function submitProposal(interaction, db, pollId) {
@@ -542,8 +744,9 @@ async function submitProposal(interaction, db, pollId) {
     return;
   }
 
+  let proposalMessage = null;
   try {
-    const message = await channel.send({
+    proposalMessage = await channel.send({
       embeds: [
         buildProposalEmbed(
           {
@@ -559,13 +762,46 @@ async function submitProposal(interaction, db, pollId) {
     });
 
     await reference.update({
-      messageId: message.id,
+      messageId: proposalMessage.id,
       channelId: channel.id,
     });
   } catch (error) {
+    await proposalMessage?.delete?.().catch(() => {});
     await reference.delete().catch(() => {});
     throw error;
   }
+
+  let autoVoteResult;
+  try {
+    autoVoteResult = await db.runTransaction((transaction) =>
+      changeVoteInTransaction(transaction, {
+        db,
+        pollId,
+        userId: interaction.user.id,
+        proposalId,
+        toggleExisting: false,
+        replaceOldestAtLimit: true,
+      }),
+    );
+  } catch (error) {
+    await proposalMessage.delete().catch(() => {});
+    await reference.delete().catch(() => {});
+    throw error;
+  }
+
+  const changedIds = Array.from(
+    new Set([proposalId, ...(autoVoteResult.changedProposalIds || [])]),
+  );
+  await Promise.all(
+    changedIds.map((id) =>
+      refreshProposalMessage(interaction, db, pollId, id).catch((error) =>
+        console.warn(
+          "[community-poll] refresh proposal after auto vote failed:",
+          error?.message || error,
+        ),
+      ),
+    ),
+  );
 
   await refreshMainMessage(interaction, db, pollId).catch((error) =>
     console.warn(
@@ -574,129 +810,25 @@ async function submitProposal(interaction, db, pollId) {
     ),
   );
 
-  await interaction.editReply(`✅ **${name}** a été ajouté au sondage.`);
-}
-
-function voteIdsFromData(data) {
-  if (Array.isArray(data?.proposalIds)) {
-    return data.proposalIds.filter(Boolean);
-  }
-  return data?.proposalId ? [data.proposalId] : [];
+  const movedText = autoVoteResult.displacedProposalId
+    ? " Ton vote actif le plus ancien a été déplacé vers cette proposition."
+    : " Ton vote a été ajouté automatiquement à cette proposition.";
+  await interaction.editReply(`✅ **${name}** a été ajouté au sondage.${movedText}`);
 }
 
 async function vote(interaction, db, pollId, proposalId) {
   await interaction.deferReply({ ephemeral: true });
 
-  const pollReference = pollRef(db, pollId);
-  const proposalReference = proposalsRef(db, pollId).doc(proposalId);
-  const userVoteReference = votesRef(db, pollId).doc(interaction.user.id);
-
-  const result = await db.runTransaction(async (transaction) => {
-    const currentPoll = await transaction.get(pollReference);
-    const currentVote = await transaction.get(userVoteReference);
-    const targetProposal = await transaction.get(proposalReference);
-
-    if (!currentPoll.exists || !currentPoll.data()?.active) {
-      throw new Error("POLL_CLOSED");
-    }
-    if (!targetProposal.exists) {
-      throw new Error("PROPOSAL_NOT_FOUND");
-    }
-
-    const pollData = currentPoll.data() || {};
-    const maxVotes = getMaxVotes(pollData);
-    const currentIds = voteIdsFromData(currentVote.data());
-    const hasTarget = currentIds.includes(proposalId);
-
-    let previousProposalId = null;
-    let previousProposalReference = null;
-    let previousProposal = null;
-
-    if (!hasTarget && maxVotes === 1 && currentIds.length) {
-      previousProposalId = currentIds[0];
-      if (previousProposalId !== proposalId) {
-        previousProposalReference = proposalsRef(db, pollId).doc(previousProposalId);
-        previousProposal = await transaction.get(previousProposalReference);
-      }
-    }
-
-    const targetCount = Math.max(
-      0,
-      Number(targetProposal.data()?.voteCount || 0),
-    );
-
-    if (hasTarget) {
-      const nextIds = currentIds.filter((id) => id !== proposalId);
-      if (nextIds.length) {
-        transaction.set(
-          userVoteReference,
-          {
-            proposalIds: nextIds,
-            proposalId: nextIds[0] || null,
-            userId: interaction.user.id,
-            updatedAt: new Date(),
-          },
-          { merge: true },
-        );
-      } else {
-        transaction.delete(userVoteReference);
-      }
-
-      transaction.update(proposalReference, {
-        voteCount: Math.max(0, targetCount - 1),
-      });
-
-      return {
-        action: "removed",
-        changedProposalIds: [proposalId],
-        maxVotes,
-      };
-    }
-
-    if (maxVotes > 1 && currentIds.length >= maxVotes) {
-      throw new Error("VOTE_LIMIT_REACHED");
-    }
-
-    let nextIds;
-    const changedProposalIds = [proposalId];
-
-    if (maxVotes === 1) {
-      nextIds = [proposalId];
-
-      if (previousProposal && previousProposal.exists) {
-        const oldCount = Math.max(
-          0,
-          Number(previousProposal.data()?.voteCount || 0),
-        );
-        transaction.update(previousProposalReference, {
-          voteCount: Math.max(0, oldCount - 1),
-        });
-        changedProposalIds.push(previousProposalId);
-      }
-    } else {
-      nextIds = [...currentIds, proposalId];
-    }
-
-    transaction.set(
-      userVoteReference,
-      {
-        proposalIds: nextIds,
-        proposalId: nextIds[0] || null,
-        userId: interaction.user.id,
-        updatedAt: new Date(),
-      },
-      { merge: true },
-    );
-    transaction.update(proposalReference, {
-      voteCount: targetCount + 1,
-    });
-
-    return {
-      action: maxVotes === 1 && currentIds.length ? "changed" : "added",
-      changedProposalIds,
-      maxVotes,
-    };
-  });
+  const result = await db.runTransaction((transaction) =>
+    changeVoteInTransaction(transaction, {
+      db,
+      pollId,
+      userId: interaction.user.id,
+      proposalId,
+      toggleExisting: true,
+      replaceOldestAtLimit: false,
+    }),
+  );
 
   await Promise.all(
     result.changedProposalIds.map((id) =>
@@ -723,6 +855,7 @@ async function vote(interaction, db, pollId, proposalId) {
         : "✅ Ton vote a été enregistré.",
     changed: "✅ Ton vote a été déplacé vers cette proposition.",
     removed: "✅ Ton vote a été retiré.",
+    unchanged: "ℹ️ Ton vote était déjà enregistré sur cette proposition.",
   };
 
   await interaction.editReply(
@@ -766,6 +899,7 @@ async function closePoll(interaction, db) {
   }
 
   const pollId = pollSnapshot.id;
+  const poll = pollSnapshot.data() || {};
   const pollReference = pollRef(db, pollId);
 
   await db.runTransaction(async (transaction) => {
@@ -792,6 +926,7 @@ async function closePoll(interaction, db) {
     );
   });
 
+  const unpinResult = await unpinPollMessage(interaction, poll, pollReference);
   const proposals = await proposalsRef(db, pollId).get();
 
   await refreshMainMessage(interaction, db, pollId, { closed: true }).catch(
@@ -816,12 +951,14 @@ async function closePoll(interaction, db) {
   const sorted = sortProposals(proposals.docs);
   const winner = sorted[0];
   const winnerVotes = Number(winner?.voteCount || 0);
-
-  await interaction.editReply(
+  const replyLines = [
     winner
       ? `🏆 Sondage clôturé. **${winner.name}** arrive en tête avec **${winnerVotes} vote${winnerVotes > 1 ? "s" : ""}**.`
       : "✅ Sondage clôturé. Aucune proposition n'avait été ajoutée.",
-  );
+  ];
+  if (!unpinResult.ok) replyLines.push(unpinResult.warning);
+
+  await interaction.editReply(replyLines.join("\n"));
 }
 
 async function handleSlashCommand(interaction, db) {
