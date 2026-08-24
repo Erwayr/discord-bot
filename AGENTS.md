@@ -54,6 +54,7 @@ Before broad exploration, read:
 - Firestore listeners: `app/firestoreListeners.js`
 - Weekly recap rewards: `script/weeklyFollowersRecap.js`
 - Weekly planning publication: `script/weeklyPlanningPublisher.js`
+- Community polls and public homepage mirror: `script/communityPoll.js`
 - Birthdays: `app/birthdays.js`
 - Discord booster cards: `script/serverBoosterCards.js`
 - Discord profile command: `script/profileHandler.js`

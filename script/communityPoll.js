@@ -2,6 +2,7 @@
 
 const crypto = require("crypto");
 const { getFirestore } = require("firebase-admin/firestore");
+const { isTransientFirestoreError } = require("../helper/firestoreRetry");
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -16,12 +17,17 @@ const {
 const COMMUNITY_POLL_COMMAND_NAME = "sondage";
 const POLLS_COLLECTION = "discord_community_polls";
 const STATE_COLLECTION = "discord_community_poll_state";
+const PUBLIC_POLL_COLLECTION = "site_config";
+const PUBLIC_POLL_DOCUMENT = "community_poll";
 const CUSTOM_ID_PREFIX = "community_poll";
 
 const DEFAULT_MAX_PROPOSALS_PER_USER = 3;
 const DEFAULT_MAX_VOTES_PER_USER = 1;
 const MAIN_RANKING_LIMIT = 10;
 const RESULTS_RANKING_LIMIT = 20;
+const PUBLIC_RANKING_LIMIT = 5;
+const PUBLIC_SYNC_MAX_ATTEMPTS = 3;
+const publicPollSyncQueues = new Map();
 
 function clampInteger(value, fallback, min, max) {
   const n = Number(value);
@@ -72,6 +78,10 @@ function proposalsRef(db, pollId) {
 
 function votesRef(db, pollId) {
   return pollRef(db, pollId).collection("votes");
+}
+
+function publicPollRef(db) {
+  return db.collection(PUBLIC_POLL_COLLECTION).doc(PUBLIC_POLL_DOCUMENT);
 }
 
 function getProposalLabel(poll) {
@@ -146,6 +156,116 @@ function sortProposals(docs) {
         b.createdAt?.toMillis?.() || new Date(b.createdAt || 0).getTime() || 0;
       return aCreated - bCreated;
     });
+}
+
+function normalizePublicVoteCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+}
+
+function buildPublicCommunityPollSnapshot(poll, proposalDocs = []) {
+  if (!poll?.active) return { active: false };
+
+  const title = String(poll.title || "").trim();
+  const guildId = String(poll.guildId || "").trim();
+  const channelId = String(poll.channelId || "").trim();
+  const messageId = String(poll.messageId || "").trim();
+  if (!title || !guildId || !channelId || !messageId) {
+    return { active: false };
+  }
+
+  return {
+    active: true,
+    title: truncate(title, 100),
+    description: truncate(String(poll.description || "").trim(), 1000),
+    proposals: sortProposals(proposalDocs)
+      .filter((proposal) => String(proposal.name || "").trim())
+      .slice(0, PUBLIC_RANKING_LIMIT)
+      .map((proposal) => ({
+        name: truncate(String(proposal.name || "").trim(), 80),
+        voteCount: normalizePublicVoteCount(proposal.voteCount),
+      })),
+    guildId,
+    channelId,
+    messageId,
+  };
+}
+
+function publicSyncDelay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function syncPublicCommunityPollSnapshot(
+  db,
+  guildId,
+  { maxAttempts = PUBLIC_SYNC_MAX_ATTEMPTS, baseDelayMs = 180 } = {},
+) {
+  const safeGuildId = String(guildId || "").trim();
+  if (!safeGuildId) return { active: false };
+
+  const attempts = Math.max(1, Number(maxAttempts) || PUBLIC_SYNC_MAX_ATTEMPTS);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const activePoll = await getActivePollSnapshot(db, safeGuildId);
+      let payload = { active: false };
+
+      if (activePoll?.data()?.active) {
+        const proposals = await proposalsRef(db, activePoll.id).get();
+        payload = buildPublicCommunityPollSnapshot(
+          activePoll.data(),
+          proposals.docs,
+        );
+      }
+
+      await publicPollRef(db).set(payload);
+      return payload;
+    } catch (error) {
+      const transient = isTransientFirestoreError(error);
+      if (!transient || attempt === attempts) throw error;
+
+      const delayMs = Math.max(0, Number(baseDelayMs) || 0) * 2 ** (attempt - 1);
+      console.warn(
+        `[community-poll] public snapshot retry ${attempt}/${attempts} in ${delayMs}ms (code=${error?.code ?? "n/a"})`,
+      );
+      if (delayMs > 0) await publicSyncDelay(delayMs);
+    }
+  }
+
+  return { active: false };
+}
+
+function queuePublicCommunityPollSync(db, guildId, options = {}) {
+  const key = String(guildId || "").trim();
+  if (!key) return Promise.resolve({ active: false });
+
+  const previous = publicPollSyncQueues.get(key) || Promise.resolve();
+  const task = previous
+    .catch(() => {})
+    .then(() => syncPublicCommunityPollSnapshot(db, key, options));
+  let tracked;
+  tracked = task.finally(() => {
+    if (publicPollSyncQueues.get(key) === tracked) {
+      publicPollSyncQueues.delete(key);
+    }
+  });
+  publicPollSyncQueues.set(key, tracked);
+  return tracked;
+}
+
+async function publishPublicCommunityPollBestEffort(
+  db,
+  guildId,
+  context = "update",
+) {
+  try {
+    return await queuePublicCommunityPollSync(db, guildId);
+  } catch (error) {
+    console.warn(
+      `[community-poll] public snapshot ${context} failed:`,
+      error?.message || error,
+    );
+    return null;
+  }
 }
 
 function rankingText(proposals, limit = MAIN_RANKING_LIMIT) {
@@ -484,6 +604,12 @@ async function createPoll(interaction, db) {
     throw error;
   }
 
+  await publishPublicCommunityPollBestEffort(
+    db,
+    interaction.guildId,
+    "after create",
+  );
+
   const pinResult = await pinPollMessage(message, reference);
   const replyLines = [
     `✅ Sondage créé dans ${channel}, épinglé et prêt à recevoir les propositions.`,
@@ -792,6 +918,11 @@ async function submitProposal(interaction, db, pollId) {
   const changedIds = Array.from(
     new Set([proposalId, ...(autoVoteResult.changedProposalIds || [])]),
   );
+  await publishPublicCommunityPollBestEffort(
+    db,
+    interaction.guildId,
+    "after proposal",
+  );
   await Promise.all(
     changedIds.map((id) =>
       refreshProposalMessage(interaction, db, pollId, id).catch((error) =>
@@ -828,6 +959,12 @@ async function vote(interaction, db, pollId, proposalId) {
       toggleExisting: true,
       replaceOldestAtLimit: false,
     }),
+  );
+
+  await publishPublicCommunityPollBestEffort(
+    db,
+    interaction.guildId,
+    "after vote",
   );
 
   await Promise.all(
@@ -925,6 +1062,12 @@ async function closePoll(interaction, db) {
       { merge: true },
     );
   });
+
+  await publishPublicCommunityPollBestEffort(
+    db,
+    interaction.guildId,
+    "after close",
+  );
 
   const unpinResult = await unpinPollMessage(interaction, poll, pollReference);
   const proposals = await proposalsRef(db, pollId).get();
@@ -1060,11 +1203,13 @@ function parseComponentCustomId(customId) {
 
 const registeredClients = new WeakSet();
 
-function registerCommunityPollEvents({ client }) {
+async function registerCommunityPollEvents({
+  client,
+  guildId,
+  db = getFirestore(),
+}) {
   if (registeredClients.has(client)) return;
   registeredClients.add(client);
-
-  const db = getFirestore();
 
   client.on(Events.InteractionCreate, async (interaction) => {
     try {
@@ -1125,11 +1270,16 @@ function registerCommunityPollEvents({ client }) {
       }
     }
   });
+
+  await publishPublicCommunityPollBestEffort(db, guildId, "startup");
 }
 
 module.exports = {
   COMMUNITY_POLL_COMMAND_NAME,
   registerCommunityPollEvents,
+  buildPublicCommunityPollSnapshot,
+  syncPublicCommunityPollSnapshot,
+  queuePublicCommunityPollSync,
   parseComponentCustomId,
   normalizeProposalName,
 };
