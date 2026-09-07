@@ -30,11 +30,17 @@ function parseOverlaySubCardTestCommand(message, senderLogin = "") {
   if (!OVERLAY_SUB_CARD_TEST_ALIASES.includes(alias)) return null;
 
   const targetLogin = normalizeLogin(parts[1] || senderLogin);
-  const subMessage = parts.slice(2).join(" ").replace(/\s+/g, " ").trim().slice(0, 500);
+  const monthToken = parts[2] || "";
+  // Text after the login remains a message; a leading number selects test tenure.
+  const hasMonths = /^[+-]?(?:\d|\.\d)/.test(monthToken);
+  const subMonths = hasMonths ? Number(monthToken) : null;
+  const invalidMonths = hasMonths && (!/^\d+$/.test(monthToken) || !Number.isSafeInteger(subMonths) || subMonths < 1);
+  const subMessage = parts.slice(hasMonths ? 3 : 2).join(" ").replace(/\s+/g, " ").trim().slice(0, 500);
   return {
     alias,
     targetLogin,
     subMessage,
+    ...(invalidMonths ? { error: "invalid_months" } : hasMonths ? { subMonths } : {}),
   };
 }
 
@@ -82,11 +88,15 @@ async function publishOverlaySubCardTestEvent({
   targetDisplayName = "",
   requestedBy = "",
   subMessage = "",
+  subMonths,
   now = () => Date.now(),
 } = {}) {
   const login = normalizeLogin(targetLogin);
   if (!login) {
     return { published: false, reason: "invalid_target" };
+  }
+  if (subMonths != null && (!Number.isSafeInteger(subMonths) || subMonths < 1)) {
+    return { published: false, reason: "invalid_months" };
   }
   if (!db?.collection) {
     return { published: false, reason: "missing_db" };
@@ -113,6 +123,7 @@ async function publishOverlaySubCardTestEvent({
       test: true,
       requestedBy: normalizeLogin(requestedBy),
       subMessage: safeSubMessage,
+      ...(subMonths != null ? { subMonths } : {}),
     },
     { merge: true },
   );
@@ -124,6 +135,7 @@ async function publishOverlaySubCardTestEvent({
     login,
     displayName,
     subMessage: safeSubMessage,
+    ...(subMonths != null ? { subMonths } : {}),
   };
 }
 
@@ -153,6 +165,13 @@ async function handleOverlaySubCardTestCommand({
   if (!authorized) {
     return { handled: true, responded: false, reason: "unauthorized" };
   }
+  if (parsed.error) {
+    const responded = typeof sendTwitchChatMessage === "function";
+    if (responded) {
+      await sendTwitchChatMessage("Nombre de mois invalide : utilise un entier positif. Exemple : !testsub erwayr 6 [message].");
+    }
+    return { handled: true, responded, reason: parsed.error };
+  }
 
   const result = await publishOverlaySubCardTestEvent({
     db,
@@ -161,6 +180,7 @@ async function handleOverlaySubCardTestCommand({
     targetDisplayName: parsed.targetLogin,
     requestedBy: login,
     subMessage: parsed.subMessage,
+    subMonths: parsed.subMonths,
     now,
   });
 
@@ -171,7 +191,7 @@ async function handleOverlaySubCardTestCommand({
   if (typeof sendTwitchChatMessage === "function") {
     const mention = displayName ? `@${String(displayName).replace(/^@+/, "")}` : "@modo";
     await sendTwitchChatMessage(
-      `${mention} test overlay sub card envoye pour @${result.login}.`,
+      `${mention} test overlay sub card envoye pour @${result.login}${result.subMonths != null ? ` (${result.subMonths} mois)` : ""}.`,
     );
   }
 
@@ -181,6 +201,7 @@ async function handleOverlaySubCardTestCommand({
     type: "overlay_sub_card_test",
     targetLogin: result.login,
     docId: result.docId,
+    ...(result.subMonths != null ? { subMonths: result.subMonths } : {}),
   };
 }
 
