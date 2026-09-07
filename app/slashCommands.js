@@ -133,7 +133,7 @@ async function registerSlashCommands({ client, config }) {
     return null;
   }
 
-  registerCommunityPollEvents({ client });
+  await registerCommunityPollEvents({ client, guildId });
 
   const guild = await client.guilds.fetch(guildId);
   const commands = await guild.commands.fetch();
