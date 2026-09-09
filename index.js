@@ -88,6 +88,7 @@ const { postDiscord, sendDMOrFallback } = createDiscordMessaging({
   logChannelId: config.discord.logChannelId,
 });
 const cardNotifications = createCardNotificationQueue({
+  db,
   config,
   sendDMOrFallback,
 });
@@ -221,7 +222,7 @@ const firestoreListeners = createFirestoreListeners({
   admin,
   config,
   birthdays,
-  sendDMOrFallback,
+  cardNotifications,
   postDiscord,
   sendTwitchChatMessage: twitchChat.sendTwitchChatMessage,
 });

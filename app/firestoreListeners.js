@@ -20,12 +20,11 @@ function createFirestoreListeners({
   admin,
   config,
   birthdays,
-  sendDMOrFallback,
+  cardNotifications,
   postDiscord,
   sendTwitchChatMessage,
 }) {
   const winnerAnnouncementLocks = new Set();
-  const processingQueues = new Map();
 
   async function resolveWinnerDiscordMention({ login, pseudo }) {
     const normalized = normalizeLogin(login || pseudo);
@@ -208,55 +207,18 @@ function createFirestoreListeners({
 
     if (config.firestore.enableFollowerListener === true) {
       db.collection("followers_all_time").onSnapshot(
-      (snapshot) => {
-        const changes = snapshot.docChanges();
-        birthdays.handleFollowerChanges(changes);
-
-        changes.forEach((change) => {
-          if (change.type !== "modified") return;
-
-          const data = change.doc.data();
-          if (!data.discord_id) return;
-
-          const cards = Array.isArray(data.cards_generated)
-            ? data.cards_generated
-            : [];
-
-          const newCards = cards.filter((c) => !c.notifiedAt);
-          if (newCards.length === 0) return;
-
-          for (const card of newCards) {
-            const idSource =
-              card.title != null && card.title !== "" && card.title !== undefined
-                ? card.title
-                : `${card.isSub}_${card.hasRedemption}`;
-            const titleKey = `${idSource}${data.pseudo}`;
-            if (processingQueues.has(titleKey)) continue;
-            const prev = processingQueues.get(titleKey) || Promise.resolve();
-
-            const next = prev.then(async () => {
-              const collectionUrl = config.urls.collection;
-              const baseMsg = card.title
-                ? `🎉 Tu viens de gagner la carte **${card.title}** !`
-                : `🎉 Tu viens de gagner une nouvelle carte !`;
-              const dmMsg = `${baseMsg}\n👉 Ta collection : ${collectionUrl}`;
-              console.log(
-                `🃏 [Card] ${data.pseudo} won "${card.title || "unknown"}"`,
-              );
-
-              await sendDMOrFallback(data.discord_id, dmMsg);
-
-              card.notifiedAt = new Date().toISOString();
-              if (!card.isAlreadyView) card.isAlreadyView = false;
-              await change.doc.ref.update({ cards_generated: cards });
-            });
-
-            processingQueues.set(titleKey, next);
-            next.catch(console.error);
-          }
-        });
-      },
-      (err) => console.error("Listener Firestore error:", err),
+        (snapshot) => {
+          const changes = snapshot.docChanges();
+          birthdays.handleFollowerChanges(changes);
+          changes.forEach((change) => {
+            if (change.type !== "modified") return;
+            const data = change.doc.data();
+            if (!data.discord_id || !Array.isArray(data.cards_generated)) return;
+            if (!data.cards_generated.some((card) => card && !card.notifiedAt)) return;
+            cardNotifications.enqueueFollowerDoc(change.doc.ref).catch(console.error);
+          });
+        },
+        (err) => console.error("Listener Firestore error:", err),
       );
     }
 

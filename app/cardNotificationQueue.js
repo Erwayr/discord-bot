@@ -13,6 +13,7 @@ function cardIdentity(card = {}) {
 }
 
 function createCardNotificationQueue({
+  db,
   config,
   sendDMOrFallback,
   now = () => new Date(),
@@ -59,16 +60,25 @@ function createCardNotificationQueue({
       );
     }
 
-    const nextCards = cards.map((card) => {
-      if (!card || card.notifiedAt) return card;
-      return {
-        ...card,
-        notifiedAt,
-        isAlreadyView: card.isAlreadyView === true ? true : false,
-      };
+    // Discord is called only above, never inside a retryable transaction.
+    // Re-read the collection so grants, removals and views during delivery survive.
+    await db.runTransaction(async (transaction) => {
+      const latest = await transaction.get(docRef);
+      if (!latest.exists) return;
+      const latestCards = latest.data()?.cards_generated;
+      if (!Array.isArray(latestCards)) return;
+      let changed = false;
+      const nextCards = latestCards.map((card) => {
+        if (!card || card.notifiedAt || !sentKeys.has(cardIdentity(card))) return card;
+        changed = true;
+        return {
+          ...card,
+          notifiedAt,
+          isAlreadyView: card.isAlreadyView ?? false,
+        };
+      });
+      if (changed) transaction.update(docRef, { cards_generated: nextCards });
     });
-
-    await docRef.update({ cards_generated: nextCards });
     return { processed: true, notified: sentKeys.size };
   }
 
