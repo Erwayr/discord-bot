@@ -231,6 +231,7 @@ const app = express();
 mountHttpRoutes({
   app,
   db,
+  client,
   config,
   authHealth,
   twitchEventSub,

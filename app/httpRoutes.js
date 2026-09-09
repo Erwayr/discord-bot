@@ -4,6 +4,7 @@ const axios = require("axios");
 const bodyParser = require("body-parser");
 const { mountTwitchAuth } = require("../script/authTwitch");
 const { shortText } = require("./textUtils");
+const { mountDiscordGiftTestRoutes } = require("./discordGiftTest");
 
 function isRecoverableInvalidTokenError(error) {
   const status = error?.response?.status;
@@ -91,7 +92,8 @@ function createAuthHealth({ client, tokenManager, config, postDiscord }) {
   };
 }
 
-function mountHttpRoutes({ app, db, config, authHealth, twitchEventSub }) {
+function mountHttpRoutes({ app, db, client, config, authHealth, twitchEventSub }) {
+  mountDiscordGiftTestRoutes({ app, client, config });
   app.use(bodyParser.json());
 
   mountTwitchAuth(app, db, {

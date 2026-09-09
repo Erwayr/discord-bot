@@ -14,6 +14,11 @@ function boolEnv(name, fallback = true) {
 }
 
 const config = {
+  admin: {
+    twitchClientId: process.env.ADMIN_TWITCH_CLIENT_ID || "1q6i5ximtpmq8d4csbncpg9ope78a3",
+    twitchIds: (process.env.ADMIN_TWITCH_IDS || "480296446").split(",").map((id) => id.trim()).filter(Boolean),
+    allowedOrigins: (process.env.ADMIN_ALLOWED_ORIGINS || "https://erwayr.online,https://erwayr.github.io,http://localhost:3000,http://127.0.0.1:3000").split(",").map((origin) => origin.trim()).filter(Boolean),
+  },
   discord: {
     logChannelId: process.env.LOG_CHANNEL_ID || "1377870229153120257",
     dailyChestChannelId:
