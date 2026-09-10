@@ -222,6 +222,8 @@ module.exports = async function electionHandler(
     // Initialise l'élection avec tableau vide
     await electionDoc.set({
       startedAt: new Date(),
+      guildId: guild.id,
+      channelId: channel.id,
       winnerId: null,
       endedAt: null,
       pollMessageId: null,
