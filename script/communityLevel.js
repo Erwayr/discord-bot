@@ -14,6 +14,7 @@ const DEFAULT_RANK_TITLES = Object.freeze([
   { min: 100, label: "Maitre Pixel" },
   { min: 110, label: "Maitre du cosmos" },
   { min: 150, label: "Ultra instinct" },
+  { min: 200, label: "Divinité" },
 ]);
 
 const DEFAULT_CONFIG = Object.freeze({

@@ -115,6 +115,9 @@ test("default community rank titles map level 110 through 149 to Maitre du cosmo
   assert.equal(titleForLevel(110), "Maitre du cosmos");
   assert.equal(titleForLevel(149), "Maitre du cosmos");
   assert.equal(titleForLevel(150), "Ultra instinct");
+  assert.equal(titleForLevel(199), "Ultra instinct");
+  assert.equal(titleForLevel(200), "Divinité");
+  assert.equal(titleForLevel(201), "Divinité");
 });
 
 test("excluded service accounts never create live activity documents", async () => {
