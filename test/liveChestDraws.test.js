@@ -7,7 +7,7 @@ const { createLiveChestDraws } = require("../script/liveChestDraws");
 const { normalizeConfig, publicDraw } = require("../script/liveChestDraws.shared.cjs");
 const { createMemoryFirestore } = require("./helpers/live-chest-firestore.cjs");
 
-function fixture({ enabled = true, senderFails = false } = {}) {
+function fixture({ enabled = true, senderFails = false, randomInt = () => 0 } = {}) {
   let time = Date.UTC(2026, 8, 14, 12);
   let stream = { streamId: "stream1", startedAt: new Date(time).toISOString() };
   let failure = null;
@@ -21,7 +21,7 @@ function fixture({ enabled = true, senderFails = false } = {}) {
   });
   const config = { twitch: { channelId: "480296446", channelLogin: "erwayr", moderatorId: "99" } };
   const deps = {
-    db, config, now: () => time, randomInt: () => 0, logger: { warn() {} },
+    db, config, now: () => time, randomInt, logger: { warn() {} },
     resolveTwitchIdentity: async ({ login }) => { identityCalls++; return { login: login === "alice_new" ? "alice" : login, status: "active" }; },
     getLiveState: async () => { if (failure) throw failure; return stream; },
     sendMessage: async (message) => { messages.push(message); return { is_sent: !senderFails, message_id: String(messages.length) }; },
@@ -34,17 +34,19 @@ function fixture({ enabled = true, senderFails = false } = {}) {
   const active = () => db.documents.get(`live_chest_draws/${runtime().activeDrawId || runtime().displayDrawId}`);
   return { db, messages, command, runtime, active, now: () => time, advance: (ms) => { time += ms; },
     setStream: (value) => { stream = value; }, setFailure: (value) => { failure = value; },
-    identities: () => identityCalls, service: () => service, restart: () => { service = createLiveChestDraws(deps); },
-    async open() { await service.tick(); time += 3600000; await service.tick(); assert.equal(active().status, "open"); },
+    identities: () => identityCalls, service: () => service, newService: () => createLiveChestDraws(deps), restart: () => { service = createLiveChestDraws(deps); },
+    async open() { await service.tick(); time = runtime().nextOpenAtMs; await service.tick(); assert.equal(active().status, "open"); },
   };
 }
 
-test("disabled by default and first registration opens after one hour", async () => {
+test("disabled by default and first random registration opens no earlier than three minutes", async () => {
   const disabled = fixture({ enabled: false });
   await disabled.service().tick(); disabled.advance(7200000); await disabled.service().tick();
   assert.equal(disabled.active(), undefined);
   const f = fixture();
+  const start = f.now();
   await f.open();
+  assert.equal(f.active().opensAtMs, start + 180000);
   assert.equal(f.active().config.winnerCount, 2);
   assert.equal(f.active().closesAtMs - f.active().opensAtMs, 180000);
   assert.equal(f.messages.length, 1);
@@ -69,6 +71,158 @@ test("test command is owner-only, works offline and writes no profiles, entries,
   assert.equal(publicDraw(demo, f.now()), null);
   assert.ok(f.messages.some((message) => message.includes("Démonstration terminée")));
   assert.ok(f.db.writes.every((entry) => entry.startsWith("settings/") || entry.startsWith("live_chest_draw_tests/")));
+});
+
+test("the first three minutes stay closed and a restart, visual edit or test command preserves the chosen time", async () => {
+  const f = fixture();
+  await f.service().tick();
+  const scheduled = f.runtime().nextOpenAtMs;
+  f.advance(179000); await f.service().tick();
+  assert.equal(f.active(), undefined);
+  assert.equal((await f.command("!coffre", "alice", "11")).reason, "closed");
+  const settings = f.db.documents.get("site_config/live_chest_draws");
+  f.db.documents.set("site_config/live_chest_draws", { ...settings, width: 280, corner: "bottom-left", volume: 0 });
+  f.restart(); await f.service().tick();
+  assert.equal(f.runtime().nextOpenAtMs, scheduled);
+  await f.command("!coffretest");
+  assert.equal(f.runtime().nextOpenAtMs, scheduled);
+  f.advance(1000); await f.service().tick();
+  assert.equal(f.active().opensAtMs, scheduled);
+  assert.equal(f.active().config.width, 280);
+  assert.equal(f.runtime().demoId, null);
+});
+
+test("concurrent planners and transaction retries choose one appointment and create one draw per window", async () => {
+  let calls = 0;
+  const f = fixture({ randomInt: () => { calls++; return 0; } });
+  const other = f.newService();
+  f.db.retryNext(2);
+  await Promise.all([f.service().tick(), other.tick()]);
+  assert.equal(calls, 1);
+  const scheduled = f.runtime().nextOpenAtMs;
+  f.advance(scheduled - f.now());
+  await Promise.all([f.service().tick(), other.tick()]);
+  assert.equal(f.active().status, "open");
+  assert.equal(f.messages.filter((text) => text.includes("Écris !coffre")).length, 1);
+  await Promise.all([f.service().tick(), other.tick()]);
+  assert.equal([...f.db.documents.keys()].filter((key) => /^live_chest_draws\/[^/]+$/.test(key)).length, 1);
+});
+
+test("missed appointments and long outages skip to a future window without catching up", async () => {
+  const f = fixture();
+  await f.service().tick();
+  const missed = f.runtime().nextOpenAtMs;
+  f.advance(missed - f.now() + 30001);
+  f.restart(); await f.service().tick();
+  assert.equal(f.active(), undefined);
+  assert.equal(f.runtime().scheduleWindowIndex, 1);
+  assert.ok(f.runtime().nextOpenAtMs > f.now());
+  const next = f.runtime().nextOpenAtMs;
+  await f.service().tick();
+  assert.equal(f.runtime().nextOpenAtMs, next);
+  f.advance(5 * 3600000); f.restart(); await f.service().tick();
+  assert.ok(f.runtime().nextOpenAtMs > f.now());
+  assert.equal(f.active(), undefined);
+});
+
+test("the grace period permits a late tick only while the complete event still fits", async () => {
+  const f = fixture();
+  await f.service().tick(); f.advance(f.runtime().nextOpenAtMs - f.now() + 30000);
+  await f.service().tick();
+  assert.equal(f.active().status, "open");
+  const last = fixture({ randomInt: (max) => max - 1 });
+  await last.service().tick();
+  const end = last.runtime().scheduleWindowEndAtMs;
+  last.advance(last.runtime().nextOpenAtMs - last.now() + 25000);
+  await last.service().tick();
+  assert.equal(last.active().status, "open");
+  last.advance(185000); await last.service().tick();
+  assert.ok(last.active().expiresAtMs <= end);
+});
+
+test("too-short windows are reported once and resume in a window with sufficient room", async () => {
+  const f = fixture();
+  const start = f.now();
+  f.db.documents.set("site_config/live_chest_draws", normalizeConfig({ enabled: true, intervalMinutes: 5 }));
+  await f.service().tick();
+  assert.equal(f.runtime().nextOpenAtMs, null);
+  assert.equal(f.runtime().scheduleIssue, "window_too_short");
+  const count = f.db.writes.length;
+  f.advance(60000); await f.service().tick();
+  assert.equal(f.db.writes.length, count);
+  f.advance(240000); await f.service().tick();
+  assert.equal(f.active().opensAtMs, start + 300000);
+  assert.equal(f.runtime().scheduleIssue, null);
+});
+
+test("timing edits move to the next boundary and disabling cannot reroll a consumed window", async () => {
+  const f = fixture();
+  const start = f.now();
+  await f.service().tick();
+  f.db.documents.set("site_config/live_chest_draws", normalizeConfig({ enabled: true, intervalMinutes: 30 }));
+  f.advance(15000); await f.service().tick();
+  assert.equal(f.runtime().nextOpenAtMs, start + 3600000);
+  assert.equal(f.runtime().scheduleIntervalMinutes, 30);
+  const active = fixture(); await active.open();
+  active.db.documents.set("site_config/live_chest_draws", normalizeConfig({ enabled: false }));
+  active.advance(15000); await active.service().tick();
+  assert.equal(active.active().status, "cancelled");
+  active.db.documents.set("site_config/live_chest_draws", normalizeConfig({ enabled: true }));
+  active.advance(15000); await active.service().tick();
+  assert.equal(active.runtime().scheduleWindowIndex, 1);
+  assert.ok(active.runtime().nextOpenAtMs > active.now());
+});
+
+test("legacy scheduling migrates at the next window and preserves an ongoing registration", async () => {
+  const f = fixture();
+  const start = f.now();
+  await f.open();
+  const draw = f.active();
+  f.db.documents.set("settings/live_chest_draws", {
+    streamId: "stream1", scheduleIntervalMinutes: 60, nextOpenAtMs: start + 7200000,
+    activeDrawId: draw.id, displayDrawId: draw.id,
+  });
+  f.advance(60000); f.restart(); await f.service().tick();
+  assert.equal(f.active().id, draw.id);
+  assert.equal(f.active().closesAtMs, draw.closesAtMs);
+  assert.equal(f.runtime().nextOpenAtMs, start + 3600000);
+  assert.equal(f.runtime().scheduleVersion, 2);
+});
+
+test("offline clears the appointment and each new Twitch live gets its own three-minute minimum", async () => {
+  const f = fixture();
+  await f.service().tick();
+  f.setStream(null); await f.service().tick();
+  assert.equal(f.runtime().nextOpenAtMs, null);
+  assert.equal(f.active(), undefined);
+  f.advance(10000);
+  f.setStream({ streamId: "stream2", startedAt: new Date(f.now()).toISOString() });
+  await f.service().tick();
+  assert.equal(f.runtime().nextOpenAtMs, f.now() + 180000);
+  for (const startedAt of [null, undefined, "invalid", new Date(f.now() + 60000).toISOString()]) {
+    f.setStream({ streamId: "stream3", startedAt });
+    await f.service().tick();
+    assert.equal(f.runtime().nextOpenAtMs, null);
+    assert.equal(f.runtime().scheduleIssue, "invalid_live_start");
+  }
+});
+
+test("successive hours can have different random times without overlapping events", async () => {
+  let count = 0;
+  const f = fixture({ randomInt: (max) => count++ % 2 ? max - 1 : 0 });
+  const start = f.now();
+  let previousEnd = 0;
+  for (let hour = 0; hour < 4; hour++) {
+    await f.open();
+    const draw = f.active();
+    assert.equal(draw.scheduleWindowStartAtMs, start + hour * 3600000);
+    assert.ok(draw.opensAtMs >= previousEnd);
+    f.advance(180000); await f.service().tick();
+    previousEnd = f.active().expiresAtMs;
+    assert.ok(previousEnd <= draw.scheduleWindowEndAtMs);
+    f.advance(25000); await f.service().tick();
+  }
+  assert.equal([...f.db.documents.keys()].filter((key) => /^live_chest_draws\/[^/]+$/.test(key)).length, 4);
 });
 
 test("test event cooldown persists across restart, shared-chat and other channels are rejected", async () => {

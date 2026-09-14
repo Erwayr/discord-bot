@@ -5,6 +5,7 @@ const { Timestamp } = require("firebase-admin/firestore");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { normalizeQuestMilestones, buildChestSnapshot, countAvailableQuestChestsByType } = require("./questChests.shared.cjs");
 const { normalizeConfig, chooseWinners, makeDemo, LABELS, ROLL_MS, WINNER_MS, SUMMARY_MS, TEST_COOLDOWN_MS } = require("./liveChestDraws.shared.cjs");
+const { SCHEDULE_VERSION, SCHEDULE_GRACE_MS, TICK_MS, scheduleTimingKey, drawDurationMs, createScheduleWindow } = require("./liveChestDraws.shared.cjs");
 
 const SITE = "https://erwayr.online/coffres.html";
 const loginOf = (value) => String(value || "").trim().toLowerCase();
@@ -147,26 +148,93 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
     });
   }
 
-  async function startDraw(runtime, settings, time) {
+  async function planSchedule(live, time) {
+    // Cache candidates outside the retryable transaction, including across retries.
+    const candidates = new Map();
+    return db.runTransaction(async (tx) => {
+      const [snap, configSnap] = await Promise.all([tx.get(runtimeRef), tx.get(configRef)]);
+      const current = snap.data() || {};
+      const settings = normalizeConfig(configSnap.data(), { strict: true });
+      const persist = (patch) => {
+        const result = { ...current, ...patch };
+        tx.set(runtimeRef, result);
+        return result;
+      };
+      if (!settings.enabled || !live?.streamId) {
+        const status = settings.enabled ? "offline" : "disabled";
+        if (!current.nextOpenAtMs && current.scheduleStatus === status) return current;
+        return persist({ nextOpenAtMs: null, scheduleStatus: status, scheduleIssue: null });
+      }
+      const startedAtMs = typeof live.startedAt === "string" ? new Date(live.startedAt).getTime() : NaN;
+      if (!Number.isFinite(startedAtMs) || startedAtMs > time) {
+        if (current.scheduleIssue === "invalid_live_start") return current;
+        return persist({ nextOpenAtMs: null, scheduleStatus: "skipped", scheduleIssue: "invalid_live_start" });
+      }
+      const intervalMs = settings.intervalMinutes * 60000;
+      const currentIndex = Math.floor((time - startedAtMs) / intervalMs);
+      const sameStream = current.streamId === live.streamId;
+      const sameSchedule = sameStream && current.scheduleVersion === SCHEDULE_VERSION;
+      let index = currentIndex;
+      if (sameStream && !sameSchedule) {
+        // An installed hourly schedule is migrated at the next boundary.
+        index++;
+      } else if (sameSchedule && current.scheduleTimingKey !== scheduleTimingKey(settings)) {
+        // Timing changes take effect after the current old/new windows; visual edits do not enter this branch.
+        const oldIntervalMs = current.scheduleIntervalMinutes * 60000;
+        const oldEnd = startedAtMs + (Math.floor((time - startedAtMs) / oldIntervalMs) + 1) * oldIntervalMs;
+        index = Math.max(currentIndex + 1, Math.ceil((oldEnd - startedAtMs) / intervalMs));
+      } else if (sameSchedule) {
+        if (current.scheduleStatus === "scheduled") {
+          const fits = time + drawDurationMs(settings) + TICK_MS <= current.scheduleWindowEndAtMs;
+          if (time < current.nextOpenAtMs || (time - current.nextOpenAtMs <= SCHEDULE_GRACE_MS && fits)) return current;
+          // A missed appointment never gets a second random choice in this window.
+          index = Math.max(current.scheduleWindowIndex + 1, currentIndex + 1);
+        } else if (current.scheduleStatus === "skipped" && current.scheduleIssue === "window_too_short") {
+          if (time < current.scheduleWindowEndAtMs) return current;
+        } else {
+          index = Math.max(current.scheduleWindowIndex + 1, currentIndex);
+        }
+      }
+      const key = `${live.streamId}/${scheduleTimingKey(settings)}/${index}`;
+      if (!candidates.has(key)) candidates.set(key, createScheduleWindow(startedAtMs, index, settings, time, randomInt));
+      return persist({ ...candidates.get(key), streamId: live.streamId });
+    });
+  }
+
+  async function startDraw(runtime) {
     const questSnap = await db.collection("site_config").doc("quests").get();
     const questConfig = questSnap.data() || {};
     const chestSlots = normalizeQuestMilestones(questConfig.questMilestones).slots.filter((slot) => slot.kind === "chest");
-    const id = `${safeId(runtime.streamId)}_${runtime.nextOpenAtMs}`;
+    const id = `${safeId(runtime.streamId)}_v2_${runtime.scheduleWindowStartAtMs}`;
     const ref = draws.doc(id);
-    const month = new Intl.DateTimeFormat("en-CA", { timeZone: questConfig.timezone || "Europe/Brussels", year: "numeric", month: "2-digit" }).format(new Date(time));
-    await db.runTransaction(async (tx) => {
+    const month = new Intl.DateTimeFormat("en-CA", { timeZone: questConfig.timezone || "Europe/Brussels", year: "numeric", month: "2-digit" }).format(new Date(now()));
+    const created = await db.runTransaction(async (tx) => {
       const [current, existing, latestConfig] = await Promise.all([tx.get(runtimeRef), tx.get(ref), tx.get(configRef)]);
-      if (!normalizeConfig(latestConfig.data()).enabled || existing.exists || current.data()?.nextOpenAtMs !== runtime.nextOpenAtMs || current.data()?.streamId !== runtime.streamId) return;
+      const time = now();
+      const settings = normalizeConfig(latestConfig.data(), { strict: true });
+      const state = current.data();
+      if (!settings.enabled || existing.exists || state?.activeDrawId || state?.scheduleStatus !== "scheduled"
+        || state?.nextOpenAtMs !== runtime.nextOpenAtMs || state?.streamId !== runtime.streamId
+        || state?.scheduleWindowStartAtMs !== runtime.scheduleWindowStartAtMs
+        || state?.scheduleTimingKey !== scheduleTimingKey(settings)
+        || time < state.nextOpenAtMs || time - state.nextOpenAtMs > SCHEDULE_GRACE_MS
+        || time + drawDurationMs(settings) + TICK_MS > state.scheduleWindowEndAtMs) return false;
       tx.set(ref, {
         id, streamId: runtime.streamId, test: false, status: "open", config: settings, month, chestSlots,
+        scheduleVersion: SCHEDULE_VERSION, scheduledAtMs: state.nextOpenAtMs,
+        scheduleWindowStartAtMs: state.scheduleWindowStartAtMs, scheduleWindowEndAtMs: state.scheduleWindowEndAtMs,
         createdAtMs: time, opensAtMs: time, closesAtMs: time + settings.registrationSeconds * 1000,
         expiresAtMs: time + settings.registrationSeconds * 1000 + 3600000, entrantCount: 0, winners: [],
       });
-      tx.set(runtimeRef, { ...current.data(), activeDrawId: id, displayDrawId: id,
-        demoId: null, nextOpenAtMs: runtime.nextOpenAtMs + settings.intervalMinutes * 60000 });
+      tx.set(runtimeRef, { ...state, activeDrawId: id, displayDrawId: id,
+        demoId: null, nextOpenAtMs: null, scheduleStatus: "opened" });
+      return true;
     });
-    const draw = (await ref.get()).data();
-    if (draw) await announce(ref, "open", `🎁 Tirage de ${settings.winnerCount} coffre${settings.winnerCount > 1 ? "s" : ""} ! Écris !coffre dans les ${settings.registrationSeconds} prochaines secondes pour participer. Profil sur erwayr.online requis.`);
+    if (created) {
+      const draw = (await ref.get()).data();
+      const settings = draw.config;
+      await announce(ref, "open", `🎁 Tirage de ${settings.winnerCount} coffre${settings.winnerCount > 1 ? "s" : ""} ! Écris !coffre dans les ${settings.registrationSeconds} prochaines secondes pour participer. Profil sur erwayr.online requis.`);
+    }
   }
 
   async function tick() {
@@ -240,25 +308,8 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
           }
         }
       }
-      if (settings.enabled && live?.streamId) {
-        const intervalMs = settings.intervalMinutes * 60000;
-        const startedMs = new Date(live.startedAt).getTime() || time;
-        if (runtime.streamId !== live.streamId || runtime.scheduleIntervalMinutes !== settings.intervalMinutes || !runtime.nextOpenAtMs) {
-          const nextOpenAtMs = startedMs + (Math.floor(Math.max(0, time - startedMs) / intervalMs) + 1) * intervalMs;
-          await db.runTransaction(async (tx) => {
-            const snap = await tx.get(runtimeRef);
-            tx.set(runtimeRef, { ...snap.data(), streamId: live.streamId, nextOpenAtMs, scheduleIntervalMinutes: settings.intervalMinutes });
-          });
-        } else if (!runtime.activeDrawId && time >= runtime.nextOpenAtMs) {
-          if (time - runtime.nextOpenAtMs > 30000) {
-            const nextOpenAtMs = runtime.nextOpenAtMs + (Math.floor((time - runtime.nextOpenAtMs) / intervalMs) + 1) * intervalMs;
-            await db.runTransaction(async (tx) => {
-              const snap = await tx.get(runtimeRef);
-              if (snap.data()?.nextOpenAtMs === runtime.nextOpenAtMs && !snap.data()?.activeDrawId) tx.update(runtimeRef, { nextOpenAtMs });
-            });
-          } else await startDraw(runtime, settings, time);
-        }
-      }
+      runtime = await planSchedule(live, time);
+      if (settings.enabled && live?.streamId && !runtime.activeDrawId && runtime.nextOpenAtMs && time >= runtime.nextOpenAtMs) await startDraw(runtime);
       hasWork = Boolean(active || runtime.demoId || settings.enabled);
     } finally { running = false; }
   }
@@ -326,7 +377,7 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
     if (timer) return;
     const run = () => tick().catch((error) => logger.warn("[live-chests] tick failed", error.code || error.message));
     void run();
-    timer = setInterval(run, 5000);
+    timer = setInterval(run, TICK_MS);
     timer.unref?.();
   }
   function stop() { clearInterval(timer); timer = null; }

@@ -13,6 +13,35 @@ const ROLL_MS = 3000;
 const WINNER_MS = 3000;
 const SUMMARY_MS = 10000;
 const TEST_COOLDOWN_MS = 60000;
+const SCHEDULE_VERSION = 2;
+const FIRST_OPEN_DELAY_MS = 180000;
+const SCHEDULE_GRACE_MS = 30000;
+const TICK_MS = 5000;
+
+function scheduleTimingKey(config) {
+  return `${config.intervalMinutes}/${config.registrationSeconds}/${config.winnerCount}`;
+}
+
+function drawDurationMs(config) {
+  return config.registrationSeconds * 1000 + ROLL_MS + config.winnerCount * WINNER_MS + SUMMARY_MS;
+}
+
+// Only the chosen timestamp is persisted; random choices never run on clients.
+function createScheduleWindow(startedAtMs, windowIndex, config, nowMs, randomInt) {
+  const intervalMs = config.intervalMinutes * 60000;
+  const windowStartAtMs = startedAtMs + windowIndex * intervalMs;
+  const windowEndAtMs = windowStartAtMs + intervalMs;
+  const firstSecond = Math.ceil(Math.max(windowStartAtMs, startedAtMs + FIRST_OPEN_DELAY_MS, nowMs) / 1000);
+  const lastSecond = Math.floor((windowEndAtMs - drawDurationMs(config) - SCHEDULE_GRACE_MS) / 1000);
+  return {
+    scheduleVersion: SCHEDULE_VERSION, scheduleTimingKey: scheduleTimingKey(config),
+    scheduleIntervalMinutes: config.intervalMinutes, streamStartedAtMs: startedAtMs,
+    scheduleWindowIndex: windowIndex, scheduleWindowStartAtMs: windowStartAtMs, scheduleWindowEndAtMs: windowEndAtMs,
+    nextOpenAtMs: firstSecond <= lastSecond ? (firstSecond + randomInt(lastSecond - firstSecond + 1)) * 1000 : null,
+    scheduleStatus: firstSecond <= lastSecond ? "scheduled" : "skipped",
+    scheduleIssue: firstSecond <= lastSecond ? null : "window_too_short",
+  };
+}
 
 function configError() {
   return Object.assign(new Error("Configuration des coffres du live invalide."), { status: 400, code: "invalid_live_chest_config" });
@@ -102,4 +131,5 @@ function publicDraw(draw, nowMs) {
 }
 
 module.exports = { TYPES, LABELS, DEFAULT_CONFIG, CORNERS, ROLL_MS, WINNER_MS, SUMMARY_MS, TEST_COOLDOWN_MS,
+  SCHEDULE_VERSION, FIRST_OPEN_DELAY_MS, SCHEDULE_GRACE_MS, TICK_MS, scheduleTimingKey, drawDurationMs, createScheduleWindow,
   normalizeConfig, chooseWinners, timeline, makeDemo, publicDraw };
