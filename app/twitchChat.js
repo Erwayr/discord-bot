@@ -3,6 +3,7 @@
 const axios = require("axios");
 const tmi = require("tmi.js");
 const { isExcludedLogin } = require("../helper/excludedUsers");
+const { createLiveChestDraws } = require("../script/liveChestDraws");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
 const { createLiveActivityBuffer } = require("../script/liveActivityBuffer");
 const {
@@ -25,6 +26,7 @@ function createTwitchChat({
   birthdays,
   getCommunityLevelConfig,
   twitchExtensionStatsSync,
+  resolveTwitchIdentity,
 }) {
   let CHANNEL_EMOTE_IDS = new Set();
   let CHANNEL_EMOTE_NAMES = new Set();
@@ -148,6 +150,7 @@ function createTwitchChat({
         message,
       },
       {
+        timeout: 8000,
         headers: buildTwitchHeaders(accessToken),
       },
     );
@@ -156,7 +159,22 @@ function createTwitchChat({
     if (!r?.is_sent) {
       console.warn("⚠️ Chat message dropped:", r?.drop_reason || r);
     }
+    return r;
   }
+
+  let chestLiveCache = null;
+  let chestLiveFetchedAt = -Infinity;
+  const liveChestDraws = createLiveChestDraws({
+    db, config, resolveTwitchIdentity, sendMessage: sendTwitchChatMessage,
+    getLiveState: async () => {
+      if (Date.now() - chestLiveFetchedAt < 15000) return chestLiveCache;
+      const { data } = await helix({ url: "https://api.twitch.tv/helix/streams", params: { user_id: config.twitch.channelId } });
+      const stream = data?.data?.[0];
+      chestLiveCache = stream ? { streamId: stream.id, startedAt: stream.started_at } : null;
+      chestLiveFetchedAt = Date.now();
+      return chestLiveCache;
+    },
+  });
 
   const liveActivityBuffer = createLiveActivityBuffer({
     questStore,
@@ -225,6 +243,16 @@ function createTwitchChat({
     const login = (tags.username || "").toLowerCase();
     if (!login) return;
     if (isExcludedLogin(login)) return;
+
+    try {
+      const chestResult = await liveChestDraws.handleMessage({
+        message: msg, login, displayName: tags["display-name"] || login, tags, channel,
+      });
+      if (chestResult.handled) return;
+    } catch (error) {
+      console.warn("[live-chests] command failed", error.code || error.message);
+      if (/^!coffre(?:test)?$/i.test(String(msg).trim())) return;
+    }
 
     birthdays.maybeSendBirthdayCongrats(login, sendTwitchChatMessage).catch((e) =>
       console.warn("birthday congrats failed:", e?.message || e),
@@ -454,6 +482,7 @@ function createTwitchChat({
   });
 
   function start() {
+    liveChestDraws.start();
     liveActivityBuffer.start();
     tmiClient.connect().catch(console.error);
     return tmiClient;
@@ -461,6 +490,7 @@ function createTwitchChat({
 
   return {
     start,
+    stopLiveChestDraws: liveChestDraws.stop,
     tmiClient,
     refreshChannelEmotes,
     refreshChannelEmotesThrottled,

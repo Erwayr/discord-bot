@@ -48,6 +48,10 @@ Before broad exploration, read:
 - HTTP routes and Twitch auth endpoints: `app/httpRoutes.js`, `script/authTwitch.js`, `script/tokenManager.js`
 - Twitch EventSub: `app/twitchEventSub.js`
 - Twitch chat/TMI: `app/twitchChat.js`, `script/twitchChatCommands.js`
+- Live chest draws and `!coffretest`: `script/liveChestDraws.js`;
+  full contract and deployment: `../ErwayrWebSite/docs/LIVE_CHEST_DRAWS.md`.
+  Copies `script/liveChestDraws.shared.cjs` and `script/questChests.shared.cjs`
+  are synchronized by the site's `scripts/sync-live-chest-contracts.js`.
 - Live quest storage: `script/questStorage.js`
 - Community levels: `script/communityLevel.js`
 - Jobs/cron: `app/jobs.js`
