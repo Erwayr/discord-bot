@@ -10,6 +10,7 @@ const {
 } = require("./communityLevel");
 
 const COMMAND_DEFINITIONS = Object.freeze([
+  Object.freeze({ type: "character", aliases: Object.freeze(["!perso"]), label: "!perso", description: "personnage RPG en live (60 s, toutes les 10 min)", showInHelp: true }),
   Object.freeze({
     type: "level",
     aliases: Object.freeze(["!lvl", "!level", "!niveau"]),

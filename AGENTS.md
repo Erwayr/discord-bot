@@ -48,6 +48,9 @@ Before broad exploration, read:
 - HTTP routes and Twitch auth endpoints: `app/httpRoutes.js`, `script/authTwitch.js`, `script/tokenManager.js`
 - Twitch EventSub: `app/twitchEventSub.js`
 - Twitch chat/TMI: `app/twitchChat.js`, `script/twitchChatCommands.js`
+- RPG avatar `!perso`: `script/guardianLive.js`; shared contracts synchronized
+  by the site's `npm run guardian:sync`. Deployment and OBS instructions:
+  `../ErwayrWebSite/docs/GUARDIAN_CHARACTERS.md`.
 - Live chest draws and `!coffretest`: `script/liveChestDraws.js`;
   full contract and deployment: `../ErwayrWebSite/docs/LIVE_CHEST_DRAWS.md`.
   Copies `script/liveChestDraws.shared.cjs` and `script/questChests.shared.cjs`

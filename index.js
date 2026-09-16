@@ -272,6 +272,7 @@ async function shutdown(signal) {
   console.log(`[shutdown] ${signal} received, flushing live activity...`);
   try {
     twitchChat.stopLiveChestDraws?.();
+    twitchChat.stopGuardianLive?.();
     twitchChat.stopLiveActivityBuffer?.();
     if (twitchChat.shouldFlushLiveActivityOnShutdown?.()) {
       await twitchChat.flushLiveActivity?.({ reason: "shutdown" });

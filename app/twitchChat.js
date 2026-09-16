@@ -4,6 +4,7 @@ const axios = require("axios");
 const tmi = require("tmi.js");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { createLiveChestDraws } = require("../script/liveChestDraws");
+const { createGuardianLive } = require("../script/guardianLive");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
 const { createLiveActivityBuffer } = require("../script/liveActivityBuffer");
 const {
@@ -216,6 +217,10 @@ function createTwitchChat({
     });
   }
 
+  const guardianLive = createGuardianLive({
+    db, channelId: config.twitch.channelId, resolveTwitchIdentity,
+    getLiveState: getLiveStreamStateForEmotes, sendMessage: sendTwitchChatMessage,
+  });
   const twitchChatCommands = createTwitchChatCommands({
     db,
     config: {
@@ -243,6 +248,14 @@ function createTwitchChat({
     const login = (tags.username || "").toLowerCase();
     if (!login) return;
     if (isExcludedLogin(login)) return;
+
+    try {
+      const result = await guardianLive.handleMessage({ message: msg, login, displayName: tags["display-name"] || login, tags });
+      if (result.handled) return;
+    } catch (error) {
+      console.warn("[guardian-live] command failed", error.code || error.message);
+      if (/^!perso\s*$/i.test(String(msg).trim())) return;
+    }
 
     try {
       const chestResult = await liveChestDraws.handleMessage({
@@ -482,6 +495,7 @@ function createTwitchChat({
   });
 
   function start() {
+    guardianLive.start();
     liveChestDraws.start();
     liveActivityBuffer.start();
     tmiClient.connect().catch(console.error);
@@ -490,6 +504,7 @@ function createTwitchChat({
 
   return {
     start,
+    stopGuardianLive: guardianLive.stop,
     stopLiveChestDraws: liveChestDraws.stop,
     tmiClient,
     refreshChannelEmotes,
