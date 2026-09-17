@@ -1,7 +1,7 @@
 "use strict";
 const { randomUUID } = require("node:crypto");
-const { syncGuardianLive, enqueueGuardianViewer, readElectedGuardian, publishGuardianChatGreeting } = require("./guardian-live.store.cjs");
-const { CHAT_MAX_AGE_MS } = require("./guardian-actions.shared.cjs");
+const { syncGuardianLive, enqueueGuardianViewer, readElectedGuardian, publishGuardianChat } = require("./guardian-live.store.cjs");
+const { CHAT_MAX_AGE_MS, isChatMessage, chatReaction } = require("./guardian-actions.shared.cjs");
 
 function createGuardianLive({ db, channelId, getLiveState, resolveTwitchIdentity, sendMessage, now = Date.now, logger = console }) {
   let timer = null;
@@ -9,27 +9,28 @@ function createGuardianLive({ db, channelId, getLiveState, resolveTwitchIdentity
   const replies = new Map();
   let guardianPromise = null;
   let guardianCheckedAt = -Infinity;
-  let greetingPending = false;
-  async function noteChat(tags) {
+  async function noteChat(message, tags) {
+    if (!isChatMessage(message)) return;
     const userId = String(tags["user-id"] || "");
     const messageId = String(tags.id || "");
     const at = now();
     const sentAt = Number(tags["tmi-sent-ts"] || at);
     if (!/^\d{1,25}$/.test(userId) || !messageId || !Number.isFinite(sentAt) || at - sentAt > CHAT_MAX_AGE_MS || sentAt > at + 2000) return;
     try {
-      if (!guardianPromise || at - guardianCheckedAt >= 15_000) {
-        guardianCheckedAt = at;
-        guardianPromise = readElectedGuardian({ db }).catch(error => { guardianPromise = null; throw error; });
+      // All viewers can trigger keywords. Cache the elected account only to
+      // avoid transactions for ordinary messages from the rest of the chat.
+      if (!chatReaction(message)) {
+        if (!guardianPromise || at - guardianCheckedAt >= 15_000) {
+          guardianCheckedAt = at;
+          guardianPromise = readElectedGuardian({ db }).catch(error => { guardianPromise = null; throw error; });
+        }
+        if ((await guardianPromise).userId !== userId) return;
       }
-      const guardian = await guardianPromise;
-      if (guardian.userId !== userId || greetingPending) return;
-      greetingPending = true;
-      try {
-        const live = await getLiveState();
-        // Chat reactions never refresh a live heartbeat or advance the queue.
-        await publishGuardianChatGreeting({ db, channelId, streamId: live?.streamId || "", userId, messageId, now: at });
-      } finally { greetingPending = false; }
-    } catch (error) { logger.warn("[guardian-live] greeting failed", error.code || error.message); }
+      const live = await getLiveState();
+      // Concurrent speech messages append transactionally; an active action
+      // must never discard the Guardian's next line.
+      await publishGuardianChat({ db, channelId, streamId: live?.streamId || "", userId, messageId, message, sentAtMs: sentAt, now: now() });
+    } catch (error) { logger.warn("[guardian-live] chat reaction failed", error.code || error.message); }
   }
   async function tick() {
     if (ticking) return;
@@ -42,7 +43,7 @@ function createGuardianLive({ db, channelId, getLiveState, resolveTwitchIdentity
     finally { ticking = false; }
   }
   async function handleMessage({ message, login, displayName, tags = {} }) {
-    await noteChat(tags);
+    await noteChat(message, tags);
     if (!/^!perso\s*$/i.test(String(message).trim())) return { handled: false };
     const userId = String(tags["user-id"] || "");
     if (!/^\d{1,25}$/.test(userId)) return { handled: true, reason: "identity_missing" };

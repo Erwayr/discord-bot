@@ -2,8 +2,7 @@
 const { isDeepStrictEqual } = require("node:util");
 
 const { characterForProfile } = require("./guardian-character.shared.cjs");
-const { freshState, cleanState, enqueueAppearance, advanceAppearance, LIVE_LEASE_MS } = require("./guardian-live.shared.cjs");
-const { GREETING_MS, TRAVEL_MS } = require("./guardian-actions.shared.cjs");
+const { freshState, cleanState, enqueueAppearance, advanceAppearance, LIVE_LEASE_MS, applyGuardianChat, guardianChatPresentation } = require("./guardian-live.shared.cjs");
 const channelRef = (db, channelId) => {
   if (!/^\d{1,25}$/.test(String(channelId))) throw new Error("guardian_channel_invalid");
   return db.collection("guardian_live_channels").doc(String(channelId));
@@ -16,7 +15,7 @@ async function syncGuardianLive({ db, channelId, streamId, checkedAtMs }) {
     const previous = snapshot.data() || {};
     if ((previous.liveCheckedAtMs || 0) > checkedAtMs) return;
     const next = previous.streamId === String(streamId || "") ? previous : freshState(streamId, checkedAtMs);
-    tx.set(ref, { ...next, liveUntilMs: streamId ? checkedAtMs + LIVE_LEASE_MS : 0, liveCheckedAtMs: checkedAtMs });
+    tx.set(ref, cleanState({ ...next, liveUntilMs: streamId ? checkedAtMs + LIVE_LEASE_MS : 0, liveCheckedAtMs: checkedAtMs }, checkedAtMs));
   });
 }
 
@@ -86,23 +85,16 @@ async function readElectedGuardian({ db, read = ref => ref.get() }) {
     character: characterForProfile(profile) };
 }
 
-async function publishGuardianChatGreeting({ db, channelId, streamId, userId, messageId, now = Date.now() }) {
+async function publishGuardianChat({ db, channelId, streamId, userId, messageId, message, now = Date.now(), sentAtMs = now }) {
   if (!/^\d{1,25}$/.test(String(userId)) || !/^[a-zA-Z0-9_-]{1,128}$/.test(String(messageId || ""))) return { accepted: false, reason: "identity_missing" };
   const ref = channelRef(db, channelId);
   return db.runTransaction(async tx => {
     const previous = (await tx.get(ref)).data() || {};
-    const state = cleanState(previous, now);
-    if (!streamId || state.streamId !== streamId || state.liveUntilMs <= now || state.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
-    if (previous.lastGuardianChatMessageId === messageId) return { accepted: false, reason: "duplicate" };
-    if (state.chatGreeting) return { accepted: false, reason: "greeting_active" };
-    if (state.active && (now < state.active.startsAtMs || now >= state.active.endsAtMs - TRAVEL_MS)) return { accepted: false, reason: "transition_active" };
-    if (state.active && state.active.userId !== userId) return { accepted: false, reason: "viewer_visible" };
+    if (!streamId || previous.streamId !== streamId || previous.liveUntilMs <= now || previous.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
     const guardian = await readElectedGuardian({ db, read: query => tx.get(query) });
-    if (guardian.userId !== userId) return { accepted: false, reason: "not_guardian" };
-    const chatGreeting = { id: messageId, type: "greet", userId, electionId: guardian.electionId,
-      streamId, appearanceId: state.active?.requestId || "guardian", startsAtMs: now, endsAtMs: now + GREETING_MS };
-    tx.set(ref, { ...state, chatGreeting, lastGuardianChatMessageId: messageId });
-    return { accepted: true };
+    const { state, ...result } = applyGuardianChat(previous, { guardian, streamId, userId, messageId, message, sentAtMs, now });
+    if (!["no_reaction", "stale_message", "not_chat", "duplicate"].includes(result.reason) && !isDeepStrictEqual(previous, state)) tx.set(ref, state);
+    return result;
   });
 }
 
@@ -117,16 +109,12 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
     const next = advanceAppearance(cleaned, { now, viewer });
     if (!isDeepStrictEqual(previous, next)) tx.set(ref, next);
-    const cue = next.chatGreeting;
-    const appearanceId = next.active?.requestId || "guardian";
-    const travelling = next.active && (now < next.active.startsAtMs || now >= next.active.endsAtMs - TRAVEL_MS);
-    const visibleCue = cue && !travelling && cue.appearanceId === appearanceId && cue.userId === guardian?.userId && cue.electionId === guardian?.electionId;
     return {
       generatedAtMs: now, kind: next.active ? "viewer" : "guardian", pendingCount: next.queue.length,
       appearanceId: next.active?.requestId || "guardian", viewer: next.active?.viewer || null,
       startsAtMs: next.active?.startsAtMs || null, endsAtMs: next.active?.endsAtMs || null,
-      action: visibleCue ? { id: cue.id, type: "greet", startsAtMs: cue.startsAtMs, endsAtMs: cue.endsAtMs } : null,
+      ...guardianChatPresentation(next, guardian, now),
     };
   });
 }
-module.exports = { syncGuardianLive, enqueueGuardianViewer, pollGuardianLive, readElectedGuardian, publishGuardianChatGreeting };
+module.exports = { syncGuardianLive, enqueueGuardianViewer, pollGuardianLive, readElectedGuardian, publishGuardianChat };
