@@ -16,7 +16,7 @@ const EQUIP_MS = 600;
 const actionById = id => ACTIONS.find(action => action.id === (id === "guard" ? "rest" : id)) || null;
 const actionDuration = id => {
   const action = actionById(id);
-  return action ? action.durationMs + (["attack", "victory"].includes(action.id) ? 2 * EQUIP_MS : 0) : 0;
+  return action ? action.durationMs + (action.id === "attack" ? 2 * EQUIP_MS : 0) : 0;
 };
 
 module.exports = { ACTIONS, GREETING_MS, CHAT_MAX_AGE_MS, TRAVEL_MS, EQUIP_MS, actionById, actionDuration };
