@@ -16,7 +16,11 @@ const OPTIONS = Object.freeze({
   face: choices([["oval", "Ovale"], ["round", "Rond"], ["angular", "Anguleux"]]),
   eyes: choices([["almond", "Amande"], ["round", "Ronds"], ["narrow", "Fins"]]),
   nose: choices([["fine", "Fin"], ["round", "Arrondi"], ["broad", "Large"]]),
-  hair: choices([["shaved", "Rasée"], ["cropped", "Courte"], ["bob", "Mi-longue"], ["tied", "Attachée"]]),
+  hair: choices([
+    ["shaved", "Rasée"], ["cropped", "Courte"], ["bob", "Mi-longue"], ["tied", "Attachée"],
+    ["fade", "Dégradé"], ["spiky", "Hérissée"], ["afro", "Afro"], ["curly", "Bouclée"],
+    ["long", "Longue"], ["ponytail", "Queue-de-cheval"], ["braid", "Tresse"], ["bun", "Chignon"],
+  ]),
   skin: choices([["porcelain", "Porcelaine", "#f2d2bc"], ["sand", "Sable", "#dcb18b"], ["honey", "Miel", "#c89466"], ["bronze", "Bronze", "#ad7753"], ["brown", "Brun", "#805337"], ["ebony", "Ébène", "#4f342a"]]),
   hairColor: choices([["black", "Noir", "#241f27"], ["brown", "Châtain", "#533426"], ["chestnut", "Châtaigne", "#835036"], ["blond", "Blond", "#d6b66c"], ["copper", "Cuivré", "#ae5633"], ["silver", "Argent", "#c3c9d2"], ["violet", "Prune", "#735495"], ["blue", "Bleu", "#397d9c"]]),
   eyeColor: choices([["brown", "Marron", "#5a3923"], ["hazel", "Noisette", "#998243"], ["green", "Vert", "#327b5a"], ["blue", "Bleu", "#4288b7"], ["grey", "Gris", "#8791a0"], ["violet", "Violet", "#8c60a8"]]),
