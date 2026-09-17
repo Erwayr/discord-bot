@@ -1,4 +1,5 @@
 "use strict";
+const { BASE_WEAPON_SKIN, getWeaponSkin } = require("./guardian-weapon-skins.shared.cjs");
 
 // Canonical catalog: shared with the browser and copied byte-for-byte to the bot.
 const SCHEMA_VERSION = 1;
@@ -30,7 +31,7 @@ const OPTIONS = Object.freeze({
     { id: "hammer", label: "Marteau", minLevel: 20 }, { id: "staff", label: "Bâton", minLevel: 30 },
   ].map(Object.freeze)),
 });
-const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", details: "gold", weapon: "sword" });
+const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN });
 
 function characterError(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 function characterLevel(profile = {}) {
@@ -44,7 +45,7 @@ function normalizeCharacter(input, { level = 0, strict = false } = {}) {
   if (strict && !validObject) throw characterError("guardian_character_invalid");
   const source = validObject ? input : {};
   if (strict && source.schemaVersion != null && source.schemaVersion !== SCHEMA_VERSION) throw characterError("guardian_character_version_invalid");
-  if (strict && Object.keys(source).some((key) => key !== "schemaVersion" && !Object.hasOwn(OPTIONS, key))) throw characterError("guardian_character_option_invalid");
+  if (strict && Object.keys(source).some((key) => !["schemaVersion", "weaponSkin"].includes(key) && !Object.hasOwn(OPTIONS, key))) throw characterError("guardian_character_option_invalid");
   const character = { ...DEFAULT_CHARACTER };
   for (const [key, options] of Object.entries(OPTIONS)) {
     const value = source[key];
@@ -57,6 +58,10 @@ function normalizeCharacter(input, { level = 0, strict = false } = {}) {
     if (strict) throw characterError("guardian_character_weapon_locked", 403);
     character.weapon = DEFAULT_CHARACTER.weapon;
   }
+  const skin = getWeaponSkin(source.weaponSkin);
+  if (strict && source.weaponSkin != null && source.weaponSkin !== BASE_WEAPON_SKIN && !skin) throw characterError("guardian_weapon_skin_invalid");
+  if (skin && skin.weapon === character.weapon) character.weaponSkin = skin.id;
+  else if (strict && skin) throw characterError("guardian_weapon_skin_incompatible");
   return character;
 }
 function characterForProfile(profile = {}) {

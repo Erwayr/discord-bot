@@ -62,6 +62,29 @@ function chatFixture() {
   return { db, app, chat, messages, warnings, advance: value => { time += value; } };
 }
 
+test("weapon skins survive elected Guardian reads, queued appearances and reconnects without exposing purchases", async () => {
+  const { db, app } = chatFixture();
+  const profile = db.documents.get("followers_all_time/renamed");
+  profile.communityLevel = { level: 30 };
+  profile.currentGuardian = { character: { weapon: "staff", weaponSkin: "staff-void" } };
+  profile.popsShop = { weaponSkins: { owned: { "staff-void": { id: "staff-void", price: 2500 } } } };
+  const guardian = await readElectedGuardian({ db });
+  assert.equal(guardian.character.weaponSkin, "staff-void");
+  assert.equal(guardian.popsShop, undefined);
+  await app.tick();
+  await pollGuardianLive({ db, channelId: "123", now: 1000000 });
+  const { enqueueGuardianViewer } = require("../script/guardian-live.store.cjs");
+  const queued = await enqueueGuardianViewer({ db, channelId: "123", streamId: "live", now: 1000000,
+    request: { requestId: "skin-preview", userId: "42", login: "renamed", displayName: "Viewer" } });
+  assert.equal(queued.accepted, true);
+  const started = await pollGuardianLive({ db, channelId: "123", now: 1006000 });
+  assert.equal(started.viewer.character.weaponSkin, "staff-void");
+  const resumed = await pollGuardianLive({ db, channelId: "123", now: 1007000 });
+  assert.deepEqual(resumed.viewer, started.viewer);
+  assert.equal(resumed.startsAtMs, started.startsAtMs);
+  assert(!JSON.stringify(resumed).includes("owned"));
+});
+
 test("regular Guardian messages greet by stable Twitch ID without swallowing chat or sending a bot reply", async () => {
   const { db, app, chat, messages, advance } = chatFixture();
   await app.tick();
