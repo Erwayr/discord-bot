@@ -93,10 +93,13 @@ function timeline(draw, nowMs) {
   if (!draw || draw.status === "cancelled" || nowMs >= draw.expiresAtMs) return { phase: "idle", index: -1 };
   if (nowMs < draw.opensAtMs) return { phase: "idle", index: -1 };
   if (draw.status === "open" && nowMs < draw.closesAtMs) return { phase: "registration", index: -1 };
+  const emptyPhase = nowMs < draw.closesAtMs + SUMMARY_MS ? "empty" : "idle";
   if (draw.status === "open" || draw.status === "drawing") {
-    return { phase: draw.entrantCount > 0 ? "drawing" : "idle", index: -1 };
+    // The last registration count cannot confirm a result: wait for the server.
+    return { phase: draw.entrantCount > 0 ? "waiting" : emptyPhase, index: -1 };
   }
-  if (draw.status !== "completed" || !draw.winners?.length) return { phase: "idle", index: -1 };
+  if (draw.status !== "completed") return { phase: "idle", index: -1 };
+  if (!draw.winners?.length) return { phase: emptyPhase, index: -1 };
   const elapsed = nowMs - draw.revealAtMs;
   if (elapsed < ROLL_MS) return { phase: "drawing", index: -1 };
   const index = Math.floor((elapsed - ROLL_MS) / WINNER_MS);
