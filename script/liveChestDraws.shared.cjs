@@ -92,8 +92,10 @@ function chooseWinners(entries, config, randomInt) {
 function timeline(draw, nowMs) {
   if (!draw || draw.status === "cancelled" || nowMs >= draw.expiresAtMs) return { phase: "idle", index: -1 };
   if (nowMs < draw.opensAtMs) return { phase: "idle", index: -1 };
-  if (draw.status === "open") return { phase: nowMs >= draw.closesAtMs ? "drawing" : "registration", index: -1 };
-  if (draw.status === "drawing") return { phase: "drawing", index: -1 };
+  if (draw.status === "open" && nowMs < draw.closesAtMs) return { phase: "registration", index: -1 };
+  if (draw.status === "open" || draw.status === "drawing") {
+    return { phase: draw.entrantCount > 0 ? "drawing" : "idle", index: -1 };
+  }
   if (draw.status !== "completed" || !draw.winners?.length) return { phase: "idle", index: -1 };
   const elapsed = nowMs - draw.revealAtMs;
   if (elapsed < ROLL_MS) return { phase: "drawing", index: -1 };
