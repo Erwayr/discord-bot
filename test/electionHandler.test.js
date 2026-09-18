@@ -37,7 +37,19 @@ function fixture() {
     async reply(content) { actions.push(content); },
   };
   const db = {
+    batch() {
+      const pending = [];
+      return {
+        update(target, value) { pending.push(() => target.update(value)); },
+        set(target, value) { pending.push(() => target.set(value)); },
+        async commit() { for (const write of pending) await write(); },
+      };
+    },
     collection(name) {
+      if (name === "overlay_state_signals") return { doc(id) {
+        assert.equal(id, "guardian");
+        return { async set(value) { assert.ok(value.configRevision); actions.push("signal"); } };
+      } };
       assert.equal(name, "elections", "starting an election must not write follower mirrors");
       return {
         doc(id) { assert.equal(id, ref.id); return ref; },
@@ -78,6 +90,7 @@ test("closing an empty election preserves its Discord coordinates", async (t) =>
   ctx.message.content = "!election end";
   await electionHandler(ctx.message, ctx.db, ctx.channel.id);
   assert.ok(ctx.data().endedAt instanceof Date);
+  assert.ok(ctx.actions.includes("signal"));
   assert.equal(ctx.data().guildId, ctx.message.guild.id);
   assert.equal(ctx.data().channelId, ctx.channel.id);
   assert.equal(ctx.data().pollMessageId, ctx.poll.id);

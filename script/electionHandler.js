@@ -3,6 +3,7 @@ const { EmbedBuilder, PermissionsBitField } = require("discord.js");
 const fetch = require("node-fetch"); // npm install node-fetch@2
 const { FieldValue } = require("firebase-admin").firestore; // ← ajout
 const { commitBatchWithRetry } = require("../helper/firestoreRetry");
+const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
 
 // Durée avant clôture automatique (en millisecondes) : 2 jours
 const AUTO_CLOSE_DELAY = 2 * 24 * 60 * 60 * 1000;
@@ -115,7 +116,10 @@ module.exports = async function electionHandler(
     const voterIds = electionData.voters || [];
     if (voterIds.length === 0) {
       // Pas de votant
-      await docRef.update({ endedAt: new Date() });
+      const batch = db.batch();
+      batch.update(docRef, { endedAt: new Date() });
+      writeOverlaySignal(batch, db, "guardian", { configChanged: true });
+      await commitBatchWithRetry(batch, { label: "election-empty" });
       return channel.send(
         isAuto
           ? "Aucun participant, élection annulée automatiquement."
@@ -126,7 +130,10 @@ module.exports = async function electionHandler(
     const winnerPick = await pickEligibleWinner(voterIds, explicitWinnerId);
     if (!winnerPick) {
       console.warn("Aucun participant eligible (profil follower manquant).");
-      await docRef.update({ endedAt: new Date(), winnerId: null });
+      const batch = db.batch();
+      batch.update(docRef, { endedAt: new Date(), winnerId: null });
+      writeOverlaySignal(batch, db, "guardian", { configChanged: true });
+      await commitBatchWithRetry(batch, { label: "election-ineligible" });
       return channel.send(
         "Aucun participant eligible (profil follower manquant) - election annulee."
       );
@@ -185,6 +192,7 @@ module.exports = async function electionHandler(
 
     // 3. Exécuter batch + opérations Discord + envoi de message en paralléle
     const memberPromise = guild.members.fetch(winnerId);
+    writeOverlaySignal(batch, db, "guardian", { configChanged: true });
     const batchCommit = commitBatchWithRetry(batch, { label: "election-finish" });
     const sendMessage = channel.send(
       `🏆 ${

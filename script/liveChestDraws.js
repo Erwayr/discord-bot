@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
 const { Timestamp } = require("firebase-admin/firestore");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { normalizeQuestMilestones, buildChestSnapshot, countAvailableQuestChestsByType } = require("./questChests.shared.cjs");
@@ -12,7 +13,7 @@ const loginOf = (value) => String(value || "").trim().toLowerCase();
 const safeId = (value) => String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 90);
 
 function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, getLiveState,
-  now = Date.now, randomInt = crypto.randomInt, logger = console }) {
+  now = Date.now, randomInt = crypto.randomInt, logger = console, scheduleTimer = setTimeout, cancelTimer = clearTimeout }) {
   const runtimeRef = db.collection("settings").doc("live_chest_draws");
   const configRef = db.collection("site_config").doc("live_chest_draws");
   const draws = db.collection("live_chest_draws");
@@ -23,11 +24,19 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
   let initialized = false;
   let timer;
   let hasWork = true;
+  let cachedRuntime;
+  let runtimeAt = -Infinity;
+  let plannedKey = "";
+  let started = false;
+  let wakePending = false;
+  let nextWakeAtMs = Infinity;
+  const scheduleKey = (settings, live, runtime) => JSON.stringify([settings, live?.streamId, live?.startedAt,
+    runtime.activeDrawId, runtime.scheduleStatus, runtime.scheduleTimingKey, runtime.nextOpenAtMs, runtime.scheduleWindowEndAtMs]);
   const replyTimes = new Map();
   let globalReplyAt = -Infinity;
 
-  async function readConfig() {
-    if (!cachedConfig || now() - configAt >= 15000) {
+  async function readConfig(force = false) {
+    if (force || !cachedConfig || now() - configAt >= 15000) {
       const snap = await configRef.get();
       cachedConfig = normalizeConfig(snap.data() || {}, { strict: true });
       configAt = now();
@@ -80,20 +89,30 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
   }
 
   async function cancel(ref, reason) {
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (snap.data()?.status !== "open") return;
+    return db.runTransaction(async (tx) => {
+      const [snap, latestConfig] = await Promise.all([tx.get(ref), tx.get(configRef)]);
+      if (snap.data()?.status !== "open" || (reason === "disabled" && normalizeConfig(latestConfig.data()).enabled)) return snap.data()?.status;
       tx.update(ref, { status: "cancelled", cancelReason: reason, expiresAtMs: now() });
+      writeOverlaySignal(tx, db, "live_chests", { now: now() });
+      return "cancelled";
     });
   }
 
   async function settle(ref) {
     const closed = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+      const [snap, latestConfig] = await Promise.all([tx.get(ref), tx.get(configRef)]);
       const draw = snap.data();
       if (!draw || draw.test || !["open", "drawing"].includes(draw.status)) return null;
+      if (draw.status === "open" && !normalizeConfig(latestConfig.data()).enabled) {
+        tx.update(ref, { status: "cancelled", cancelReason: "disabled", expiresAtMs: now() });
+        writeOverlaySignal(tx, db, "live_chests", { now: now() });
+        return null;
+      }
       if (draw.status === "open" && now() < draw.closesAtMs) return null;
-      if (draw.status === "open") tx.update(ref, { status: "drawing" });
+      if (draw.status === "open") {
+        tx.update(ref, { status: "drawing" });
+        writeOverlaySignal(tx, db, "live_chests", { now: now() });
+      }
       return draw;
     });
     if (!closed) return;
@@ -145,6 +164,7 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
       const expiresAtMs = time + ROLL_MS + winners.length * WINNER_MS + SUMMARY_MS;
       tx.update(ref, { status: "completed", winners, revealAtMs: time, expiresAtMs,
         completedAtMs: time, candidates: entries.slice(0, 40).map((entry) => entry.displayName) });
+      writeOverlaySignal(tx, db, "live_chests", { now: time });
     });
   }
 
@@ -228,9 +248,11 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
       });
       tx.set(runtimeRef, { ...state, activeDrawId: id, displayDrawId: id,
         demoId: null, nextOpenAtMs: null, scheduleStatus: "opened" });
+      writeOverlaySignal(tx, db, "live_chests", { now: time });
       return true;
     });
     if (created) {
+      runtimeAt = -Infinity;
       const draw = (await ref.get()).data();
       const settings = draw.config;
       await announce(ref, "open", `🎁 Tirage de ${settings.winnerCount} coffre${settings.winnerCount > 1 ? "s" : ""} ! Écris !coffre dans les ${settings.registrationSeconds} prochaines secondes pour participer. Profil sur erwayr.online requis.`);
@@ -242,17 +264,20 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
     running = true;
     try {
       const settings = await readConfig();
-      if (initialized && !settings.enabled && !hasWork) return;
-      let runtime = (await runtimeRef.get()).data() || {};
+      if (!cachedRuntime || now() - runtimeAt >= 60000) {
+        cachedRuntime = (await runtimeRef.get()).data() || {};
+        runtimeAt = now();
+      }
+      let runtime = { ...cachedRuntime };
       const time = now();
       let live = null;
       if (settings.enabled) live = await getLiveState(); // Errors defer work, not a false offline signal.
       let active = runtime.activeDrawId ? (await draws.doc(runtime.activeDrawId).get()).data() : null;
       if (active?.status === "open" && (!settings.enabled || !live?.streamId || live.streamId !== active.streamId || (!initialized && time >= active.closesAtMs))) {
         const reason = !settings.enabled ? "disabled" : !initialized && time >= active.closesAtMs ? "restart_expired" : "stream_ended";
-        await cancel(draws.doc(active.id), reason);
-        active = { ...active, status: "cancelled" };
-        await announce(draws.doc(active.id), "cancel", "🎁 Tirage de coffres annulé. Les récompenses déjà gagnées restent dans vos inventaires.");
+        const status = await cancel(draws.doc(active.id), reason);
+        active = { ...active, status };
+        if (status === "cancelled") await announce(draws.doc(active.id), "cancel", "🎁 Tirage de coffres annulé. Les récompenses déjà gagnées restent dans vos inventaires.");
       }
       initialized = true;
       if (active?.status === "open") {
@@ -308,9 +333,19 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
           }
         }
       }
-      runtime = await planSchedule(live, time);
-      if (settings.enabled && live?.streamId && !runtime.activeDrawId && runtime.nextOpenAtMs && time >= runtime.nextOpenAtMs) await startDraw(runtime);
-      hasWork = Boolean(active || runtime.demoId || settings.enabled);
+      const due = (runtime.nextOpenAtMs && time >= runtime.nextOpenAtMs)
+        || (runtime.scheduleStatus === "skipped" && runtime.scheduleWindowEndAtMs && time >= runtime.scheduleWindowEndAtMs);
+      if (scheduleKey(settings, live, runtime) !== plannedKey || due) runtime = await planSchedule(live, time);
+      plannedKey = scheduleKey(settings, live, runtime);
+      cachedRuntime = { ...runtime };
+      hasWork = Boolean(active || runtime.activeDrawId || runtime.demoId);
+      if (settings.enabled && live?.streamId && !runtime.activeDrawId && runtime.nextOpenAtMs && time >= runtime.nextOpenAtMs) {
+        await startDraw(runtime);
+        hasWork = true;
+      }
+      const deadlines = [runtime.nextOpenAtMs, active?.closesAtMs, active && active.closesAtMs - 30000,
+        active?.expiresAtMs, active?.revealAtMs && active.revealAtMs + ROLL_MS + active.winners.length * WINNER_MS];
+      nextWakeAtMs = Math.min(Infinity, ...deadlines.filter(value => Number.isFinite(value) && value > now()));
     } finally { running = false; }
   }
 
@@ -321,9 +356,9 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
     const broadcasterId = String(config.twitch.channelId || "");
     if (!/^\d+$/.test(userId) || !broadcasterId || (channel && loginOf(channel.replace(/^#/, "")) !== loginOf(config.twitch.channelLogin))
       || (tags["source-room-id"] && String(tags["source-room-id"]) !== broadcasterId)) return { handled: true };
-    const settings = await readConfig();
+    if (command === "!coffretest" && userId !== broadcasterId) return { handled: true, reason: "unauthorized" };
+    const settings = await readConfig(true);
     if (command === "!coffretest") {
-      if (userId !== broadcasterId) return { handled: true, reason: "unauthorized" };
       const time = now();
       const id = `test_${safeId(tags.id || crypto.randomUUID())}`;
       // Let an idle OBS poll discover the event before its ten-second countdown.
@@ -336,16 +371,19 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
         if (time - (runtime.lastTestAtMs ?? -Infinity) < TEST_COOLDOWN_MS) return "cooldown";
         tx.set(demos.doc(id), { ...demo, expiresAt: Timestamp.fromMillis(demo.expiresAtMs) });
         tx.set(runtimeRef, { ...runtime, demoId: id, lastTestAtMs: time });
+        writeOverlaySignal(tx, db, "live_chests", { now: time });
         return null;
       });
       if (reason) await reply(userId, reason === "busy" ? "🧪 Un tirage réel est en cours. Attends sa fin pour lancer !coffretest." : "🧪 Attends une minute entre deux tests de coffres.");
       else {
         hasWork = true;
+        wake();
         await announce(demos.doc(id), "open", "🧪 TEST — Démonstration du tirage de 2 coffres. Aucune récompense réelle.");
       }
       return { handled: true, reason: reason || "test_started" };
     }
     if (!settings.enabled || userId === broadcasterId || userId === String(config.twitch.moderatorId) || isExcludedLogin(login)) return { handled: true, reason: "excluded" };
+    await tick();
     const runtime = (await runtimeRef.get()).data() || {};
     const ref = runtime.activeDrawId ? draws.doc(runtime.activeDrawId) : null;
     const active = ref ? (await ref.get()).data() : null;
@@ -367,20 +405,39 @@ function createLiveChestDraws({ db, config, resolveTwitchIdentity, sendMessage, 
       if (profileId && String(profileId) !== userId) return "identity_conflict";
       tx.set(entry, { userId, login: identity.login, displayName: String(displayName || login).slice(0, 25), joinedAtMs: now() });
       tx.update(ref, { entrantCount: (draw.entrantCount || 0) + 1 });
+      writeOverlaySignal(tx, db, "live_chests", { now: now() });
       return "joined";
     });
     if (result === "missing_profile") await reply(userId, `@${displayName || login} crée ton profil sur https://erwayr.online puis renvoie !coffre avant la fin des inscriptions.`);
+    if (result === "joined") wake();
     return { handled: true, reason: result };
   }
 
-  function start() {
-    if (timer) return;
-    const run = () => tick().catch((error) => logger.warn("[live-chests] tick failed", error.code || error.message));
-    void run();
-    timer = setInterval(run, TICK_MS);
-    timer.unref?.();
+  function arm(delay) {
+    cancelTimer(timer);
+    if (!started) return;
+    timer = scheduleTimer(run, Math.max(0, delay));
+    timer?.unref?.();
   }
-  function stop() { clearInterval(timer); timer = null; }
+  async function run() {
+    try { await tick(); }
+    catch (error) {
+      nextWakeAtMs = Infinity; // A missed deadline during an outage must not create a hot retry loop.
+      logger.warn("[live-chests] tick failed", error.code || error.message);
+    }
+    finally {
+      const delay = wakePending ? 0 : Math.min(hasWork ? 5000 : 15000, Math.max(0, nextWakeAtMs - now()));
+      wakePending = false;
+      arm(delay);
+    }
+  }
+  function wake() {
+    runtimeAt = -Infinity;
+    if (running) wakePending = true;
+    else arm(0);
+  }
+  function start() { if (!started) { started = true; void run(); } }
+  function stop() { started = false; cancelTimer(timer); timer = null; }
   return { start, stop, tick, handleMessage, settle };
 }
 

@@ -1,5 +1,7 @@
 "use strict";
 const { isDeepStrictEqual } = require("node:util");
+const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
+const { TRAVEL_MS, ARRIVAL_MS } = require("./guardian-actions.shared.cjs");
 
 const { characterForProfile } = require("./guardian-character.shared.cjs");
 const { freshState, cleanState, enqueueAppearance, advanceAppearance, LIVE_LEASE_MS, applyGuardianChat, guardianChatPresentation } = require("./guardian-live.shared.cjs");
@@ -7,6 +9,12 @@ const channelRef = (db, channelId) => {
   if (!/^\d{1,25}$/.test(String(channelId))) throw new Error("guardian_channel_invalid");
   return db.collection("guardian_live_channels").doc(String(channelId));
 };
+const visibleState = state => [state.streamId, state.queue || [], state.active || null,
+  state.chatGreeting || null, state.chatAction || null, state.chatBubble || null];
+function persistState(tx, db, ref, previous, next, now) {
+  tx.set(ref, next);
+  if (!isDeepStrictEqual(visibleState(previous), visibleState(next))) writeOverlaySignal(tx, db, "guardian", { now });
+}
 
 async function syncGuardianLive({ db, channelId, streamId, checkedAtMs }) {
   const ref = channelRef(db, channelId);
@@ -15,7 +23,7 @@ async function syncGuardianLive({ db, channelId, streamId, checkedAtMs }) {
     const previous = snapshot.data() || {};
     if ((previous.liveCheckedAtMs || 0) > checkedAtMs) return;
     const next = previous.streamId === String(streamId || "") ? previous : freshState(streamId, checkedAtMs);
-    tx.set(ref, cleanState({ ...next, liveUntilMs: streamId ? checkedAtMs + LIVE_LEASE_MS : 0, liveCheckedAtMs: checkedAtMs }, checkedAtMs));
+    persistState(tx, db, ref, previous, cleanState({ ...next, liveUntilMs: streamId ? checkedAtMs + LIVE_LEASE_MS : 0, liveCheckedAtMs: checkedAtMs }, checkedAtMs), checkedAtMs);
   });
 }
 
@@ -31,7 +39,7 @@ async function enqueueGuardianViewer({ db, channelId, streamId, request, now = D
     if (previous.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
     const result = enqueueAppearance(previous, request, { now, streamId, lastAcceptedAtMs: cooldown.data()?.lastAcceptedAtMs ?? null });
     if (result.accepted) {
-      tx.set(ref, { ...result.state, liveUntilMs: now + LIVE_LEASE_MS, liveCheckedAtMs: now });
+      persistState(tx, db, ref, previous, { ...result.state, liveUntilMs: now + LIVE_LEASE_MS, liveCheckedAtMs: now }, now);
       tx.set(cooldownRef, { lastAcceptedAtMs: now, requestId: request.requestId });
     }
     return { accepted: result.accepted, reason: result.reason || null, position: result.position || null, retryAfterMs: result.retryAfterMs || 0 };
@@ -93,7 +101,7 @@ async function publishGuardianChat({ db, channelId, streamId, userId, messageId,
     if (!streamId || previous.streamId !== streamId || previous.liveUntilMs <= now || previous.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
     const guardian = await readElectedGuardian({ db, read: query => tx.get(query) });
     const { state, ...result } = applyGuardianChat(previous, { guardian, streamId, userId, messageId, message, sentAtMs, now });
-    if (!["no_reaction", "stale_message", "not_chat", "duplicate"].includes(result.reason) && !isDeepStrictEqual(previous, state)) tx.set(ref, state);
+    if (!["no_reaction", "stale_message", "not_chat", "duplicate"].includes(result.reason) && !isDeepStrictEqual(previous, state)) persistState(tx, db, ref, previous, state, now);
     return result;
   });
 }
@@ -108,8 +116,15 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     const shouldStart = cleaned.initialized && cleaned.liveUntilMs > now && !cleaned.active && cleaned.guardianUntilMs <= now && request;
     const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
     const next = advanceAppearance(cleaned, { now, viewer });
-    if (!isDeepStrictEqual(previous, next)) tx.set(ref, next);
+    if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, now);
+    const deadlines = [next.active?.endsAtMs,
+      next.active && next.active.startsAtMs + ARRIVAL_MS,
+      next.active && next.active.endsAtMs - TRAVEL_MS,
+      !next.active && next.queue.length && next.guardianUntilMs,
+      (next.active || next.queue.length) && next.liveUntilMs];
+    const future = deadlines.filter(value => Number.isFinite(value) && value > now);
     return {
+      nextRefreshAtMs: future.length ? Math.min(...future) : null,
       generatedAtMs: now, kind: next.active ? "viewer" : "guardian", pendingCount: next.queue.length,
       appearanceId: next.active?.requestId || "guardian", viewer: next.active?.viewer || null,
       startsAtMs: next.active?.startsAtMs || null, endsAtMs: next.active?.endsAtMs || null,

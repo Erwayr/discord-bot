@@ -6,6 +6,7 @@ const clone = (value) => value == null ? value : Array.isArray(value) ? value.ma
 function createMemoryFirestore(initial = {}) {
   const documents = new Map(Object.entries(initial).map(([key, value]) => [key, clone(value)]));
   const writes = [];
+  const reads = [];
   let tail = Promise.resolve();
   let retryCount = 0;
   function apply(reference, data, merge) {
@@ -22,6 +23,7 @@ function createMemoryFirestore(initial = {}) {
   }
   function snapshot(reference) {
     if (!reference.query) {
+      reads.push(reference.path);
       const value = clone(documents.get(reference.path));
       return { id: reference.path.split("/").pop(), ref: reference, exists: documents.has(reference.path), data: () => clone(value) };
     }
@@ -29,6 +31,7 @@ function createMemoryFirestore(initial = {}) {
     for (const [field, op, value] of reference.filters) rows = rows.filter(([, data]) => op === "==" && data[field] === value);
     if (reference.order) rows.sort((a, b) => (a[1][reference.order[0]] - b[1][reference.order[0]]) * (reference.order[1] === "desc" ? -1 : 1));
     const docs = rows.slice(0, reference.max || Infinity).map(([key]) => snapshot(ref(key)));
+    if (!docs.length) reads.push(reference.path + " (empty query)");
     return { docs, size: docs.length, empty: !docs.length };
   }
   function ref(path, query = false, filters = [], order = null, max = null) {
@@ -37,13 +40,14 @@ function createMemoryFirestore(initial = {}) {
       where: (field, op, value) => ref(path, true, [...filters, [field, op, value]], order, max),
       orderBy: (field, direction) => ref(path, true, filters, [field, direction], max),
       limit: (count) => ref(path, true, filters, order, count),
+      select: () => ref(path, true, filters, order, max),
       async get() { return snapshot(this); },
       async set(data, options) { apply(this, data, options?.merge); },
       async update(data) { assert.ok(documents.has(path), `Missing document ${path}`); apply(this, data, true); },
     };
   }
   return {
-    documents, writes, collection: (name) => ref(name, true),
+    documents, writes, reads, collection: (name) => ref(name, true),
     retryNext: (count = 1) => { retryCount = count; },
     async runTransaction(callback) {
       const previous = tail;

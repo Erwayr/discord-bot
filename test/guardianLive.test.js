@@ -99,7 +99,7 @@ test("regular Guardian messages greet by stable Twitch ID without swallowing cha
   advance(4000); await chat("42", "next-greeting");
   assert.equal(db.documents.get("guardian_live_channels/123").chatAction.id, "next-greeting");
   assert.deepEqual(messages, []);
-  assert.ok(db.writes.every(path => path === "guardian_live_channels/123"));
+  assert.ok(db.writes.every(path => path === "guardian_live_channels/123" || path === "overlay_state_signals/guardian"));
 });
 
 test("delayed or replayed Twitch messages do not produce greetings after reconnect", async () => {
@@ -185,7 +185,7 @@ test("concurrent Guardian speech appends during an action, survives transaction 
   assert.equal(state.chatBubble.endsAtMs, 1009000);
   assert.equal(state.liveUntilMs, original.liveUntilMs); assert.deepEqual(state.queue, original.queue);
   assert.equal(cleanState(state, 1009000).chatBubble, null);
-  assert.ok(db.writes.every(path => path === "guardian_live_channels/123"));
+  assert.ok(db.writes.every(path => path === "guardian_live_channels/123" || path === "overlay_state_signals/guardian"));
 });
 
 test("a viewer passage reacts to everyone while Guardian speech is dropped through transitions and absence", async () => {

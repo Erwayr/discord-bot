@@ -7,7 +7,61 @@ const { createLiveChestDraws } = require("../script/liveChestDraws");
 const { normalizeConfig, publicDraw } = require("../script/liveChestDraws.shared.cjs");
 const { createMemoryFirestore } = require("./helpers/live-chest-firestore.cjs");
 
-function fixture({ enabled = true, senderFails = false, randomInt = () => 0 } = {}) {
+test("idle offline and live between draws use at least 80 percent fewer document reads", async t => {
+  for (const live of [false, true]) {
+    const f = fixture({ randomInt: (min, max) => max - 1 });
+    if (!live) f.setStream(null);
+    await f.service().tick();
+    f.db.reads.length = 0;
+    // The former 5-second loop performed 3 reads per tick plus four config reads/minute.
+    for (let i = 0; i < 40; i++) { f.advance(15000); await f.service().tick(); }
+    assert.equal(f.db.reads.length, 50);
+    assert.ok(f.db.reads.length <= 400 * 0.2);
+    t.diagnostic(`${live ? "live between draws" : "offline"}: 50/400 reads in 10 minutes (-87.5%)`);
+  }
+});
+
+test("disabled idle reconciles once a minute and a demonstration wakes the scheduler immediately", async () => {
+  let queued;
+  const f = fixture({ enabled: false, scheduler: { scheduleTimer(fn, delay) { queued = { fn, delay }; return 1; }, cancelTimer() {} } });
+  f.service().start(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queued.delay, 15000);
+  f.db.reads.length = 0;
+  for (let i = 0; i < 4; i++) { f.advance(15000); await f.service().tick(); }
+  assert.equal(f.db.reads.length, 5);
+  await f.command("!coffretest"); assert.equal(queued.delay, 0);
+  await queued.fn(); assert.equal(queued.delay, 5000);
+  assert.ok(f.db.documents.get("overlay_state_signals/live_chests"));
+  f.service().stop();
+});
+
+test("the adaptive timer wakes at the exact appointment and does not spin on Twitch errors", async () => {
+  let queued;
+  const f = fixture({ scheduler: { scheduleTimer(fn, delay) { queued = { fn, delay }; return 1; }, cancelTimer() {} } });
+  await f.service().tick();
+  f.advance(f.runtime().nextOpenAtMs - f.now() - 1000);
+  f.service().start(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(queued.delay, 1000);
+  f.advance(1000); f.setFailure(new Error("twitch_down")); await queued.fn();
+  assert.equal(queued.delay, 15000);
+  f.setFailure(null); f.advance(15000); await queued.fn(); assert.equal(f.active().status, "open");
+  assert.equal(queued.delay, 5000);
+  f.service().stop();
+});
+
+test("read caches cannot admit a participant after disable and admissions signal exactly once", async () => {
+  const f = fixture(); await f.open();
+  await f.command("!coffre", "alice", "11");
+  const signal = f.db.documents.get("overlay_state_signals/live_chests").revision;
+  assert.equal((await f.command("!coffre", "alice", "11")).reason, "duplicate");
+  assert.equal(f.db.documents.get("overlay_state_signals/live_chests").revision, signal);
+  f.db.documents.set("site_config/live_chest_draws", normalizeConfig({ enabled: false }));
+  assert.equal((await f.command("!coffre", "bob", "12")).reason, "excluded");
+  await f.service().tick(); assert.equal(f.active().status, "cancelled");
+  assert.notEqual(f.db.documents.get("overlay_state_signals/live_chests").revision, signal);
+});
+
+function fixture({ enabled = true, senderFails = false, randomInt = () => 0, scheduler = {} } = {}) {
   let time = Date.UTC(2026, 8, 14, 12);
   let stream = { streamId: "stream1", startedAt: new Date(time).toISOString() };
   let failure = null;
@@ -21,7 +75,7 @@ function fixture({ enabled = true, senderFails = false, randomInt = () => 0 } = 
   });
   const config = { twitch: { channelId: "480296446", channelLogin: "erwayr", moderatorId: "99" } };
   const deps = {
-    db, config, now: () => time, randomInt, logger: { warn() {} },
+    db, config, now: () => time, randomInt, logger: { warn() {} }, ...scheduler,
     resolveTwitchIdentity: async ({ login }) => { identityCalls++; return { login: login === "alice_new" ? "alice" : login, status: "active" }; },
     getLiveState: async () => { if (failure) throw failure; return stream; },
     sendMessage: async (message) => { messages.push(message); return { is_sent: !senderFails, message_id: String(messages.length) }; },
@@ -70,7 +124,7 @@ test("test command is owner-only, works offline and writes no profiles, entries,
   assert.equal(f.runtime().demoId, null);
   assert.equal(publicDraw(demo, f.now()), null);
   assert.ok(f.messages.some((message) => message.includes("Démonstration terminée")));
-  assert.ok(f.db.writes.every((entry) => entry.startsWith("settings/") || entry.startsWith("live_chest_draw_tests/")));
+  assert.ok(f.db.writes.every((entry) => entry.startsWith("settings/") || entry.startsWith("live_chest_draw_tests/") || entry === "overlay_state_signals/live_chests"));
 });
 
 test("the first three minutes stay closed and a restart, visual edit or test command preserves the chosen time", async () => {
