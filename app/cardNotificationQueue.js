@@ -12,6 +12,24 @@ function cardIdentity(card = {}) {
   return `${card.isSub}_${card.hasRedemption}`;
 }
 
+function collectionCardUrl(collectionUrl, cardId) {
+  const id =
+    typeof cardId === "string" ||
+    (typeof cardId === "number" && Number.isFinite(cardId))
+      ? String(cardId).trim()
+      : "";
+  if (!id) return collectionUrl;
+
+  try {
+    const url = new URL(collectionUrl);
+    if (url.pathname === "/") url.pathname = "/collection.html";
+    url.searchParams.set("card", id);
+    return url.href;
+  } catch {
+    return collectionUrl;
+  }
+}
+
 function createCardNotificationQueue({
   db,
   config,
@@ -53,7 +71,8 @@ function createCardNotificationQueue({
       const baseMsg = card.title
         ? `Tu viens de gagner la carte **${card.title}** !`
         : "Tu viens de gagner une nouvelle carte !";
-      const dmMsg = `${baseMsg}\nTa collection : ${collectionUrl}`;
+      const cardUrl = collectionCardUrl(collectionUrl, card.id);
+      const dmMsg = `${baseMsg}\nTa collection : ${cardUrl}`;
       await sendDMOrFallback(discordId, dmMsg);
       logger.log(
         `[Card] ${data.pseudo || snap.id} won "${card.title || "unknown"}"`,
