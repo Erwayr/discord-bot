@@ -30,8 +30,13 @@ const OPTIONS = Object.freeze({
     { id: "sword", label: "Épée", minLevel: 0 }, { id: "bow", label: "Arc", minLevel: 10 },
     { id: "hammer", label: "Marteau", minLevel: 20 }, { id: "staff", label: "Bâton", minLevel: 30 },
   ].map(Object.freeze)),
+  aura: Object.freeze([
+    { id: "none", label: "Aucune", minLevel: 0 },
+    { id: "white", label: "Blanche", minLevel: 100 },
+    { id: "gold", label: "Dorée", minLevel: 200 },
+  ].map(Object.freeze)),
 });
-const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN });
+const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none" });
 
 function characterError(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 function characterLevel(profile = {}) {
@@ -57,6 +62,11 @@ function normalizeCharacter(input, { level = 0, strict = false } = {}) {
   if (Math.max(0, Number(level) || 0) < weapon.minLevel) {
     if (strict) throw characterError("guardian_character_weapon_locked", 403);
     character.weapon = DEFAULT_CHARACTER.weapon;
+  }
+  const aura = OPTIONS.aura.find((entry) => entry.id === character.aura);
+  if (Math.max(0, Number(level) || 0) < aura.minLevel) {
+    if (strict) throw characterError("guardian_character_aura_locked", 403);
+    character.aura = DEFAULT_CHARACTER.aura;
   }
   const skin = getWeaponSkin(source.weaponSkin);
   if (strict && source.weaponSkin != null && source.weaponSkin !== BASE_WEAPON_SKIN && !skin) throw characterError("guardian_weapon_skin_invalid");
