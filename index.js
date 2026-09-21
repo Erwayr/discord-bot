@@ -283,6 +283,7 @@ async function shutdown(signal) {
       }
     }
     const tasks = [
+      ["Guardian costume grants", () => twitchChat.stopGuardianCostumeGrants?.()],
       ["Discord games", () => discordGameTracker.stop()],
       ["Twitch activity", () => twitchChat.shouldFlushLiveActivityOnShutdown?.()
         ? twitchChat.flushLiveActivity?.({ reason: "shutdown" }) : undefined],

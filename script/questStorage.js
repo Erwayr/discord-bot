@@ -3,6 +3,7 @@
 
 const admin = require("firebase-admin");
 const { isExcludedLogin } = require("../helper/excludedUsers");
+const { buildHalloweenPresencePatch, mergeQualifyingPresenceMs } = require("./seasonalPresenceRewards");
 const {
   applyCommunityLevelUptime,
   applyCommunityLevelXpProgress,
@@ -340,7 +341,7 @@ function createQuestStorage(db, options = {}) {
   async function notePresence(
     login,
     streamId,
-    { startedAt, context, twitchUserId } = {},
+    { startedAt, context, twitchUserId, observedAtMs = Date.now(), seasonalPresenceAtMs = 0 } = {},
   ) {
     const docId = await canonicalLogin(login, twitchUserId);
     const excluded = excludedActivityResult(docId);
@@ -388,7 +389,10 @@ function createQuestStorage(db, options = {}) {
       }
 
       month.last_update_at = nowMs;
-      const patch = { live_presence: lp };
+      const patch = {
+        live_presence: lp,
+        ...buildHalloweenPresencePatch(data, mergeQualifyingPresenceMs(seasonalPresenceAtMs, observedAtMs), nowMs),
+      };
       if (presenceLevelResult?.awarded) {
         patch.communityLevel = presenceLevelResult.communityLevel;
         Object.assign(patch, presenceLevelResult.legacyFields);
@@ -409,7 +413,7 @@ function createQuestStorage(db, options = {}) {
   async function finalizeLiveUptime(
     login,
     streamId,
-    { uptimeMs = 0, startedAt = null, endedAt = null, twitchUserId = "" } = {},
+    { uptimeMs = 0, startedAt = null, endedAt = null, twitchUserId = "", seasonalPresenceAtMs = 0 } = {},
   ) {
     const docId = await canonicalLogin(login, twitchUserId);
     const safeStreamId = normalizeStreamId(streamId);
@@ -523,6 +527,7 @@ function createQuestStorage(db, options = {}) {
       tx.update(ref, {
         live_presence: lp,
         communityLevel: uptimeResult.communityLevel,
+        ...buildHalloweenPresencePatch(data, seasonalPresenceAtMs, nowMs),
       });
 
       if (participantSnap.exists) {
@@ -736,6 +741,8 @@ function createQuestStorage(db, options = {}) {
       uptimeMs = 0,
       presenceFirstSeenAtMs = 0,
       presenceLastSeenAtMs = 0,
+      seasonalPresenceAtMs = 0,
+      observedPresenceMs = 0,
       flushId = "",
       twitchUserId = "",
     } = {},
@@ -815,7 +822,11 @@ function createQuestStorage(db, options = {}) {
         safePresenceFirstSeenAtMs > 0 && safePresenceLastSeenAtMs > 0
           ? Math.max(0, safePresenceLastSeenAtMs - safePresenceFirstSeenAtMs)
           : 0;
-      const newProfilePresenceMs = Math.max(safeUptimeMs, presenceDurationMs);
+      const newProfilePresenceMs = Math.max(
+        safeUptimeMs,
+        presenceDurationMs,
+        Math.max(0, Math.floor(Number(observedPresenceMs) || 0)),
+      );
       if (
         !snap.exists &&
         minNewProfilePresenceMs > 0 &&
@@ -1063,6 +1074,7 @@ function createQuestStorage(db, options = {}) {
       if (safeFlushId) {
         rememberActivityFlushId(entry, safeFlushId);
       }
+      Object.assign(patch, buildHalloweenPresencePatch(data, seasonalPresenceAtMs, Date.now()));
 
       if (snap.exists) {
         tx.update(ref, patch);

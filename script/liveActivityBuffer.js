@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { qualifyingPresenceMs, mergeQualifyingPresenceMs } = require("./seasonalPresenceRewards");
 
 const DEFAULT_FLUSH_MS = 20 * 60 * 1000;
 const DEFAULT_FLUSH_CHUNK_SIZE = 25;
@@ -72,6 +73,8 @@ function cloneEntry(entry) {
     uptimeMs: nonNegativeInt(entry.uptimeMs, 0),
     presenceFirstSeenAtMs: nonNegativeInt(entry.presenceFirstSeenAtMs, 0),
     presenceLastSeenAtMs: nonNegativeInt(entry.presenceLastSeenAtMs, 0),
+    seasonalPresenceAtMs: qualifyingPresenceMs(entry.seasonalPresenceAtMs),
+    observedPresenceMs: nonNegativeInt(entry.observedPresenceMs, 0),
   };
 }
 
@@ -97,6 +100,8 @@ function createEmptyEntry({
     uptimeMs: 0,
     presenceFirstSeenAtMs: 0,
     presenceLastSeenAtMs: 0,
+    seasonalPresenceAtMs: 0,
+    observedPresenceMs: 0,
   };
 }
 
@@ -123,6 +128,8 @@ function mergeEntries(target, source) {
   target.emoteCount += nonNegativeInt(source.emoteCount, 0);
   target.channelPointsCount += nonNegativeInt(source.channelPointsCount, 0);
   target.uptimeMs += nonNegativeInt(source.uptimeMs, 0);
+  target.seasonalPresenceAtMs = mergeQualifyingPresenceMs(target.seasonalPresenceAtMs, source.seasonalPresenceAtMs);
+  target.observedPresenceMs = Math.max(target.observedPresenceMs || 0, nonNegativeInt(source.observedPresenceMs, 0));
 
   const first = nonNegativeInt(source.presenceFirstSeenAtMs, 0);
   const last = nonNegativeInt(source.presenceLastSeenAtMs, 0);
@@ -248,6 +255,8 @@ function createLiveActivityBuffer({
         uptimeMs: nonNegativeInt(entry.uptimeMs, 0),
         presenceFirstSeenAtMs: nonNegativeInt(entry.presenceFirstSeenAtMs, 0),
         presenceLastSeenAtMs: nonNegativeInt(entry.presenceLastSeenAtMs, 0),
+        seasonalPresenceAtMs: qualifyingPresenceMs(entry.seasonalPresenceAtMs),
+        observedPresenceMs: nonNegativeInt(entry.observedPresenceMs, 0),
       });
     }
     return events;
@@ -341,6 +350,8 @@ function createLiveActivityBuffer({
     if (raw.type === "uptime") {
       entry.flushId = raw.flushId || entry.flushId || null;
       entry.uptimeMs += nonNegativeInt(raw.uptimeMs, 0);
+      entry.seasonalPresenceAtMs = mergeQualifyingPresenceMs(entry.seasonalPresenceAtMs, raw.seasonalPresenceAtMs);
+      entry.observedPresenceMs = Math.max(entry.observedPresenceMs || 0, nonNegativeInt(raw.observedPresenceMs, 0));
       const first = nonNegativeInt(raw.presenceFirstSeenAtMs, 0);
       const last = nonNegativeInt(raw.presenceLastSeenAtMs, 0);
       if (first > 0) {
@@ -472,6 +483,8 @@ function createLiveActivityBuffer({
 
   function addUptimeToEntry(entry, raw = {}) {
     entry.uptimeMs += nonNegativeInt(raw.accumulatedMs, raw.uptimeMs || 0);
+    entry.seasonalPresenceAtMs = mergeQualifyingPresenceMs(entry.seasonalPresenceAtMs, raw.seasonalPresenceAtMs);
+    entry.observedPresenceMs = Math.max(entry.observedPresenceMs || 0, nonNegativeInt(raw.accumulatedMs, raw.observedPresenceMs || 0));
     const firstSeen = nonNegativeInt(raw.firstSeenAtMs, raw.presenceFirstSeenAtMs || 0);
     const lastSeen = nonNegativeInt(raw.lastSeenAtMs, raw.presenceLastSeenAtMs || 0);
     if (firstSeen > 0) {
@@ -486,6 +499,30 @@ function createLiveActivityBuffer({
       entry.flushId ||
       `live-activity:${entry.streamId}:${entry.login}:${entry.segmentId}`;
     return entry;
+  }
+
+  function notePresenceObservation(raw = {}) {
+    const qualifiedAt = qualifyingPresenceMs(raw.seasonalPresenceAtMs);
+    if (!qualifiedAt) return { buffered: false, reason: "outside_event" };
+    const entry = ensureEntry(raw.login, raw.streamId, raw);
+    if (!entry) return { buffered: false, reason: "invalid_target" };
+    // These are observations, not new uptime credits. The final snapshot is
+    // still the only source of uptimeMs, avoiding double rewards on merging.
+    entry.seasonalPresenceAtMs = mergeQualifyingPresenceMs(entry.seasonalPresenceAtMs, qualifiedAt);
+    entry.observedPresenceMs = Math.max(entry.observedPresenceMs || 0, nonNegativeInt(raw.accumulatedMs, 0));
+    const first = nonNegativeInt(raw.firstSeenAtMs, qualifiedAt);
+    const last = nonNegativeInt(raw.lastSeenAtMs, qualifiedAt);
+    entry.presenceFirstSeenAtMs = entry.presenceFirstSeenAtMs ? Math.min(entry.presenceFirstSeenAtMs, first) : first;
+    entry.presenceLastSeenAtMs = Math.max(entry.presenceLastSeenAtMs || 0, last);
+    appendJournal({
+      v: 1, type: "uptime", login: entry.login, streamId: entry.streamId,
+      segmentId: entry.segmentId, startedAt: entry.startedAt,
+      displayName: entry.displayName, twitchUserId: entry.twitchUserId,
+      uptimeMs: 0, seasonalPresenceAtMs: entry.seasonalPresenceAtMs,
+      observedPresenceMs: entry.observedPresenceMs,
+      presenceFirstSeenAtMs: first, presenceLastSeenAtMs: last,
+    });
+    return { buffered: true };
   }
 
   function selectedPendingEntries(filter) {
@@ -568,6 +605,8 @@ function createLiveActivityBuffer({
       uptimeMs: entry.uptimeMs,
       presenceFirstSeenAtMs: entry.presenceFirstSeenAtMs,
       presenceLastSeenAtMs: entry.presenceLastSeenAtMs,
+      seasonalPresenceAtMs: entry.seasonalPresenceAtMs,
+      observedPresenceMs: entry.observedPresenceMs,
       flushId: ensureFlushId(entry),
       twitchUserId: entry.twitchUserId || "",
       reason,
@@ -689,6 +728,7 @@ function createLiveActivityBuffer({
     noteChatMessage,
     noteEmoteUsage,
     noteChannelPoints,
+    notePresenceObservation,
     flush,
     start,
     stop,

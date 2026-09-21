@@ -119,3 +119,29 @@ test("uptime accumulator signals the 15-minute level threshold once", () => {
   const later = acc.markSeen(["alice"], 1_000 + 16 * 60_000);
   assert.deepEqual(later.levelAnnouncementLogins, []);
 });
+
+test("seasonal presence keeps a real qualifying tick after entry and outside-window ticks", () => {
+  const start = Date.parse("2026-10-23T22:00:00Z");
+  const end = Date.parse("2026-11-07T23:00:00Z");
+  const acc = createUptimeAccumulator();
+  acc.reset("long-stream");
+  acc.markSeen(["alice"], start - 1);
+  acc.markPresenceNoted("alice");
+  assert.equal(acc.snapshot()[0].seasonalPresenceAtMs, 0);
+  const eligible = acc.markSeen(["alice"], start);
+  assert.deepEqual(eligible.presenceLogins, []);
+  assert.equal(acc.snapshot()[0].seasonalPresenceAtMs, start);
+  acc.markPresenceNoted("alice");
+  acc.markSeen(["alice"], end + 1);
+  assert.equal(acc.snapshot()[0].seasonalPresenceAtMs, start);
+});
+
+test("seasonal presence never infers eligibility from endpoints spanning the event", () => {
+  const acc = createUptimeAccumulator();
+  acc.reset("long-stream");
+  acc.markSeen(["alice"], Date.parse("2026-10-23T21:59:59Z"));
+  acc.markPresenceNoted("alice");
+  const after = acc.markSeen(["alice"], Date.parse("2026-11-07T23:00:00Z"));
+  assert.deepEqual(after.presenceLogins, []);
+  assert.equal(acc.snapshot()[0].seasonalPresenceAtMs, 0);
+});

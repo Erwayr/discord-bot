@@ -10,6 +10,7 @@ const {
   DEFAULT_FLUSH_MS,
   createLiveActivityBuffer,
 } = require("../script/liveActivityBuffer");
+const { HALLOWEEN_2026_EVENT: halloween } = require("../script/seasonal-cosmetics.shared.cjs");
 
 function createFakeScheduler() {
   const intervals = [];
@@ -25,6 +26,60 @@ function createFakeScheduler() {
     },
   };
 }
+
+test("real seasonal observation survives recovery and failed flush without double uptime", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "halloween-presence-"));
+  try {
+    const observed = {
+      login: "alice", streamId: "stream-halloween", twitchUserId: "123",
+      firstSeenAtMs: halloween.startsAtMs - 600_000,
+      lastSeenAtMs: halloween.startsAtMs + 1,
+      seasonalPresenceAtMs: halloween.startsAtMs,
+      accumulatedMs: 600_000,
+    };
+    const original = createLiveActivityBuffer({
+      persistenceDir: dir,
+      questStore: { noteLiveActivity: async () => ({ applied: true }) },
+    });
+    original.notePresenceObservation(observed);
+    original.notePresenceObservation(observed);
+    let failed = true;
+    const calls = [];
+    const restored = createLiveActivityBuffer({
+      persistenceDir: dir,
+      logger: { log() {}, warn() {} },
+      questStore: { noteLiveActivity: async (...args) => {
+        calls.push(args);
+        if (failed) throw new Error("temporary transaction failure");
+        return { applied: true };
+      } },
+    });
+    assert.equal(restored.pendingSnapshot()[0].seasonalPresenceAtMs, halloween.startsAtMs);
+    assert.equal(restored.pendingSnapshot()[0].observedPresenceMs, 600_000);
+    assert.equal(restored.pendingSnapshot()[0].uptimeMs, 0);
+    assert.equal((await restored.flush({ uptimeEntries: [observed], reason: "live-end" })).failed, 1);
+    failed = false;
+    await restored.flush({ reason: "retry" });
+    assert.equal(calls[1][2].seasonalPresenceAtMs, halloween.startsAtMs);
+    assert.equal(calls[1][2].observedPresenceMs, 600_000);
+    assert.equal(calls[1][2].uptimeMs, 600_000);
+    assert.equal(calls[1][2].flushId, calls[0][2].flushId);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy uptime endpoints spanning Halloween do not create seasonal evidence", async () => {
+  const calls = [];
+  const buffer = createLiveActivityBuffer({
+    questStore: { noteLiveActivity: async (...args) => { calls.push(args); return { applied: true }; } },
+  });
+  await buffer.flush({ uptimeEntries: [{
+    login: "alice", streamId: "legacy", accumulatedMs: 600_000,
+    firstSeenAtMs: halloween.startsAtMs - 1, lastSeenAtMs: halloween.endsAtMs,
+  }] });
+  assert.equal(calls[0][2].seasonalPresenceAtMs, 0);
+});
 
 test("chat messages are buffered until flush", async () => {
   const calls = [];

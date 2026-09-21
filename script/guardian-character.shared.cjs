@@ -1,5 +1,6 @@
 "use strict";
 const { BASE_WEAPON_SKIN, getWeaponSkin } = require("./guardian-weapon-skins.shared.cjs");
+const { BASE_COSTUME, COSTUMES, ownsCostume } = require("./guardian-costumes.shared.cjs");
 
 // Canonical catalog: shared with the browser and copied byte-for-byte to the bot.
 const SCHEMA_VERSION = 1;
@@ -26,6 +27,7 @@ const OPTIONS = Object.freeze({
   hairColor: choices([["black", "Noir", "#241f27"], ["brown", "Châtain", "#533426"], ["chestnut", "Châtaigne", "#835036"], ["blond", "Blond", "#d6b66c"], ["copper", "Cuivré", "#ae5633"], ["silver", "Argent", "#c3c9d2"], ["violet", "Prune", "#735495"], ["blue", "Bleu", "#397d9c"]]),
   eyeColor: choices([["brown", "Marron", "#5a3923"], ["hazel", "Noisette", "#998243"], ["green", "Vert", "#327b5a"], ["blue", "Bleu", "#4288b7"], ["grey", "Gris", "#8791a0"], ["violet", "Violet", "#8c60a8"]]),
   tunic: PALETTE, trousers: PALETTE, boots: PALETTE, bracers: PALETTE, details: PALETTE,
+  costume: choices([[BASE_COSTUME, "Tenue classique"], ...COSTUMES.map(costume => [costume.id, costume.title])]),
   weapon: Object.freeze([
     { id: "sword", label: "Épée", minLevel: 0 }, { id: "bow", label: "Arc", minLevel: 10 },
     { id: "hammer", label: "Marteau", minLevel: 20 }, { id: "staff", label: "Bâton", minLevel: 30 },
@@ -36,7 +38,7 @@ const OPTIONS = Object.freeze({
     { id: "gold", label: "Dorée", minLevel: 200 },
   ].map(Object.freeze)),
 });
-const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", boots: "leather", bracers: "leather", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none" });
+const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", boots: "leather", bracers: "leather", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none", costume: BASE_COSTUME });
 
 function characterError(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 function characterLevel(profile = {}) {
@@ -75,6 +77,8 @@ function normalizeCharacter(input, { level = 0, strict = false } = {}) {
   return character;
 }
 function characterForProfile(profile = {}) {
-  return normalizeCharacter(profile.currentGuardian?.character, { level: characterLevel(profile) });
+  const character = normalizeCharacter(profile.currentGuardian?.character, { level: characterLevel(profile) });
+  if (!ownsCostume(profile, character.costume)) character.costume = BASE_COSTUME;
+  return character;
 }
 module.exports = { SCHEMA_VERSION, OPTIONS, PALETTE, DEFAULT_CHARACTER, normalizeCharacter, characterForProfile, characterLevel };

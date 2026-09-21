@@ -5,6 +5,7 @@ const { test } = require("node:test");
 
 const { createQuestStorage } = require("../script/questStorage");
 const { titleForLevel } = require("../script/communityLevel");
+const { HALLOWEEN_2026_EVENT: halloween, hasHalloween2026Grant } = require("../script/seasonal-cosmetics.shared.cjs");
 
 function clone(value) {
   if (value == null) return value;
@@ -109,6 +110,119 @@ async function withDateNow(nowMs, callback) {
     Date.now = realDateNow;
   }
 }
+
+test("Halloween flush grants both possessions permanently, preserving equipment and wallet", async () => {
+  const profile = {
+    pseudo: "alice", pops: { balance: 345 },
+    customProfileFrameClass: "old-frame", customExperienceBarId: "old-bar",
+    popsShop: {
+      profileFrames: { activeId: "old-frame", owned: { old: { id: "old" } } },
+      experienceBars: { activeId: "old-bar", owned: { old: { id: "old" } } },
+    },
+  };
+  const db = new FakeDb({ alice: profile, "participants/alice": { pseudo: "alice" } });
+  const store = createQuestStorage(db, { minNewProfilePresenceMs: 600_000 });
+  const args = {
+    startedAt: new Date(halloween.startsAtMs - 600_000),
+    presenceFirstSeenAtMs: halloween.startsAtMs - 60_000,
+    presenceLastSeenAtMs: halloween.endsAtMs + 1,
+    seasonalPresenceAtMs: halloween.startsAtMs,
+    uptimeMs: 120_000, flushId: "halloween-grant",
+  };
+  await withDateNow(halloween.endsAtMs + 1000, () => store.noteLiveActivity("alice", "halloween", args));
+  assert.ok(hasHalloween2026Grant(db.doc("alice"), "experience-bar"));
+  assert.ok(hasHalloween2026Grant(db.doc("alice"), "profile-frame"));
+  assert.deepEqual(db.doc("alice").pops, { balance: 345 });
+  assert.equal(db.doc("alice").popsShop.profileFrames.activeId, "old-frame");
+  assert.equal(db.doc("alice").customExperienceBarId, "old-bar");
+  assert.deepEqual(db.doc("alice").popsShop.profileFrames.owned.old, { id: "old" });
+  assert.equal(db.doc("participants/alice").popsShop, undefined);
+  const firstGrant = clone(db.doc("alice").popsShop);
+  await withDateNow(halloween.endsAtMs + 2000, () => store.noteLiveActivity("alice", "halloween", args));
+  assert.deepEqual(db.doc("alice").popsShop, firstGrant);
+  await withDateNow(halloween.endsAtMs + 3000, () => store.noteLiveActivity("alice", "another-live", { ...args, flushId: "new-segment" }));
+  assert.deepEqual(db.doc("alice").popsShop, firstGrant);
+});
+
+test("Halloween eligibility never comes from flush time, stream start or endpoint overlap", async () => {
+  for (const timestamps of [
+    { first: halloween.startsAtMs - 1, last: halloween.endsAtMs },
+    { first: halloween.startsAtMs - 600_000, last: halloween.startsAtMs - 1 },
+  ]) {
+    const db = new FakeDb({ alice: { pseudo: "alice" } });
+    const store = createQuestStorage(db);
+    await withDateNow(halloween.startsAtMs + 1000, () => store.noteLiveActivity("alice", "stream", {
+      startedAt: new Date(halloween.startsAtMs),
+      presenceFirstSeenAtMs: timestamps.first, presenceLastSeenAtMs: timestamps.last,
+      uptimeMs: 120_000,
+    }));
+    assert.equal(db.doc("alice").popsShop, undefined);
+  }
+});
+
+test("journaled seasonal observations retain the 10-minute new-profile gate", async () => {
+  for (const duration of [120_000, 600_000]) {
+    const db = new FakeDb();
+    const store = createQuestStorage(db, { minNewProfilePresenceMs: 600_000 });
+    const result = await withDateNow(halloween.endsAtMs + 1000, () => store.noteLiveActivity("alice", "restored", {
+      twitchUserId: "123",
+      presenceFirstSeenAtMs: halloween.startsAtMs,
+      presenceLastSeenAtMs: halloween.startsAtMs,
+      seasonalPresenceAtMs: halloween.startsAtMs,
+      observedPresenceMs: duration,
+    }));
+    if (duration < 600_000) {
+      assert.equal(result.reason, "new_profile_presence_below_threshold");
+      assert.equal(db.doc("alice"), undefined);
+    } else {
+      assert.ok(hasHalloween2026Grant(db.doc("alice"), "experience-bar"));
+      assert.ok(hasHalloween2026Grant(db.doc("alice"), "profile-frame"));
+      assert.equal(db.doc("alice").twitch_id, "123");
+    }
+  }
+});
+
+test("interval presence can qualify when an already-observed stream crosses the opening boundary", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice" } });
+  const store = createQuestStorage(db);
+  await withDateNow(halloween.startsAtMs - 1, () => store.notePresence("alice", "stream"));
+  assert.equal(db.doc("alice").popsShop, undefined);
+  const before = db.doc("alice").communityLevel.presenceStreams;
+  await withDateNow(halloween.startsAtMs, () => store.notePresence("alice", "stream", {
+    observedAtMs: halloween.startsAtMs, seasonalPresenceAtMs: halloween.startsAtMs,
+  }));
+  assert.ok(hasHalloween2026Grant(db.doc("alice"), "experience-bar"));
+  assert.equal(db.doc("alice").communityLevel.presenceStreams, before);
+});
+
+test("uptime finalization requires genuine seasonal evidence even when finalized during Halloween", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice" }, bob: { pseudo: "bob" } });
+  const store = createQuestStorage(db);
+  await withDateNow(halloween.startsAtMs + 1000, () => store.finalizeLiveUptime("alice", "a", {
+    uptimeMs: 120_000, startedAt: new Date(halloween.startsAtMs),
+  }));
+  assert.equal(db.doc("alice").popsShop, undefined);
+  await withDateNow(halloween.endsAtMs + 1000, () => store.finalizeLiveUptime("bob", "b", {
+    uptimeMs: 120_000, seasonalPresenceAtMs: halloween.endsAtMs - 1,
+  }));
+  assert.ok(hasHalloween2026Grant(db.doc("bob"), "profile-frame"));
+});
+
+test("seasonal reward follows the canonical Twitch identity across renames", async () => {
+  const db = new FakeDb({ original: { pseudo: "original", twitch_id: "123" } });
+  const store = createQuestStorage(db, {
+    resolveTwitchIdentity: async ({ twitchUserId }) => {
+      assert.equal(twitchUserId, "123");
+      return { login: "original" };
+    },
+  });
+  await withDateNow(halloween.startsAtMs + 1000, () => store.noteLiveActivity("new-login", "stream", {
+    twitchUserId: "123", presenceFirstSeenAtMs: halloween.startsAtMs,
+    seasonalPresenceAtMs: halloween.startsAtMs,
+  }));
+  assert.equal(db.doc("new-login"), undefined);
+  assert.ok(hasHalloween2026Grant(db.doc("original"), "experience-bar"));
+});
 
 test("default community rank titles map level 110 through 149 to Maitre du cosmos", () => {
   assert.equal(titleForLevel(109), "Maitre Pixel");

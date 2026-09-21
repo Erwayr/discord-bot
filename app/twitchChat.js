@@ -5,6 +5,7 @@ const tmi = require("tmi.js");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { createLiveChestDraws } = require("../script/liveChestDraws");
 const { createGuardianLive } = require("../script/guardianLive");
+const { createGuardianCostumeGrants } = require("../script/guardianCostumeGrants");
 const { createTwitchChatCommands } = require("../script/twitchChatCommands");
 const { createLiveActivityBuffer } = require("../script/liveActivityBuffer");
 const {
@@ -185,6 +186,13 @@ function createTwitchChat({
     persistenceDir: config.twitchLiveActivity?.persistenceDir,
     onFlushSuccess: twitchExtensionStatsSync?.syncEntry,
   });
+
+  const guardianCostumeGrants = createGuardianCostumeGrants({
+    db,
+    persistenceDir: config.twitchLiveActivity?.persistenceDir,
+  });
+  livePresenceTick?.setPresenceObservedHandler?.(guardianCostumeGrants.observePresence);
+  livePresenceTick?.setPresenceObservationHandler?.(liveActivityBuffer.notePresenceObservation);
 
   const getPendingUptime =
     typeof livePresenceTick?.getPendingUptime === "function"
@@ -495,6 +503,9 @@ function createTwitchChat({
   });
 
   function start() {
+    void guardianCostumeGrants.start().catch(() => {
+      console.warn("[guardian-costumes] startup replay deferred; retry timer remains active");
+    });
     guardianLive.start();
     liveChestDraws.start();
     liveActivityBuffer.start();
@@ -505,6 +516,7 @@ function createTwitchChat({
   return {
     start,
     stopGuardianLive: guardianLive.stop,
+    stopGuardianCostumeGrants: guardianCostumeGrants.stop,
     stopLiveChestDraws: liveChestDraws.stop,
     tmiClient,
     refreshChannelEmotes,

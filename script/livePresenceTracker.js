@@ -2,6 +2,7 @@
 
 const { makeHelix } = require("../helper/helix");
 const { isExcludedLogin } = require("../helper/excludedUsers");
+const { qualifyingPresenceMs } = require("./seasonalPresenceRewards");
 
 const DEFAULT_UPTIME_TICK_MS = 120_000;
 const DEFAULT_UPTIME_MAX_TICK_MS = 300_000;
@@ -101,6 +102,7 @@ function createUptimeAccumulator({
         entry = {
           firstSeenAtMs: seenAtMs,
           lastSeenAtMs: seenAtMs,
+          seasonalPresenceAtMs: 0,
           accumulatedMs: 0,
           seenInLastTick: false,
           presenceNoted: false,
@@ -123,6 +125,9 @@ function createUptimeAccumulator({
 
       entry.accumulatedMs += creditMs;
       entry.lastSeenAtMs = seenAtMs;
+      if (!entry.seasonalPresenceAtMs) {
+        entry.seasonalPresenceAtMs = qualifyingPresenceMs(seenAtMs);
+      }
       entry.seenInLastTick = true;
       creditedMs += creditMs;
 
@@ -163,6 +168,7 @@ function createUptimeAccumulator({
         streamId: safeStreamId,
         firstSeenAtMs: entry.firstSeenAtMs,
         lastSeenAtMs: entry.lastSeenAtMs,
+        seasonalPresenceAtMs: entry.seasonalPresenceAtMs,
         accumulatedMs: Math.max(0, Math.floor(entry.accumulatedMs || 0)),
         twitchUserId: entry.twitchUserId || "",
         displayName: entry.displayName || login,
@@ -229,11 +235,14 @@ function createLivePresenceTicker({
   levelAnnouncementMinPresenceMs = 0,
   deferPresenceWrites = false,
   onDeferredPresence,
+  onPresenceObserved,
+  helixClient,
+  now = () => Date.now(),
 }) {
   if (!db || !tokenManager || !clientId || !broadcasterId || !moderatorId) {
     throw new Error("createLivePresenceTicker: parametres manquants");
   }
-  const helix = makeHelix({ tokenManager, clientId });
+  const helix = helixClient || makeHelix({ tokenManager, clientId });
   const store = questStore;
   const uptime = createUptimeAccumulator({
     tickMs: uptimeTickMs,
@@ -242,6 +251,9 @@ function createLivePresenceTicker({
   });
   let deferredPresenceHandler =
     typeof onDeferredPresence === "function" ? onDeferredPresence : null;
+  let presenceObservedHandler =
+    typeof onPresenceObserved === "function" ? onPresenceObserved : null;
+  let presenceObservationHandler = null;
 
   let CURRENT_STREAM_ID = null;
   let CURRENT_STARTED_AT = null;
@@ -337,6 +349,7 @@ function createLivePresenceTicker({
                 uptimeMs: entry.accumulatedMs,
                 presenceFirstSeenAtMs: entry.firstSeenAtMs,
                 presenceLastSeenAtMs: entry.lastSeenAtMs,
+                seasonalPresenceAtMs: entry.seasonalPresenceAtMs,
                 twitchUserId: entry.twitchUserId || "",
                 flushId:
                   `live-activity:${safeStreamId}:${entry.login}:` +
@@ -349,6 +362,7 @@ function createLivePresenceTicker({
               uptimeMs: entry.accumulatedMs,
               startedAt: uptime.startedAt,
               endedAt: new Date(),
+              seasonalPresenceAtMs: entry.seasonalPresenceAtMs,
               twitchUserId: entry.twitchUserId || "",
             });
           } catch (e) {
@@ -419,8 +433,44 @@ function createLivePresenceTicker({
       const chatters = await fetchAllChatters();
       console.log(`[ticker] chatters fetched: ${chatters.length}`);
 
-      const uptimeTick = uptime.markSeen(chatters, Date.now());
+      const observedAtMs = now();
+      const uptimeTick = uptime.markSeen(chatters, observedAtMs);
       if (!uptimeTick.presentLogins.length) return;
+
+      // Event rewards inspect every real observation, even when this viewer's
+      // ordinary stream presence was already recorded before the event opened.
+      if (presenceObservedHandler) {
+        const currentChatters = new Map(chatters.map(chatter => [chatter.login, chatter]));
+        for (let index = 0; index < uptimeTick.presentLogins.length; index += 50) {
+          await Promise.all(uptimeTick.presentLogins.slice(index, index + 50).map(async login => {
+            try {
+              await presenceObservedHandler({
+                login,
+                twitchUserId: normalizeTwitchUserId(currentChatters.get(login)?.user_id),
+                streamId: CURRENT_STREAM_ID,
+                observedAtMs,
+              });
+            } catch {
+              console.warn("[ticker] presence observation handler failed; ordinary presence continues");
+            }
+          }));
+        }
+      }
+
+      // Persist real seasonal observations before any early return or live-end
+      // flush. First/last endpoints alone must never infer in-window presence.
+      if (presenceObservationHandler) {
+        for (const login of uptimeTick.presentLogins) {
+          const entry = uptime.getEntry(login);
+          if (entry?.seasonalPresenceAtMs) {
+            await presenceObservationHandler({
+              ...entry,
+              streamId: CURRENT_STREAM_ID,
+              startedAt: CURRENT_STARTED_AT,
+            });
+          }
+        }
+      }
 
       const toProcess = uptimeTick.presenceLogins;
       const toRecheckLevelAnnouncements =
@@ -469,6 +519,8 @@ function createLivePresenceTicker({
                 await store.notePresence(login, CURRENT_STREAM_ID, {
                   startedAt: CURRENT_STARTED_AT,
                   context: null,
+                  observedAtMs: presenceEntry?.lastSeenAtMs,
+                  seasonalPresenceAtMs: presenceEntry?.seasonalPresenceAtMs,
                   twitchUserId: presenceEntry?.twitchUserId || "",
                 });
                 uptime.markPresenceNoted(login);
@@ -533,6 +585,12 @@ function createLivePresenceTicker({
   runTick.isPresenceDeferred = () => !!deferPresenceWrites;
   runTick.setDeferredPresenceHandler = (handler) => {
     deferredPresenceHandler = typeof handler === "function" ? handler : null;
+  };
+  runTick.setPresenceObservedHandler = (handler) => {
+    presenceObservedHandler = typeof handler === "function" ? handler : null;
+  };
+  runTick.setPresenceObservationHandler = (handler) => {
+    presenceObservationHandler = typeof handler === "function" ? handler : null;
   };
 
   return runTick;
