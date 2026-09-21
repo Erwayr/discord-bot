@@ -25,7 +25,7 @@ const OPTIONS = Object.freeze({
   skin: choices([["porcelain", "Porcelaine", "#f2d2bc"], ["sand", "Sable", "#dcb18b"], ["honey", "Miel", "#c89466"], ["bronze", "Bronze", "#ad7753"], ["brown", "Brun", "#805337"], ["ebony", "Ébène", "#4f342a"]]),
   hairColor: choices([["black", "Noir", "#241f27"], ["brown", "Châtain", "#533426"], ["chestnut", "Châtaigne", "#835036"], ["blond", "Blond", "#d6b66c"], ["copper", "Cuivré", "#ae5633"], ["silver", "Argent", "#c3c9d2"], ["violet", "Prune", "#735495"], ["blue", "Bleu", "#397d9c"]]),
   eyeColor: choices([["brown", "Marron", "#5a3923"], ["hazel", "Noisette", "#998243"], ["green", "Vert", "#327b5a"], ["blue", "Bleu", "#4288b7"], ["grey", "Gris", "#8791a0"], ["violet", "Violet", "#8c60a8"]]),
-  tunic: PALETTE, trousers: PALETTE, details: PALETTE,
+  tunic: PALETTE, trousers: PALETTE, boots: PALETTE, bracers: PALETTE, details: PALETTE,
   weapon: Object.freeze([
     { id: "sword", label: "Épée", minLevel: 0 }, { id: "bow", label: "Arc", minLevel: 10 },
     { id: "hammer", label: "Marteau", minLevel: 20 }, { id: "staff", label: "Bâton", minLevel: 30 },
@@ -36,7 +36,7 @@ const OPTIONS = Object.freeze({
     { id: "gold", label: "Dorée", minLevel: 200 },
   ].map(Object.freeze)),
 });
-const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none" });
+const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", boots: "leather", bracers: "leather", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none" });
 
 function characterError(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 function characterLevel(profile = {}) {
