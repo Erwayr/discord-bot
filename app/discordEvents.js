@@ -1,9 +1,8 @@
 "use strict";
 
-const { ActivityType, Events, MessageFlags } = require("discord.js");
+const { Events, MessageFlags } = require("discord.js");
 const welcomeHandler = require("../script/welcomeHandler");
 const messageCountHandler = require("../script/messageCountHandler");
-const presenceHandler = require("../script/presenceHandler");
 const electionHandler = require("../script/electionHandler");
 const handleVoteChange = require("../script/handleVoteChange");
 const { maybeReplyToBooty } = require("../script/bootyResponder");
@@ -40,8 +39,13 @@ function registerDiscordEvents({
   birthdays,
   getCommunityLevelConfig,
   cardNotifications,
+  discordGameTracker,
 }) {
   client.once(Events.ClientReady, async () => {
+    // Presence initialization is independent of slow Twitch startup jobs.
+    const gameTrackingReady = discordGameTracker?.start().catch((error) => {
+      console.error("[discord-games] startup failed:", error?.message || error);
+    });
     console.log(`✅ Connecté en tant que ${client.user.tag}`);
     try {
       await tokenManager.getAccessToken();
@@ -55,6 +59,11 @@ function registerDiscordEvents({
     );
 
     for (const guild of client.guilds.cache.values()) {
+      if (discordGameTracker?.isTrackingGuild(guild.id)) {
+        // Reuse the parallel fetch without running member-dependent jobs early.
+        await gameTrackingReady;
+        continue;
+      }
       try {
         await guild.members.fetch({ withPresences: false, time: 300_000 });
         console.log(`🔄 Membres chargés pour la guilde : ${guild.name}`);
@@ -370,14 +379,24 @@ function registerDiscordEvents({
     });
   });
 
-  client.on(Events.PresenceUpdate, async (oldP, newP) => {
-    await presenceHandler(oldP, newP, db);
-
-    const playing = newP.activities.find(
-      (act) => act.type === ActivityType.Playing,
-    );
-    if (!playing) return;
+  const track = (operation) => Promise.resolve(operation).catch((error) => {
+    console.error("[discord-games] lifecycle failed:", error?.message || error);
   });
+  client.on(Events.PresenceUpdate, (oldP, newP) => track(discordGameTracker?.onPresence(oldP, newP)));
+  client.on(Events.ShardReconnecting, (id) => track(discordGameTracker?.suspendShard(id)));
+  client.on(Events.ShardDisconnect, (_event, id) => track(discordGameTracker?.suspendShard(id)));
+  client.on(Events.ShardReady, (id) => track(discordGameTracker?.resumeShard(id)));
+  client.on(Events.ShardResume, (id) => track(discordGameTracker?.resumeShard(id)));
+  client.on(Events.Invalidated, () => track(discordGameTracker?.suspend("invalidated")));
+  client.on(Events.GuildUnavailable, (guild) => {
+    if (discordGameTracker?.isTrackingGuild(guild.id)) track(discordGameTracker.suspend("guild unavailable"));
+  });
+  client.on(Events.GuildAvailable, (guild) => {
+    if (discordGameTracker?.isTrackingGuild(guild.id)) track(discordGameTracker.refresh());
+  });
+  client.on(Events.GuildMemberRemove, (member) => track(discordGameTracker?.onPresence(null, {
+    guild: member.guild, userId: member.id, user: member.user, status: "offline", activities: [],
+  })));
 }
 
 function loginDiscordClient({ client, token }) {

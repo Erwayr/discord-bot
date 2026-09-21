@@ -37,6 +37,10 @@ const config = {
     guildId: process.env.DISCORD_GUILD_ID || "",
   },
 
+  discordGameTracking: {
+    enabled: boolEnv("DISCORD_GAME_TRACKING_ENABLED", true),
+  },
+
   twitch: {
     clientId: process.env.TWITCH_CLIENT_ID,
     clientSecret: process.env.TWITCH_CLIENT_SECRET,

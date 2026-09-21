@@ -8,6 +8,7 @@ const express = require("express");
 const { makeHelix } = require("./helper/helix");
 const { createClipPoller } = require("./script/clipPoller");
 const { createLivePresenceTicker } = require("./script/livePresenceTracker");
+const { createDiscordGameTracker } = require("./script/discordGameTracker");
 const { createQuestStorage } = require("./script/questStorage");
 const { createTwitchIdentityResolver } = require("./script/twitchIdentity");
 const { createTokenManager } = require("./script/tokenManager");
@@ -83,6 +84,7 @@ async function getCommunityLevelConfig({ refresh = false } = {}) {
 }
 
 const client = createDiscordClient();
+const discordGameTracker = createDiscordGameTracker({ db, admin, client, config });
 const { postDiscord, sendDMOrFallback } = createDiscordMessaging({
   client,
   logChannelId: config.discord.logChannelId,
@@ -250,6 +252,7 @@ registerDiscordEvents({
   birthdays,
   getCommunityLevelConfig,
   cardNotifications,
+  discordGameTracker,
 });
 
 jobs.scheduleCoreJobs();
@@ -269,19 +272,29 @@ let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
+  setTimeout(() => process.exit(0), 5000).unref();
   console.log(`[shutdown] ${signal} received, flushing live activity...`);
   try {
-    twitchChat.stopLiveChestDraws?.();
-    twitchChat.stopGuardianLive?.();
-    twitchChat.stopLiveActivityBuffer?.();
-    if (twitchChat.shouldFlushLiveActivityOnShutdown?.()) {
-      await twitchChat.flushLiveActivity?.({ reason: "shutdown" });
+    for (const method of ["stopLiveChestDraws", "stopGuardianLive", "stopLiveActivityBuffer"]) {
+      try {
+        twitchChat[method]?.();
+      } catch (error) {
+        console.error(`[shutdown] ${method} failed:`, error?.message || error);
+      }
     }
+    const tasks = [
+      ["Discord games", () => discordGameTracker.stop()],
+      ["Twitch activity", () => twitchChat.shouldFlushLiveActivityOnShutdown?.()
+        ? twitchChat.flushLiveActivity?.({ reason: "shutdown" }) : undefined],
+    ];
+    const results = await Promise.allSettled(tasks.map(([, flush]) => Promise.resolve().then(flush)));
+    results.forEach((result, index) => {
+      if (result.status === "rejected") console.error(`[shutdown] ${tasks[index][0]} flush failed:`, result.reason?.message || result.reason);
+    });
   } catch (e) {
     console.error("[shutdown] live activity flush failed:", e?.message || e);
   } finally {
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 5000).unref();
   }
 }
 
