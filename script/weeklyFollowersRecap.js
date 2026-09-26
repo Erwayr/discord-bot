@@ -1,3 +1,5 @@
+const { readQuestCycle } = require("./quest-cycle.store.cjs");
+const { questProgress, cycleProgressPatch, cycleSummary } = require("./quest-cycle.logic.cjs");
 "use strict";
 
 const {
@@ -622,6 +624,7 @@ async function applyWeeklyRankRewards(
   let rewards = plannedRewards;
 
   await db.runTransaction(async (tx) => {
+    const cycle = await readQuestCycle(db, tx);
     const stateSnap = await tx.get(stateRef);
     const already = getAwardedWeek(stateSnap, weekKey);
 
@@ -646,7 +649,7 @@ async function applyWeeklyRankRewards(
 
     for (const { planned, winnerRef, winnerSnap } of followerReads) {
       const data = winnerSnap.data() || {};
-      const before = toNum(data?.live_presence?.[monthKey]?.progress_pct || 0);
+      const before = questProgress(data, monthKey, cycle);
       const after = Math.min(100, Math.max(0, before + planned.bonusPct));
       const currentWallet = normalizePopsWallet(data);
       const nextWallet = {
@@ -665,7 +668,7 @@ async function applyWeeklyRankRewards(
       };
 
       tx.update(winnerRef, {
-        [`live_presence.${monthKey}.progress_pct`]: after,
+        ...(cycle ? cycleProgressPatch(data, cycle, after) : { [`live_presence.${monthKey}.progress_pct`]: after }),
         "pops.balance": nextWallet.balance,
         "pops.lifetimeEarned": nextWallet.lifetimeEarned,
         "pops.updatedAt": appliedAt,
@@ -807,7 +810,19 @@ async function syncWeeklyRewardToParticipants(db, { reward }) {
     }
   }
 
-  await participantRef.set(payload, { merge: true });
+  await db.runTransaction(async (tx) => {
+    const cycle = await readQuestCycle(db, tx);
+    const follower = await tx.get(db.collection("followers_all_time").doc(winnerLogin));
+    const participant = await tx.get(participantRef);
+    if (!participant.exists) return;
+    if (cycle) {
+      const summary = cycleSummary(follower.data() || {}, cycle);
+      delete payload[`live_presence.${monthKey}.progress_pct`];
+      payload.quest_cycle = summary;
+      payload.progress_pct = payload.quest_progress_pct = summary.progress_pct;
+    }
+    tx.set(participantRef, payload, { merge: true });
+  });
   return {
     synced: true,
     winnerLogin,

@@ -1,3 +1,5 @@
+const { readQuestCycle } = require("./quest-cycle.store.cjs");
+const { applyQuestCycleActivity } = require("./quest-cycle.logic.cjs");
 // script/questStorage.js
 "use strict";
 
@@ -351,10 +353,12 @@ function createQuestStorage(db, options = {}) {
     const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
 
     await db.runTransaction(async (tx) => {
+      const cycle = await readQuestCycle(db, tx);
       const snap = await tx.get(ref);
       if (!snap.exists) return;
 
       const data = snap.data() || {};
+      const cycleState = applyQuestCycleActivity(data, cycle, { streamId, startedAt, events: [{ type: "presence", atMs: observedAtMs, count: 1 }] });
       const lp = { ...(data.live_presence || {}) };
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
@@ -391,6 +395,7 @@ function createQuestStorage(db, options = {}) {
       month.last_update_at = nowMs;
       const patch = {
         live_presence: lp,
+        ...(cycleState ? { quest_cycle: cycleState } : {}),
         ...buildHalloweenPresencePatch(data, mergeQualifyingPresenceMs(seasonalPresenceAtMs, observedAtMs), nowMs),
       };
       if (presenceLevelResult?.awarded) {
@@ -565,8 +570,9 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     inc = 1,
-    { startedAt, twitchUserId } = {},
+    { startedAt, twitchUserId, observedAtMs = Date.now() } = {},
   ) {
+    const eventAtMs = observedAtMs;
     const docId = await canonicalLogin(login, twitchUserId, { allowCreate: true });
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
@@ -579,6 +585,7 @@ function createQuestStorage(db, options = {}) {
 
     await db
       .runTransaction(async (tx) => {
+        const cycle = await readQuestCycle(db, tx);
         const snap = await tx.get(ref);
 
         if (!snap.exists) {
@@ -591,6 +598,7 @@ function createQuestStorage(db, options = {}) {
         }
 
         const data = snap.exists ? snap.data() : {};
+        const cycleState = applyQuestCycleActivity(data, cycle, { streamId, startedAt, events: [{ type: "emote", atMs: eventAtMs, count: inc }] });
         const lp = { ...(data?.live_presence || {}) };
         const month = ensureMonthLayer(lp, mk);
 
@@ -610,7 +618,7 @@ function createQuestStorage(db, options = {}) {
 
         month.last_update_at = Date.now();
 
-        tx.update(ref, { live_presence: lp });
+        tx.update(ref, { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) });
 
         console.log(
           `[EMOTE:TX] doc=${docId} idx=${idx} ` +
@@ -635,8 +643,9 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     inc = 1,
-    { startedAt, twitchUserId } = {},
+    { startedAt, twitchUserId, observedAtMs = Date.now() } = {},
   ) {
+    const eventAtMs = observedAtMs;
     const docId = await canonicalLogin(login, twitchUserId, { allowCreate: true });
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
@@ -648,6 +657,7 @@ function createQuestStorage(db, options = {}) {
     const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
 
     await db.runTransaction(async (tx) => {
+      const cycle = await readQuestCycle(db, tx);
       const snap = await tx.get(ref);
 
       // cree le doc minimal si absent
@@ -660,6 +670,7 @@ function createQuestStorage(db, options = {}) {
       }
 
       const data = snap.exists ? snap.data() : {};
+      const cycleState = applyQuestCycleActivity(data, cycle, { streamId, startedAt, events: [{ type: "chat_message", atMs: eventAtMs, count: inc }] });
       const lp = { ...(data?.live_presence || {}) };
       const month = ensureMonthLayer(lp, mk);
 
@@ -698,7 +709,7 @@ function createQuestStorage(db, options = {}) {
       if (
         nextCount === beforeCount &&
         entry.chat_message.sent &&
-        !levelResult.awarded
+        !levelResult.awarded && !cycleState
       ) {
         return;
       }
@@ -711,7 +722,7 @@ function createQuestStorage(db, options = {}) {
       }
 
       month.last_update_at = Date.now();
-      const patch = { live_presence: lp };
+      const patch = { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) };
       if (levelResult.awarded) {
         patch.communityLevel = levelResult.communityLevel;
         Object.assign(patch, levelResult.legacyFields);
@@ -736,6 +747,7 @@ function createQuestStorage(db, options = {}) {
     {
       startedAt,
       chatEvents = [],
+      questEvents = [],
       emoteCount = 0,
       channelPointsCount = 0,
       uptimeMs = 0,
@@ -813,6 +825,7 @@ function createQuestStorage(db, options = {}) {
       : null;
 
     await db.runTransaction(async (tx) => {
+      const cycle = await readQuestCycle(db, tx);
       const shouldReadParticipant = safeUptimeMinutes > 0;
       const [snap, participantSnap] = await Promise.all([
         tx.get(ref),
@@ -857,7 +870,15 @@ function createQuestStorage(db, options = {}) {
       const entry = month.streams[idx];
       let latestAtMs = Date.now();
       let latestLevelResult = null;
-      const patch = { live_presence: lp };
+      const cycleState = applyQuestCycleActivity(data, cycle, {
+        streamId: safeStreamId, startedAt, flushId: safeFlushId,
+        events: [
+          ...normalizedChatEvents.map(event => ({ ...event, type: "chat_message" })),
+          ...questEvents,
+          ...(safePresenceLastSeenAtMs > 0 ? [{ type: "presence", atMs: safePresenceLastSeenAtMs }] : []),
+        ],
+      });
+      const patch = { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) };
 
       if (safeFlushId && activityFlushIds(entry).includes(safeFlushId)) {
         result = {
@@ -1126,17 +1147,20 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     clipId = null,
-    { startedAt, twitchUserId } = {}
+    { startedAt, twitchUserId, observedAtMs = Date.now() } = {}
   ) {
+    const eventAtMs = observedAtMs;
     const docId = await canonicalLogin(login, twitchUserId);
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
     await db.runTransaction(async (tx) => {
+      const cycle = await readQuestCycle(db, tx);
       const snap = await tx.get(ref);
       if (!snap.exists) return;
 
       const data = snap.data() || {};
+      const cycleState = applyQuestCycleActivity(data, cycle, { streamId, startedAt, events: [{ type: "clips", atMs: eventAtMs, count: 1 }] });
       const lp = { ...(data.live_presence || {}) };
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
@@ -1155,7 +1179,7 @@ function createQuestStorage(db, options = {}) {
       entry.clips.last_at = Date.now();
 
       month.last_update_at = Date.now();
-      tx.update(ref, { live_presence: lp });
+      tx.update(ref, { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) });
     });
   }
 
@@ -1163,8 +1187,9 @@ function createQuestStorage(db, options = {}) {
     login,
     streamId,
     redemptionsInc = 1,
-    { startedAt, createIfMissing = true, twitchUserId = "" } = {}
+    { startedAt, createIfMissing = true, twitchUserId = "", observedAtMs = Date.now() } = {}
   ) {
+    const eventAtMs = observedAtMs;
     const docId = await canonicalLogin(login, twitchUserId, {
       allowCreate: createIfMissing,
     });
@@ -1176,6 +1201,7 @@ function createQuestStorage(db, options = {}) {
     let skippedReason = null;
     const effectiveCommunityLevelConfig = await getCommunityLevelConfig();
     await db.runTransaction(async (tx) => {
+      const cycle = await readQuestCycle(db, tx);
       const snap = await tx.get(ref);
 
       // 🔧 crée le doc minimal si absent
@@ -1196,6 +1222,7 @@ function createQuestStorage(db, options = {}) {
       }
 
       const data = snap.exists ? snap.data() : {};
+      const cycleState = applyQuestCycleActivity(data, cycle, { streamId, startedAt, events: [{ type: "channel_points", atMs: eventAtMs, count: redemptionsInc }] });
       const lp = { ...(data.live_presence || {}) };
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
@@ -1225,7 +1252,7 @@ function createQuestStorage(db, options = {}) {
       });
 
       month.last_update_at = nowMs;
-      const patch = { live_presence: lp };
+      const patch = { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) };
       if (channelPointsLevelResult.awarded) {
         patch.communityLevel = channelPointsLevelResult.communityLevel;
         Object.assign(patch, channelPointsLevelResult.legacyFields);
@@ -1257,17 +1284,20 @@ function createQuestStorage(db, options = {}) {
   async function noteRaidParticipation(
     login,
     streamId,
-    { startedAt, twitchUserId } = {},
+    { startedAt, twitchUserId, observedAtMs = Date.now() } = {},
   ) {
+    const eventAtMs = observedAtMs;
     const docId = await canonicalLogin(login, twitchUserId);
     const excluded = excludedActivityResult(docId);
     if (excluded) return excluded;
     const ref = col.doc(docId);
     await db.runTransaction(async (tx) => {
+      const cycle = await readQuestCycle(db, tx);
       const snap = await tx.get(ref);
       if (!snap.exists) return;
 
       const data = snap.data() || {};
+      const cycleState = applyQuestCycleActivity(data, cycle, { streamId, startedAt, events: [{ type: "raid", atMs: eventAtMs, count: 1 }] });
       const lp = { ...(data.live_presence || {}) };
       const mk = monthKeyUTC();
       const month = ensureMonthLayer(lp, mk);
@@ -1287,7 +1317,7 @@ function createQuestStorage(db, options = {}) {
       }
 
       month.last_update_at = Date.now();
-      tx.update(ref, { live_presence: lp });
+      tx.update(ref, { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) });
     });
   }
 

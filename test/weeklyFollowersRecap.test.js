@@ -358,14 +358,14 @@ test("default recap uses previous week and applies top 3 progress and POPS", asy
     result.rewardResult.rewards.map((reward) => reward.popsReward),
     [100, 50, 25],
   );
-  assert.equal(db.calls.runTransactions, 1);
+  assert.equal(db.calls.runTransactions, 4);
   assert.equal(db.calls.txUpdates.length, 3);
   assert.equal(
     db.calls.txSets.filter((call) => call.path.includes("/pops_transactions/"))
       .length,
     3,
   );
-  assert.equal(db.calls.sets.length, 3);
+  assert.equal(db.calls.txSets.filter(call => call.path.startsWith("participants/")).length, 3);
 
   assert.equal(db.data("followers_all_time/previous_one").pops.balance, 100);
   assert.equal(db.data("followers_all_time/previous_two").pops.balance, 50);

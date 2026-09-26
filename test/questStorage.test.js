@@ -101,6 +101,39 @@ function monthNodeFor(db, docId) {
   return livePresence[monthKeys[0]];
 }
 
+test("quest cycle uses only observations after closing, preserves history, and deduplicates delayed flushes", async () => {
+  const boundary = Date.parse("2026-09-25T12:00:00Z");
+  const cycle = { id: "cycle_current", startedAtMs: boundary };
+  const db = new FakeDb({ alice: { pseudo: "alice", pops: { balance: 77 } }, "site_config/quest_cycle": cycle });
+  const store = createQuestStorage(db);
+  const activity = {
+    startedAt: new Date(boundary - 3600000), flushId: "mixed-live",
+    chatEvents: [{ atMs: boundary - 1, count: 4 }, { atMs: boundary + 1, count: 2 }],
+    emoteCount: 5,
+    questEvents: [{ type: "emote", atMs: boundary - 1, count: 4 }, { type: "emote", atMs: boundary + 1, count: 1 }],
+    presenceFirstSeenAtMs: boundary - 1000, presenceLastSeenAtMs: boundary + 1000,
+  };
+  await store.noteLiveActivity("alice", "live", activity);
+  const current = db.doc("alice");
+  assert.equal(current.quest_cycle.streams[0].chat_message.count, 2);
+  assert.equal(current.quest_cycle.streams[0].emote.count, 1);
+  assert.equal(monthNodeFor(db, "alice").streams[0].emote.count, 5);
+  assert.equal(current.pops.balance, 77);
+  const before = clone(current);
+  await store.noteLiveActivity("alice", "live", activity);
+  assert.deepEqual(db.doc("alice"), before);
+});
+
+test("an action in an already capped historical live can complete a fresh cycle quest", async () => {
+  const db = new FakeDb({ alice: { pseudo: "alice" } });
+  const store = createQuestStorage(db);
+  await store.noteChatMessage("alice", "same-live", 10);
+  db.store.set("site_config/quest_cycle", { id: "new_cycle", startedAtMs: Date.now() - 1 });
+  await store.noteChatMessage("alice", "same-live", 1);
+  assert.equal(db.doc("alice").quest_cycle.streams[0].chat_message.count, 1);
+  assert.equal(monthNodeFor(db, "alice").streams[0].chat_message.count, 10);
+});
+
 async function withDateNow(nowMs, callback) {
   const realDateNow = Date.now;
   Date.now = () => nowMs;
@@ -1032,4 +1065,22 @@ test("live activity resolves a renamed Twitch user before choosing the document"
     twitchUserId: "stable-1",
     allowCreate: true,
   }]);
+});
+
+
+test("late clip, redemption and raid observations cannot enter the new cycle", async () => {
+  const boundary = Date.now() - 10000;
+  const db = new FakeDb({ alice: {pseudo:"alice"}, "site_config/quest_cycle": {id:"current",startedAtMs:boundary} });
+  const store = createQuestStorage(db);
+  for (const observedAtMs of [boundary - 1, boundary + 1]) {
+    await store.noteClipCreated("alice", "live", String(observedAtMs), {observedAtMs});
+    await store.noteChannelPoints("alice", "live", 1, {observedAtMs});
+    await store.noteRaidParticipation("alice", "live", {observedAtMs});
+    if (observedAtMs < boundary) assert.equal(db.doc("alice").quest_cycle, undefined);
+  }
+  const entry = db.doc("alice").quest_cycle.streams[0];
+  assert.equal(entry.clips.count,1);
+  assert.equal(entry.channel_points.redemptions,1);
+  assert.equal(entry.raid.count,1);
+  assert.equal(monthNodeFor(db,"alice").streams[0].clips.count,2);
 });

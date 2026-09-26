@@ -1185,6 +1185,22 @@ test("daily chest quest bonus caps monthly progress and mirrors participants", a
   );
 });
 
+test("daily chest bonus credits the active cycle and keeps its daily claim across cycles", async () => {
+  const cycle = { id: "new_cycle", startedAtMs: NOW.getTime() - 1000 };
+  const db = new FakeDb({
+    "site_config/quest_cycle": cycle,
+    "followers_all_time/alice": follower({ live_presence: { "2026-06": { progress_pct: 98 } } }),
+    "participants/alice": { pseudo: "Alice" },
+  });
+  const options = { discordId: "111111111111111111", config: BASE_CONFIG, now: NOW, reward: { type: "quest_bonus", amount: 10 } };
+  await openDailyChest(db, options);
+  assert.equal(db.data("followers_all_time/alice").quest_cycle.progress_pct, 10);
+  assert.equal(db.data("followers_all_time/alice").live_presence["2026-06"].progress_pct, 98);
+  assert.equal(db.data("participants/alice").quest_cycle.id, cycle.id);
+  await openDailyChest(db, options);
+  assert.equal(db.data("followers_all_time/alice").quest_cycle.progress_pct, 10);
+});
+
 test("daily chest rare POPS also applies quest bonus", async () => {
   const db = new FakeDb({
     "followers_all_time/alice": follower({

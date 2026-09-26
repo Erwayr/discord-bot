@@ -68,6 +68,7 @@ function cloneEntry(entry) {
     displayName: entry.displayName || entry.login,
     twitchUserId: entry.twitchUserId || "",
     chatEvents: entry.chatEvents.map(cloneEvent),
+    questEvents: (entry.questEvents || []).map(event => ({ ...event })),
     emoteCount: nonNegativeInt(entry.emoteCount, 0),
     channelPointsCount: nonNegativeInt(entry.channelPointsCount, 0),
     uptimeMs: nonNegativeInt(entry.uptimeMs, 0),
@@ -95,6 +96,7 @@ function createEmptyEntry({
     displayName: displayName || login,
     twitchUserId: normalizeTwitchUserId(twitchUserId),
     chatEvents: [],
+    questEvents: [],
     emoteCount: 0,
     channelPointsCount: 0,
     uptimeMs: 0,
@@ -124,6 +126,7 @@ function mergeEntries(target, source) {
   }
 
   target.chatEvents.push(...source.chatEvents.map(cloneEvent));
+  target.questEvents.push(...(source.questEvents || []).map(event => ({ ...event })));
   target.chatEvents.sort((a, b) => a.atMs - b.atMs);
   target.emoteCount += nonNegativeInt(source.emoteCount, 0);
   target.channelPointsCount += nonNegativeInt(source.channelPointsCount, 0);
@@ -231,11 +234,13 @@ function createLiveActivityBuffer({
       atMs: nonNegativeInt(event.atMs, Date.now()),
       count: positiveInt(event.count, 1),
     }));
+    events.push(...(entry.questEvents || []).map(event => ({ ...base, type: "quest_event", event })));
     if (entry.emoteCount > 0) {
       events.push({
         ...base,
         type: "emote",
-        atMs: Date.now(),
+        questEventsSeparate: true,
+        atMs: 0,
         inc: nonNegativeInt(entry.emoteCount, 0),
       });
     }
@@ -243,7 +248,8 @@ function createLiveActivityBuffer({
       events.push({
         ...base,
         type: "channel_points",
-        atMs: Date.now(),
+        questEventsSeparate: true,
+        atMs: 0,
         inc: nonNegativeInt(entry.channelPointsCount, 0),
       });
     }
@@ -337,12 +343,15 @@ function createLiveActivityBuffer({
       return;
     }
 
+    if (raw.type === "quest_event") { entry.questEvents.push(raw.event); return; }
     if (raw.type === "emote") {
+      if (!raw.questEventsSeparate && raw.atMs > 0) entry.questEvents.push({ type: "emote", atMs: raw.atMs, count: raw.inc });
       entry.emoteCount += Math.max(1, nonNegativeInt(raw.inc, 1));
       return;
     }
 
     if (raw.type === "channel_points") {
+      if (!raw.questEventsSeparate && raw.atMs > 0) entry.questEvents.push({ type: "channel_points", atMs: raw.atMs, count: raw.inc });
       entry.channelPointsCount += Math.max(1, nonNegativeInt(raw.inc, 1));
       return;
     }
@@ -388,7 +397,7 @@ function createLiveActivityBuffer({
     const entry = ensureEntry(login, streamId, meta);
     if (!entry) return { buffered: false, reason: "invalid_target" };
     const event = {
-      atMs: Math.max(1, Math.floor(Number(now()) || Date.now())),
+      atMs: Math.max(1, Math.floor(Number(meta.observedAtMs) || Number(now()) || Date.now())),
       count: 1,
     };
     entry.chatEvents.push(event);
@@ -416,6 +425,8 @@ function createLiveActivityBuffer({
     if (!entry) return { buffered: false, reason: "invalid_target" };
     const safeInc = Math.max(1, Math.floor(Number(inc) || 1));
     entry.emoteCount += safeInc;
+    const eventAtMs = Math.max(1, Math.floor(Number(meta.observedAtMs) || Number(now()) || Date.now()));
+    entry.questEvents.push({ type: "emote", atMs: eventAtMs, count: safeInc });
     appendJournal({
       v: 1,
       type: "emote",
@@ -425,7 +436,7 @@ function createLiveActivityBuffer({
       startedAt: entry.startedAt,
       displayName: entry.displayName,
       twitchUserId: entry.twitchUserId || "",
-      atMs: Math.max(1, Math.floor(Number(now()) || Date.now())),
+      atMs: eventAtMs,
       inc: safeInc,
     });
     return {
@@ -441,6 +452,8 @@ function createLiveActivityBuffer({
     if (!entry) return { buffered: false, reason: "invalid_target" };
     const safeInc = Math.max(1, Math.floor(Number(inc) || 1));
     entry.channelPointsCount += safeInc;
+    const eventAtMs = Math.max(1, Math.floor(Number(meta.observedAtMs) || Number(now()) || Date.now()));
+    entry.questEvents.push({ type: "channel_points", atMs: eventAtMs, count: safeInc });
     appendJournal({
       v: 1,
       type: "channel_points",
@@ -450,7 +463,7 @@ function createLiveActivityBuffer({
       startedAt: entry.startedAt,
       displayName: entry.displayName,
       twitchUserId: entry.twitchUserId || "",
-      atMs: Math.max(1, Math.floor(Number(now()) || Date.now())),
+      atMs: eventAtMs,
       inc: safeInc,
     });
     return {
@@ -600,6 +613,7 @@ function createLiveActivityBuffer({
     const result = await questStore.noteLiveActivity(entry.login, entry.streamId, {
       startedAt: entry.startedAt,
       chatEvents: entry.chatEvents,
+      questEvents: entry.questEvents || [],
       emoteCount: entry.emoteCount,
       channelPointsCount: entry.channelPointsCount,
       uptimeMs: entry.uptimeMs,

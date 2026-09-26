@@ -1,3 +1,5 @@
+const { readQuestCycle } = require("./quest-cycle.store.cjs");
+const { questProgress: cycleProgress } = require("./quest-cycle.shared.cjs");
 "use strict";
 
 const { EmbedBuilder } = require("discord.js");
@@ -243,7 +245,8 @@ async function buildProfileEmbed({ db, config, targetUser, requestedBy }) {
   const latestReward = await fetchLatestReward(db, profile);
 
   const monthKey = currentMonthKey(config?.timezone || "Europe/Warsaw");
-  const questProgress = resolveQuestProgress(data, monthKey);
+  const cycle = await readQuestCycle(db);
+  const questProgress = cycleProgress(data, monthKey, cycle);
   const topGame = topGameFromHistory(data?.games_history);
   const ownedCards = cardsArray(data).length;
   const displayName = displayNameFromData(data, targetUser);

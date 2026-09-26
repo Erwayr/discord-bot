@@ -3,6 +3,8 @@ const axios = require("axios");
 const { FieldValue } = require("firebase-admin/firestore");
 const { extractCommunityLevelFields } = require("./communityLevel");
 const { isExcludedLogin } = require("../helper/excludedUsers");
+const { readQuestCycle } = require("./quest-cycle.store.cjs");
+const { cycleSummary } = require("./quest-cycle.logic.cjs");
 
 const MAX_IDS = 50;
 
@@ -64,9 +66,10 @@ async function upsertParticipantFromRedemption(db, r, options = {}) {
   const follRef = db.collection("followers_all_time").doc(login);
 
   await db.runTransaction(async (tx) => {
-    const [partSnap, follSnap] = await Promise.all([
+    const [partSnap, follSnap, cycle] = await Promise.all([
       tx.get(partRef),
       tx.get(follRef),
+      readQuestCycle(db, tx),
     ]);
 
     const exists = partSnap.exists; // ← ajoute cette ligne
@@ -110,6 +113,10 @@ async function upsertParticipantFromRedemption(db, r, options = {}) {
     backfill("customRankLevel", "customRankLevel");
     backfill("customRankName", "customRankName");
 
+    if (cycle) {
+      update.quest_cycle = cycleSummary(foll, cycle);
+      update.progress_pct = update.quest_progress_pct = update.quest_cycle.progress_pct;
+    }
     tx.set(partRef, update, { merge: true });
   });
 }
@@ -126,9 +133,10 @@ async function upsertParticipantFromSubscription(db, e, options = {}) {
   const follRef = db.collection("followers_all_time").doc(login);
 
   await db.runTransaction(async (tx) => {
-    const [partSnap, follSnap] = await Promise.all([
+    const [partSnap, follSnap, cycle] = await Promise.all([
       tx.get(partRef),
       tx.get(follRef),
+      readQuestCycle(db, tx),
     ]);
     const exists = partSnap.exists;
     const existing = partSnap.exists ? partSnap.data() : {};
@@ -169,6 +177,10 @@ async function upsertParticipantFromSubscription(db, e, options = {}) {
     backfill("customRankLevel", "customRankLevel");
     backfill("customRankName", "customRankName");
 
+    if (cycle) {
+      update.quest_cycle = cycleSummary(foll, cycle);
+      update.progress_pct = update.quest_progress_pct = update.quest_cycle.progress_pct;
+    }
     tx.set(partRef, update, { merge: true });
   });
 }

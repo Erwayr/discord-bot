@@ -115,6 +115,7 @@ function createClipPoller({
           await questStore.noteClipCreated(login, streamId, clipId, {
             startedAt,
             twitchUserId: creatorId,
+            observedAtMs: Date.parse(newClips.find(clip => clip.id === clipId)?.created_at || "") || 0,
           });
         }
       }

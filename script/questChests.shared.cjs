@@ -1,5 +1,7 @@
 "use strict";
 
+const { isSeasonalCosmeticId } = require("./seasonal-cosmetics.shared.cjs");
+
 const QUEST_CHEST_SCHEMA_VERSION = 1;
 const QUEST_MILESTONES_CONFIG_VERSION = 1;
 const QUEST_CHEST_TRANSACTION_SOURCE = "quest_chests_v1";
@@ -198,7 +200,7 @@ function buildChestSnapshot(slot) {
   };
 }
 
-function planQuestMilestoneRewards({ month, progressPct = 0, config = null, existingIds = [] } = {}) {
+function planQuestMilestoneRewards({ month, cycleId = null, progressPct = 0, config = null, existingIds = [] } = {}) {
   const milestones = normalizeQuestMilestones(config);
   const progress = Math.max(0, Math.min(100, Number(progressPct) || 0));
   const existing = new Set(existingIds);
@@ -207,8 +209,8 @@ function planQuestMilestoneRewards({ month, progressPct = 0, config = null, exis
   milestones.slots.forEach((slot) => {
     if (progress < slot.progressPct) return;
     const rewardId = slot.kind === "pops"
-      ? buildQuestMilestonePopsTransactionId(month, slot.id)
-      : buildQuestChestId(month, slot.id);
+      ? buildQuestMilestonePopsTransactionId(cycleId || month, slot.id)
+      : buildQuestChestId(cycleId || month, slot.id);
     if (existing.has(rewardId)) return;
     if (slot.kind === "pops") {
       pops.push({ ...slot, rewardId, month });
@@ -217,6 +219,7 @@ function planQuestMilestoneRewards({ month, progressPct = 0, config = null, exis
     chests.push({
       id: rewardId,
       month,
+      cycleId,
       slotId: slot.id,
       progressPct: slot.progressPct,
       chestType: slot.chestType,
@@ -238,7 +241,8 @@ function inclusiveRandomInt(min, max, randomInt) {
 
 function normalizeEligibleItems(items) {
   return (Array.isArray(items) ? items : []).filter(
-    (item) => item && item.id && item.unlocked !== false && item.owned !== true,
+    (item) => item && item.id && !isSeasonalCosmeticId(item.id) &&
+      (item.acquisitionMode || "pops") === "pops" && item.unlocked !== false && item.owned !== true,
   );
 }
 

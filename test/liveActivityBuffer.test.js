@@ -27,6 +27,34 @@ function createFakeScheduler() {
   };
 }
 
+test("emote and channel point observation times survive failed flush, journal rewrite and recovery", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "quest-cycle-buffer-"));
+  try {
+    const calls = [];
+    let now = 1000;
+    const buffer = createLiveActivityBuffer({ persistenceDir: dir, now: () => now,
+      logger: { log() {}, warn() {} },
+      questStore: { noteLiveActivity: async () => { throw new Error("offline"); } } });
+    buffer.noteEmoteUsage("alice", "same-live", 3);
+    now = 3000;
+    buffer.noteChannelPoints("alice", "same-live", 1);
+    await buffer.flush();
+    const recovered = createLiveActivityBuffer({ persistenceDir: dir, now: () => 99999,
+      logger: { log() {}, warn() {} },
+      questStore: { noteLiveActivity: async (...args) => { calls.push(args); return { applied: true }; } } });
+    await recovered.flush();
+    assert.deepEqual(calls[0][2].questEvents, [
+      { type: "emote", atMs: 1000, count: 3 },
+      { type: "channel_points", atMs: 3000, count: 1 },
+    ]);
+    assert.equal(calls[0][2].emoteCount, 3);
+    assert.equal(calls[0][2].channelPointsCount, 1);
+  } finally {
+    // The path is the exact directory returned by mkdtemp above.
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("real seasonal observation survives recovery and failed flush without double uptime", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "halloween-presence-"));
   try {

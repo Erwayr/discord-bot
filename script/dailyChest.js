@@ -1,3 +1,5 @@
+const { readQuestCycle } = require("./quest-cycle.store.cjs");
+const { questCycleView, cyclePatch, cycleSummary } = require("./quest-cycle.logic.cjs");
 "use strict";
 
 const { randomUUID } = require("node:crypto");
@@ -957,6 +959,7 @@ async function openDailyChest(
     db,
     async (tx) => {
       txResult = null;
+      const cycle = await readQuestCycle(db, tx);
       const profileSnap = await tx.get(profile.ref);
       if (!profileSnap.exists) {
         txResult = { status: "profile_missing", dayKey, monthKey };
@@ -1010,7 +1013,7 @@ async function openDailyChest(
 
       const data = profileSnap.data() || {};
       const rewardPatch = applyRewardPatch({
-        data,
+        data: questCycleView(data, cycle, monthKey),
         reward: plannedReward,
         rewards: plannedRewards,
         dayKey,
@@ -1019,7 +1022,13 @@ async function openDailyChest(
         nowMs: now.getTime(),
         communityLevelConfig,
       });
+      rewardPatch.patch = cyclePatch(data, cycle, monthKey, rewardPatch.patch);
+      if (cycle && rewardPatch.result.participantPatch) {
+        const summary = cycleSummary({ quest_cycle: rewardPatch.patch.quest_cycle }, cycle);
+        rewardPatch.result.participantPatch = { quest_cycle: summary, progress_pct: summary.progress_pct, quest_progress_pct: summary.progress_pct };
+      }
       const claimPayload = {
+        cycleId: cycle?.id || null,
         dayKey,
         monthKey,
         discordId: String(discordId || ""),

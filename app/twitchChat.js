@@ -359,6 +359,7 @@ function createTwitchChat({
 
     try {
       const chatProgress = liveActivityBuffer.noteChatMessage(login, streamId, {
+          observedAtMs: Number(tags["tmi-sent-ts"]) || Date.now(),
         startedAt: liveState.startedAt,
         displayName,
         twitchUserId: tags["user-id"] || tags.userId || "",
@@ -426,6 +427,7 @@ function createTwitchChat({
         );
         try {
           liveActivityBuffer.noteEmoteUsage(login, streamId, incByName, {
+          observedAtMs: Number(tags["tmi-sent-ts"]) || Date.now(),
             startedAt: liveState.startedAt,
             displayName:
               tags["display-name"] || tags.displayName || tags.username || login,
@@ -491,6 +493,7 @@ function createTwitchChat({
     );
     try {
       liveActivityBuffer.noteEmoteUsage(login, streamId, inc, {
+          observedAtMs: Number(tags["tmi-sent-ts"]) || Date.now(),
         startedAt: liveState.startedAt,
         displayName: tags["display-name"] || tags.displayName || tags.username || login,
         twitchUserId: tags["user-id"] || tags.userId || "",

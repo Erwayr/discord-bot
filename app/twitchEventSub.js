@@ -496,6 +496,7 @@ function createTwitchEventSub({
   }
 
   async function handleTwitchCallback(req, res) {
+    const observedAtMs = Date.parse(req.header("Twitch-Eventsub-Message-Timestamp") || "") || Date.now();
     if (req.body.challenge) return res.status(200).send(req.body.challenge);
     if (!verifyTwitchSignature(req)) {
       return res.status(403).send("Invalid signature");
@@ -617,6 +618,7 @@ function createTwitchEventSub({
               startedAt,
               createIfMissing: false,
               twitchUserId: r.user_id || "",
+              observedAtMs: Date.parse(r.redeemed_at || "") || observedAtMs,
             },
           );
           if (channelPointsProgress?.reason === "missing_follower") {
@@ -626,6 +628,7 @@ function createTwitchEventSub({
                     startedAt,
                     displayName: r.user_name || login,
                     twitchUserId: r.user_id || "",
+                    observedAtMs: Date.parse(r.redeemed_at || "") || observedAtMs,
                   })
                 : null;
             if (buffered?.buffered) {
@@ -643,7 +646,7 @@ function createTwitchEventSub({
             await twitchExtensionStatsSync
               .syncEntry({
                 twitchUserId: r.user_id || "",
-                login,
+              login,
                 displayName: r.user_name || login,
                 channelPointsCount: 1,
               })
@@ -814,6 +817,7 @@ function createTwitchEventSub({
             questStore.noteRaidParticipation(chatter.login, streamId, {
               startedAt,
               twitchUserId: chatter.twitchUserId,
+              observedAtMs,
             }),
           ),
         );
