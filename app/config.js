@@ -172,6 +172,10 @@ const config = {
     weeklyPlanning: process.env.CRON_WEEKLY_PLANNING || "0 9 * * 1",
   },
 
+  monthlyPodiumRewards: {
+    enabled: process.env.MONTHLY_PODIUM_REWARDS_ENABLED !== "false",
+  },
+
   weeklyRecap: {
     excludedLogins: Array.from(
       new Set(

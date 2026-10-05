@@ -571,6 +571,7 @@ function createLivePresenceTicker({
       );
     } catch (e) {
       console.warn("[ticker] error:", e?.response?.data || e.message || e);
+      throw e; // A failed observation must not count as another confirmed-offline tick.
     }
   }
 

@@ -202,7 +202,8 @@ function followerDoc({ login, pseudo, discordId, currentChat = 0, previousChat =
   const now = new Date();
   const currentDate = now;
   const previousDate = addDays(now, -7);
-  const livePresence = {};
+  // Progress belongs to the payout month, even when last week's activity does not.
+  const livePresence = { [monthKey(now)]: { progress_pct: 20, streams: [] } };
 
   function addStream(date, chatCount) {
     if (chatCount <= 0) return;

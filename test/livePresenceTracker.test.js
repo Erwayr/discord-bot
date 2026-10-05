@@ -4,8 +4,20 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 
 const {
+  createLivePresenceTicker,
   _test: { createUptimeAccumulator },
 } = require("../script/livePresenceTracker");
+
+test("a failed Helix observation rejects instead of confirming a stale offline state", async () => {
+  let fail = false;
+  const ticker = createLivePresenceTicker({ db: {}, tokenManager: {}, clientId: "client",
+    broadcasterId: "owner", moderatorId: "mod", helixClient: async () => {
+      if (fail) throw new Error("helix_unavailable");
+      return { data: { data: [] } };
+    } });
+  await ticker(); fail = true;
+  await assert.rejects(ticker(), /helix_unavailable/);
+});
 
 test("uptime accumulator credits seen ticks, caps long gaps and skips absences", () => {
   const acc = createUptimeAccumulator({

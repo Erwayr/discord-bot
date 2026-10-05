@@ -4,6 +4,9 @@ const cron = require("node-cron");
 const { commitBatchWithRetry } = require("../helper/firestoreRetry");
 const { recalculateCommunityLevelRanks } = require("../script/communityLevel");
 const { shortText } = require("./textUtils");
+const { createMonthlyPodiumRewards } = require("../script/monthlyPodiumRewards");
+const { PODIUM_TIMEZONE } = require("../script/podium-periods.shared.cjs");
+const { MONTHLY_PODIUM_FIRST_MONTH } = require("../script/monthly-podium-rewards.shared.cjs");
 const {
   ensureServerBoosterCardTemplate,
   grantServerBoosterCardsByDiscordIds,
@@ -33,6 +36,21 @@ function createJobs({
   let announcedStartedAt = null;
   let offlineStreak = 0;
   let communityLevelRankRefreshPromise = null;
+  let monthlyRewardsRequested = true;
+  let lastLiveStateAt = 0;
+  const monthlyRewards = config.monthlyPodiumRewards?.enabled
+    ? createMonthlyPodiumRewards({ db, ensureActivitySaved: async () => {
+      if (offlineStreak < config.timing.offlineConfirmTicks ||
+          !lastLiveStateAt || Date.now() - lastLiveStateAt > 120000 ||
+          livePresenceTick.getLiveStreamState().streamId) return false;
+      const uptimeEntries = livePresenceTick.getPendingUptime?.() || [];
+      const result = await flushTwitchLiveActivity("monthly-podium-close", { uptimeEntries });
+      const uptime = await livePresenceTick.flushStreamUptime?.(undefined, { reason: "monthly-podium-close" });
+      return Boolean(result) && !result.failed &&
+        !uptime?.failed && (livePresenceTick.getPendingUptime?.() || []).length === 0 &&
+        twitchChat.getPendingLiveActivityStreams().length === 0 &&
+        !livePresenceTick.getLiveStreamState().streamId;
+    } }) : null;
 
   function isCommunityLevelRankLiveStartRefreshEnabled() {
     return (
@@ -328,6 +346,11 @@ function createJobs({
   }
 
   function scheduleCoreJobs() {
+    if (monthlyRewards) {
+      // A fresh confirmed-offline presence tick performs the work, including startup recovery.
+      cron.schedule("0 * * * *", () => { monthlyRewardsRequested = true; }, { timezone: PODIUM_TIMEZONE });
+      console.log("[monthly-podium] scheduled", { timezone: PODIUM_TIMEZONE, firstMonth: MONTHLY_PODIUM_FIRST_MONTH });
+    }
     cron.schedule(config.cron.pollClips, pollClipsTick);
 
     cron.schedule(config.cron.tokenKeepalive, async () => {
@@ -357,6 +380,7 @@ function createJobs({
       try {
         await livePresenceTick();
       } catch (e) {
+        offlineStreak = 0;
         console.warn(
           "⚠️ [livePresenceTick] failed:",
           e?.response?.data || e.message || e,
@@ -365,6 +389,7 @@ function createJobs({
       }
 
       const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
+      lastLiveStateAt = Date.now();
       const currentId = streamId || null;
 
       if (currentId) {
@@ -455,6 +480,12 @@ function createJobs({
         );
 
         await dispatchLiveEndGithubActions(endedStreamId);
+      }
+      if (monthlyRewards && monthlyRewardsRequested && offlineStreak >= config.timing.offlineConfirmTicks) {
+        monthlyRewardsRequested = false;
+        await monthlyRewards.runDue().catch(error => {
+          console.error("[monthly-podium] retry next hour:", error?.code || error?.message);
+        });
       }
     });
 
