@@ -73,6 +73,7 @@ async function getCommunityLevelConfig({ refresh = false } = {}) {
     firestoreConfig = snap.exists ? snap.data() || {} : {};
   } catch (e) {
     console.warn("[community-level] Firestore config fallback:", e?.message || e);
+    if (communityLevelConfigCache) return communityLevelConfigCache;
   }
 
   communityLevelConfigCache = {
@@ -189,6 +190,7 @@ const authHealth = createAuthHealth({
 const githubActions = createGithubActionsDispatcher({ config });
 
 const twitchEventSub = createTwitchEventSub({
+  getCommunityLevelConfig,
   db,
   client,
   config,

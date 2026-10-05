@@ -158,6 +158,7 @@ function buildChannelBanSubscriptionPayload(config) {
 }
 
 function createTwitchEventSub({
+  getCommunityLevelConfig,
   db,
   client,
   config,
@@ -610,6 +611,16 @@ function createTwitchEventSub({
         const login = (r.user_login || r.user_name || "").toLowerCase();
         const { streamId, startedAt } = livePresenceTick.getLiveStreamState();
         if (login && streamId) {
+          const rewardsConfig = typeof getCommunityLevelConfig === "function"
+            ? await getCommunityLevelConfig() : {};
+          if (require("../script/live-rewards.shared.cjs").rewardVersionForStart(startedAt, rewardsConfig) === 2 &&
+              typeof bufferLiveChannelPoints === "function") {
+            bufferLiveChannelPoints(login, streamId, 1, {
+              startedAt, displayName: r.user_name || login, twitchUserId: r.user_id || "",
+              observedAtMs: Date.parse(r.redeemed_at || "") || observedAtMs,
+            });
+            return res.sendStatus(200);
+          }
           const channelPointsProgress = await questStore.noteChannelPoints(
             login,
             streamId,

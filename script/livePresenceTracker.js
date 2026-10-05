@@ -59,7 +59,7 @@ function createUptimeAccumulator({
   maxTickMs,
   levelAnnouncementMinPresenceMs = 0,
 } = {}) {
-  const safeMaxTickMs = positiveInt(maxTickMs, DEFAULT_UPTIME_MAX_TICK_MS);
+  const safeMaxTickMs = Math.min(positiveInt(maxTickMs, DEFAULT_UPTIME_MAX_TICK_MS), DEFAULT_UPTIME_MAX_TICK_MS);
   const safeTickMs = Math.min(
     positiveInt(tickMs, DEFAULT_UPTIME_TICK_MS),
     safeMaxTickMs,
@@ -98,6 +98,10 @@ function createUptimeAccumulator({
 
     for (const [login, chatter] of present.entries()) {
       let entry = entries.get(login);
+      if (!entry && chatter.twitchUserId) {
+        const renamed = Array.from(entries).find(([, value]) => value.twitchUserId === chatter.twitchUserId);
+        if (renamed) { entries.delete(renamed[0]); entry = renamed[1]; entries.set(login, entry); }
+      }
       if (!entry) {
         entry = {
           firstSeenAtMs: seenAtMs,
@@ -119,9 +123,7 @@ function createUptimeAccumulator({
       }
 
       const deltaMs = Math.max(0, seenAtMs - entry.lastSeenAtMs);
-      const creditMs = entry.seenInLastTick
-        ? Math.min(deltaMs, safeMaxTickMs)
-        : safeTickMs;
+      const creditMs = entry.seenInLastTick && deltaMs <= safeMaxTickMs ? deltaMs : 0;
 
       entry.accumulatedMs += creditMs;
       entry.lastSeenAtMs = seenAtMs;
@@ -173,7 +175,7 @@ function createUptimeAccumulator({
         twitchUserId: entry.twitchUserId || "",
         displayName: entry.displayName || login,
       }))
-      .filter((entry) => entry.login && entry.streamId && entry.accumulatedMs > 0);
+      .filter((entry) => entry.login && entry.streamId && entry.firstSeenAtMs > 0);
   }
 
   function getEntry(login) {
@@ -185,6 +187,7 @@ function createUptimeAccumulator({
   function removeLogins(logins = []) {
     const removed = [];
     for (const rawLogin of Array.isArray(logins) ? logins : []) {
+      if (rawLogin?.streamId && rawLogin.streamId !== streamId) continue;
       const login = normalizeLogin(rawLogin?.login || rawLogin);
       if (!login || !entries.has(login)) continue;
       entries.delete(login);
@@ -194,6 +197,18 @@ function createUptimeAccumulator({
   }
 
   return {
+    breakContinuity: () => entries.forEach(entry => { entry.seenInLastTick = false; }),
+    restore: (snapshots = []) => {
+      for (const saved of snapshots) {
+        if (saved.streamId !== streamId || !saved.login) continue;
+        entries.set(saved.login, {
+          ...saved, accumulatedMs: nonNegativeInt(saved.uptimeMs ?? saved.accumulatedMs),
+          firstSeenAtMs: saved.presenceFirstSeenAtMs || saved.firstSeenAtMs,
+          lastSeenAtMs: saved.presenceLastSeenAtMs || saved.lastSeenAtMs,
+          seenInLastTick: false, presenceNoted: false, levelAnnouncementNoted: false,
+        });
+      }
+    },
     reset,
     markSeen,
     markPresenceNoted,
@@ -254,6 +269,8 @@ function createLivePresenceTicker({
   let presenceObservedHandler =
     typeof onPresenceObserved === "function" ? onPresenceObserved : null;
   let presenceObservationHandler = null;
+  let uptimeObservationHandler = null;
+  let restoredUptime = [];
 
   let CURRENT_STREAM_ID = null;
   let CURRENT_STARTED_AT = null;
@@ -403,6 +420,7 @@ function createLivePresenceTicker({
       const stream = await getCurrentStreamInfo();
 
       if (!stream) {
+        uptime.breakContinuity();
         if (CURRENT_STREAM_ID) {
           console.log("[ticker] stream ended - waiting offline confirmation");
         } else {
@@ -422,7 +440,11 @@ function createLivePresenceTicker({
         CURRENT_STARTED_AT = stream.started_at
           ? new Date(stream.started_at)
           : null;
-        uptime.reset(CURRENT_STREAM_ID, CURRENT_STARTED_AT);
+        if (uptime.streamId !== CURRENT_STREAM_ID) {
+          uptime.reset(CURRENT_STREAM_ID, CURRENT_STARTED_AT);
+          uptime.restore(restoredUptime);
+        }
+        restoredUptime = restoredUptime.filter(entry => entry.streamId !== CURRENT_STREAM_ID);
         console.log(
           `[ticker] new stream detected id=${CURRENT_STREAM_ID} started_at=${
             CURRENT_STARTED_AT?.toISOString() || "?"
@@ -435,6 +457,13 @@ function createLivePresenceTicker({
 
       const observedAtMs = now();
       const uptimeTick = uptime.markSeen(chatters, observedAtMs);
+      if (uptimeObservationHandler) {
+        for (const entry of uptime.snapshot()) {
+          if (uptimeTick.presentLogins.includes(entry.login)) {
+            await uptimeObservationHandler({ ...entry, startedAt: CURRENT_STARTED_AT });
+          }
+        }
+      }
       if (!uptimeTick.presentLogins.length) return;
 
       // Event rewards inspect every real observation, even when this viewer's
@@ -570,6 +599,7 @@ function createLivePresenceTicker({
         )}m)`,
       );
     } catch (e) {
+      uptime.breakContinuity();
       console.warn("[ticker] error:", e?.response?.data || e.message || e);
       throw e; // A failed observation must not count as another confirmed-offline tick.
     }
@@ -593,6 +623,8 @@ function createLivePresenceTicker({
   runTick.setPresenceObservationHandler = (handler) => {
     presenceObservationHandler = typeof handler === "function" ? handler : null;
   };
+  runTick.setUptimeObservationHandler = handler => { uptimeObservationHandler = handler; };
+  runTick.restorePendingUptime = entries => { restoredUptime = entries || []; };
 
   return runTick;
 }

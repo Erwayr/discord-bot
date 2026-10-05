@@ -5,6 +5,36 @@ const cron = require("node-cron");
 const { createJobs } = require("../app/jobs");
 const { createMemoryFirestore } = require("./helpers/live-chest-firestore.cjs");
 
+test("reward activation waits for confirmed offline and drained queues, then updates config only once", async t => {
+  const scheduled = new Map();
+  t.mock.method(cron, "schedule", (expression, callback) => { scheduled.set(expression, callback); return {}; });
+  const db = createMemoryFirestore({ "site_config/community_level": { chatXp: 20 } });
+  let stream = "running", error = false, pending = true, fail = false, refreshed = 0;
+  const livePresenceTick = async () => { if (error) throw new Error("offline_unknown"); };
+  livePresenceTick.getLiveStreamState = () => ({ streamId: stream });
+  livePresenceTick.getPendingUptime = () => [];
+  livePresenceTick.clearPendingUptime = () => {};
+  const jobs = createJobs({ db, config: { monthlyPodiumRewards: { enabled: false },
+    communityLevel: { enabled: false, autoActivateLiveRewards: true }, timing: { offlineConfirmTicks: 2 },
+    cron: { pollClips: "clips", tokenKeepalive: "tokens", livePresence: "live", birthdayRefresh: "birthday", emoteRefresh: "emote" } },
+    livePresenceTick, pollClipsTick() {}, birthdays: { async refreshTodayBirthdays() {} },
+    getCommunityLevelConfig: async () => { refreshed++; return {}; },
+    twitchChat: { async flushLiveActivity() { return { failed: fail ? 1 : 0, flushedEntries: [] }; },
+      getPendingLiveActivityStreams: () => pending ? ["running"] : [], refreshChannelEmotesThrottled() {} } });
+  jobs.scheduleCoreJobs();
+  const tick = scheduled.get("live");
+  await tick(); assert.equal(db.writes.length, 0);
+  stream = null; await tick(); error = true; await tick(); error = false;
+  await tick(); assert.equal(db.writes.length, 0);
+  await tick(); assert.equal(db.writes.length, 0);
+  pending = false; fail = true; await tick(); assert.equal(db.writes.length, 0);
+  fail = false; await tick();
+  assert.equal(db.documents.get("site_config/community_level").chatXp, 5);
+  assert.equal(db.documents.get("site_config/community_level").legacyLiveRewards.chatXp, 20);
+  const writes = db.writes.length;
+  await tick(); assert.equal(db.writes.length, writes); assert.equal(refreshed, 1);
+});
+
 test("startup and hourly rewards require fresh consecutive offline ticks and a successful full flush", async t => {
   t.mock.method(Date, "now", () => Date.parse("2026-10-01T07:00:00Z"));
   const scheduled = new Map();

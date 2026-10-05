@@ -1,7 +1,7 @@
 "use strict";
 
 const PODIUM_TIMEZONE = "Europe/Brussels";
-const PODIUM_SCHEMA_VERSION = 3;
+const PODIUM_SCHEMA_VERSION = 4;
 const PODIUM_COMPARISON_SCHEMA_VERSION = 2;
 const PODIUM_ENTRIES_LIMIT = 100;
 const dayFormatter = new Intl.DateTimeFormat("en-CA", {

@@ -72,6 +72,7 @@ function cloneEntry(entry) {
     emoteCount: nonNegativeInt(entry.emoteCount, 0),
     channelPointsCount: nonNegativeInt(entry.channelPointsCount, 0),
     uptimeMs: nonNegativeInt(entry.uptimeMs, 0),
+    uptimeCumulative: entry.uptimeCumulative === true,
     presenceFirstSeenAtMs: nonNegativeInt(entry.presenceFirstSeenAtMs, 0),
     presenceLastSeenAtMs: nonNegativeInt(entry.presenceLastSeenAtMs, 0),
     seasonalPresenceAtMs: qualifyingPresenceMs(entry.seasonalPresenceAtMs),
@@ -130,7 +131,10 @@ function mergeEntries(target, source) {
   target.chatEvents.sort((a, b) => a.atMs - b.atMs);
   target.emoteCount += nonNegativeInt(source.emoteCount, 0);
   target.channelPointsCount += nonNegativeInt(source.channelPointsCount, 0);
-  target.uptimeMs += nonNegativeInt(source.uptimeMs, 0);
+  target.uptimeMs = target.uptimeCumulative || source.uptimeCumulative
+    ? Math.max(target.uptimeMs || 0, source.uptimeMs || 0)
+    : target.uptimeMs + nonNegativeInt(source.uptimeMs, 0);
+  target.uptimeCumulative = target.uptimeCumulative || source.uptimeCumulative || false;
   target.seasonalPresenceAtMs = mergeQualifyingPresenceMs(target.seasonalPresenceAtMs, source.seasonalPresenceAtMs);
   target.observedPresenceMs = Math.max(target.observedPresenceMs || 0, nonNegativeInt(source.observedPresenceMs, 0));
 
@@ -208,13 +212,14 @@ function createLiveActivityBuffer({
     fs.mkdirSync(path.dirname(journalPath), { recursive: true });
   }
 
-  function appendJournal(event) {
+  function appendJournal(event, required = false) {
     if (!journalPath || rewritingJournal) return;
     try {
       ensureJournalDir();
       fs.appendFileSync(journalPath, safeLine(event), "utf8");
     } catch (e) {
       logger.warn("[live-activity] journal append failed:", e?.message || e);
+      if (required) throw e;
     }
   }
 
@@ -256,7 +261,7 @@ function createLiveActivityBuffer({
     if (entry.uptimeMs > 0 || entry.presenceFirstSeenAtMs > 0) {
       events.push({
         ...base,
-        type: "uptime",
+        type: entry.uptimeCumulative ? "uptime_snapshot" : "uptime",
         flushId: entry.flushId || null,
         uptimeMs: nonNegativeInt(entry.uptimeMs, 0),
         presenceFirstSeenAtMs: nonNegativeInt(entry.presenceFirstSeenAtMs, 0),
@@ -300,6 +305,15 @@ function createLiveActivityBuffer({
 
     const key = entryKey(login, streamId);
     let entry = pending.get(key);
+    const userId = normalizeTwitchUserId(meta.twitchUserId || meta.userId);
+    if (!entry && userId) {
+      const previous = Array.from(pending.entries()).find(([, value]) =>
+        value.streamId === streamId && value.twitchUserId === userId);
+      if (previous) {
+        pending.delete(previous[0]); entry = previous[1]; entry.login = login;
+        pending.set(key, entry);
+      }
+    }
     if (!entry) {
       entry = createEmptyEntry({
         login,
@@ -356,9 +370,14 @@ function createLiveActivityBuffer({
       return;
     }
 
-    if (raw.type === "uptime") {
+    if (raw.type === "uptime" || raw.type === "uptime_snapshot") {
       entry.flushId = raw.flushId || entry.flushId || null;
-      entry.uptimeMs += nonNegativeInt(raw.uptimeMs, 0);
+      if (raw.type === "uptime_snapshot") {
+        entry.uptimeMs = Math.max(entry.uptimeMs, nonNegativeInt(raw.uptimeMs, 0));
+        entry.uptimeCumulative = true;
+      } else {
+        entry.uptimeMs += nonNegativeInt(raw.uptimeMs, 0);
+      }
       entry.seasonalPresenceAtMs = mergeQualifyingPresenceMs(entry.seasonalPresenceAtMs, raw.seasonalPresenceAtMs);
       entry.observedPresenceMs = Math.max(entry.observedPresenceMs || 0, nonNegativeInt(raw.observedPresenceMs, 0));
       const first = nonNegativeInt(raw.presenceFirstSeenAtMs, 0);
@@ -495,7 +514,8 @@ function createLiveActivityBuffer({
   }
 
   function addUptimeToEntry(entry, raw = {}) {
-    entry.uptimeMs += nonNegativeInt(raw.accumulatedMs, raw.uptimeMs || 0);
+    entry.uptimeMs = Math.max(entry.uptimeMs, nonNegativeInt(raw.accumulatedMs, raw.uptimeMs || 0));
+    entry.uptimeCumulative = true;
     entry.seasonalPresenceAtMs = mergeQualifyingPresenceMs(entry.seasonalPresenceAtMs, raw.seasonalPresenceAtMs);
     entry.observedPresenceMs = Math.max(entry.observedPresenceMs || 0, nonNegativeInt(raw.accumulatedMs, raw.observedPresenceMs || 0));
     const firstSeen = nonNegativeInt(raw.firstSeenAtMs, raw.presenceFirstSeenAtMs || 0);
@@ -535,6 +555,22 @@ function createLiveActivityBuffer({
       observedPresenceMs: entry.observedPresenceMs,
       presenceFirstSeenAtMs: first, presenceLastSeenAtMs: last,
     });
+    return { buffered: true };
+  }
+
+  function noteUptimeObservation(raw = {}) {
+    const entry = ensureEntry(raw.login, raw.streamId, raw);
+    if (!entry) return { buffered: false, reason: "invalid_target" };
+    addUptimeToEntry(entry, raw);
+    // A checkpoint keeps the existing chat segment identity. Its duration is an
+    // absolute snapshot, never another delta when replayed or merged at live end.
+    appendJournal({ v: 2, type: "uptime_snapshot", login: entry.login,
+      streamId: entry.streamId, segmentId: entry.segmentId, flushId: entry.flushId,
+      startedAt: entry.startedAt, displayName: entry.displayName, twitchUserId: entry.twitchUserId,
+      uptimeMs: entry.uptimeMs, observedPresenceMs: entry.observedPresenceMs,
+      presenceFirstSeenAtMs: entry.presenceFirstSeenAtMs,
+      presenceLastSeenAtMs: entry.presenceLastSeenAtMs, seasonalPresenceAtMs: entry.seasonalPresenceAtMs,
+    }, true);
     return { buffered: true };
   }
 
@@ -743,6 +779,7 @@ function createLiveActivityBuffer({
     noteEmoteUsage,
     noteChannelPoints,
     notePresenceObservation,
+    noteUptimeObservation,
     flush,
     start,
     stop,

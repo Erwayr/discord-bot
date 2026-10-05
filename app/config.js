@@ -211,6 +211,8 @@ const config = {
   },
 
   communityLevel: {
+    autoActivateLiveRewards: boolEnv("COMMUNITY_LEVEL_REWARDS_V2_ENABLED", true),
+    liveRewards: { ...require("../script/live-rewards.shared.cjs").LIVE_REWARD_DEFAULTS },
     enabled: boolEnv("COMMUNITY_LEVEL_ENABLED", true),
     chatXp: numberEnv("COMMUNITY_LEVEL_CHAT_XP", 10),
     chatCooldownMs: numberEnv("COMMUNITY_LEVEL_CHAT_COOLDOWN_MS", 60_000),
@@ -247,7 +249,8 @@ const config = {
   },
 
   twitchLiveActivity: {
-    flushMode: process.env.TWITCH_LIVE_ACTIVITY_FLUSH_MODE || "live-end",
+    // Approved reward cadence; an old interval override must not enable live writes.
+    flushMode: "live-end",
     flushMs: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_MS", 20 * 60 * 1000),
     flushChunkSize: numberEnv("TWITCH_LIVE_ACTIVITY_FLUSH_CHUNK_SIZE", 25),
     levelAnnouncementMinPresenceMs: 15 * 60 * 1000,

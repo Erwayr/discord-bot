@@ -5,6 +5,7 @@ const { commitBatchWithRetry } = require("../helper/firestoreRetry");
 const { recalculateCommunityLevelRanks } = require("../script/communityLevel");
 const { shortText } = require("./textUtils");
 const { createMonthlyPodiumRewards } = require("../script/monthlyPodiumRewards");
+const { activateLiveRewards } = require("../script/liveRewardsActivation");
 const { PODIUM_TIMEZONE } = require("../script/podium-periods.shared.cjs");
 const { MONTHLY_PODIUM_FIRST_MONTH } = require("../script/monthly-podium-rewards.shared.cjs");
 const {
@@ -38,6 +39,7 @@ function createJobs({
   let communityLevelRankRefreshPromise = null;
   let monthlyRewardsRequested = true;
   let lastLiveStateAt = 0;
+  let liveRewardsActivated = false;
   const monthlyRewards = config.monthlyPodiumRewards?.enabled
     ? createMonthlyPodiumRewards({ db, ensureActivitySaved: async () => {
       if (offlineStreak < config.timing.offlineConfirmTicks ||
@@ -480,6 +482,23 @@ function createJobs({
         );
 
         await dispatchLiveEndGithubActions(endedStreamId);
+      }
+      if (config.communityLevel?.autoActivateLiveRewards === true && !liveRewardsActivated &&
+          offlineStreak >= config.timing.offlineConfirmTicks) {
+        try {
+          const uptimeEntries = livePresenceTick.getPendingUptime?.() || [];
+          const saved = await flushTwitchLiveActivity("rewards-activation", { uptimeEntries });
+          if (saved && !saved.failed && !(livePresenceTick.getPendingUptime?.() || []).length &&
+              !twitchChat.getPendingLiveActivityStreams().length &&
+              !livePresenceTick.getLiveStreamState().streamId) {
+            const activated = await activateLiveRewards(db, config.communityLevel);
+            await getCommunityLevelConfig({ refresh: true });
+            liveRewardsActivated = true;
+            console.log(`[live-rewards] v2 ready; newly-activated=${activated}`);
+          }
+        } catch (error) {
+          console.error("[live-rewards] activation deferred:", error?.message || error);
+        }
       }
       if (monthlyRewards && monthlyRewardsRequested && offlineStreak >= config.timing.offlineConfirmTicks) {
         monthlyRewardsRequested = false;

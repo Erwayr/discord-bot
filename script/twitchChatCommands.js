@@ -1,6 +1,9 @@
 "use strict";
+const { rewardVersionForStart, isLiveRewardV2 } = require("./live-rewards.shared.cjs");
+const { findRestartMergeIndex } = require("./questStorage");
 
 const {
+  applyLiveUptimeProgress,
   applyCommunityLevelUptime,
   applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
@@ -152,7 +155,7 @@ function findPreviewStream(data, streamId) {
   return null;
 }
 
-function ensurePreviewStream(data, streamId, startedAt) {
+function ensurePreviewStream(data, streamId, startedAt, config) {
   const safeStreamId = normalizeStreamId(streamId);
   const found = findPreviewStream(data, safeStreamId);
   if (found) return found.entry;
@@ -167,8 +170,16 @@ function ensurePreviewStream(data, streamId, startedAt) {
     : { streams: [] };
   month.streams = Array.isArray(month.streams) ? month.streams : [];
   data.live_presence[mk] = month;
+  const version = rewardVersionForStart(startedAt, config);
+  const restart = findRestartMergeIndex(month.streams, dayKeyUTC(startedMs), new Date(startedMs), version);
+  if (restart >= 0) {
+    const entry = month.streams[restart];
+    entry.stream_ids = Array.from(new Set([...streamIdsFor(entry), safeStreamId]));
+    return entry;
+  }
 
   const entry = {
+    reward_version: version,
     stream_id: safeStreamId,
     started_at: new Date(startedMs).toISOString(),
     day_key: dayKeyUTC(startedMs),
@@ -229,7 +240,7 @@ function applyPendingLiveDeltas(data, pendingEntries = [], communityConfig = {})
     });
 
   for (const pending of entries) {
-    const stream = ensurePreviewStream(workingData, pending.streamId, pending.startedAt);
+    const stream = ensurePreviewStream(workingData, pending.streamId, pending.startedAt, communityConfig);
 
     if (pending.presenceFirstSeenAtMs > 0) {
       stream.presence = {
@@ -314,7 +325,12 @@ function applyPendingLiveDeltas(data, pendingEntries = [], communityConfig = {})
     }
 
     const uptimeMinutes = Math.floor(pending.uptimeMs / MS_PER_MINUTE);
-    if (
+    if (isLiveRewardV2(stream)) {
+      const uptime = applyLiveUptimeProgress({ data: workingData, entry: stream,
+        streamId: pending.streamId, uptimeMs: pending.uptimeMs, rawConfig: communityConfig,
+        nowMs: pending.presenceLastSeenAtMs || Date.now() });
+      if (uptime.applied) workingData.communityLevel = uptime.communityLevel;
+    } else if (
       uptimeMinutes > 0 &&
       !finalizedUptimeStreamIds(stream).includes(pending.streamId)
     ) {
@@ -325,6 +341,7 @@ function applyPendingLiveDeltas(data, pendingEntries = [], communityConfig = {})
       });
       if (uptimeResult.applied) {
         workingData.communityLevel = uptimeResult.communityLevel;
+        stream.presence.uptime_finalized_stream_ids = [...finalizedUptimeStreamIds(stream), pending.streamId];
       }
     }
   }

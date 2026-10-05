@@ -1,4 +1,6 @@
 "use strict";
+const { LIVE_REWARD_DEFAULTS, isLiveRewardV2, rewardConfigForStream,
+  recordPodiumMessage } = require("./live-rewards.shared.cjs");
 
 const DEFAULT_RANK_TITLES = Object.freeze([
   { min: 0, label: "minimoys" },
@@ -171,6 +173,12 @@ function titleForLevel(level, rankTitles = DEFAULT_RANK_TITLES) {
 function resolveCommunityLevelConfig(raw = {}) {
   const rankTitles = normalizeRankTitles(raw.rankTitles || raw.titles);
   return {
+    liveRewardsActivatedAt: raw.liveRewardsActivatedAt || 0,
+    liveRewards: { ...LIVE_REWARD_DEFAULTS, ...(raw.liveRewards || {}) },
+    legacyLiveRewards: raw.legacyLiveRewards || null,
+    watchtimeXpPerMinute: nonNegativeInt(raw.watchtimeXpPerMinute, 8),
+    watchtimeMaxMinutesPerStream: nonNegativeInt(raw.watchtimeMaxMinutesPerStream, 360),
+    presenceMinMinutes: nonNegativeInt(raw.presenceMinMinutes, 10),
     enabled: raw.enabled !== false,
     chatXp: positiveInt(raw.chatXp, DEFAULT_CONFIG.chatXp),
     chatCooldownMs: nonNegativeInt(raw.chatCooldownMs, DEFAULT_CONFIG.chatCooldownMs),
@@ -318,6 +326,13 @@ function extractCommunityLevelFields(source = {}, rawConfig = {}) {
 }
 
 const XP_SOURCE_DEFINITIONS = Object.freeze({
+  watchtime: Object.freeze({
+    xpKey: "watchtimeXpPerMinute", streamXpKey: "watchtime_xp",
+    countKey: "watchtime_minutes", firstAtKey: "watchtime_first_xp_at",
+    lastAtKey: "watchtime_last_xp_at", totalXpKey: "watchtimeXpTotal",
+    totalCountKey: "watchtimeRewardedMinutes", communityLastAtKey: "lastWatchtimeXpAt",
+    sourceLabel: "twitch_watchtime",
+  }),
   chat: Object.freeze({
     xpKey: "chatXp",
     capKey: "chatXpCapPerStream",
@@ -365,7 +380,7 @@ function ensureEntryCommunityLevel(entry) {
   if (community.chat_xp == null) {
     community.chat_xp = Math.max(0, toInt(community.xp, 0));
   }
-  for (const key of ["presence_xp", "channel_points_xp"]) {
+  for (const key of ["presence_xp", "channel_points_xp", "watchtime_xp"]) {
     if (community[key] == null) community[key] = 0;
   }
   for (const key of ["messages", "presence_awards", "channel_points_awards"]) {
@@ -384,7 +399,7 @@ function ensureEntryCommunityLevel(entry) {
   community.xp =
     Math.max(0, toInt(community.chat_xp, 0)) +
     Math.max(0, toInt(community.presence_xp, 0)) +
-    Math.max(0, toInt(community.channel_points_xp, 0));
+    Math.max(0, toInt(community.channel_points_xp, 0)) + Math.max(0, toInt(community.watchtime_xp, 0));
 
   return community;
 }
@@ -465,7 +480,7 @@ function buildLevelAwardResult({
   entry.xp =
     Math.max(0, toInt(entry.chat_xp, 0)) +
     Math.max(0, toInt(entry.presence_xp, 0)) +
-    Math.max(0, toInt(entry.channel_points_xp, 0));
+    Math.max(0, toInt(entry.channel_points_xp, 0)) + Math.max(0, toInt(entry.watchtime_xp, 0));
 
   const legacyFields = config.legacyDoubleWrite
     ? {
@@ -502,12 +517,17 @@ function applyCommunityLevelXpProgress({
   source = "chat",
   eventCount = 1,
 } = {}) {
-  const config = resolveCommunityLevelConfig(rawConfig);
+  const config = resolveCommunityLevelConfig(rewardConfigForStream(entry, rawConfig));
   const definition = XP_SOURCE_DEFINITIONS[source];
   if (!config.enabled) return { awarded: false, reason: "disabled", source };
   if (!definition) return { awarded: false, reason: "unknown_source", source };
   if (!entry || typeof entry !== "object") {
     return { awarded: false, reason: "missing_entry", source };
+  }
+
+  if (isLiveRewardV2(entry) && source === "presence" &&
+      Number(entry.presence?.uptime_minutes || 0) < config.presenceMinMinutes) {
+    return { awarded: false, reason: "presence_threshold", source };
   }
 
   const community = ensureEntryCommunityLevel(entry);
@@ -558,10 +578,51 @@ function applyCommunityLevelXpProgress({
 }
 
 function applyChatMessageLevelProgress(options = {}) {
+  recordPodiumMessage(options.entry, options.nowMs ?? Date.now());
   return applyCommunityLevelXpProgress({
     ...options,
     source: "chat",
   });
+}
+
+// Cumulative snapshots are compared with a persisted watermark for each physical
+// stream. Restart-merged streams share the bonus and the six-hour reward cap.
+function applyLiveUptimeProgress({ data = {}, entry, streamId, uptimeMs = 0,
+  rawConfig = {}, nowMs = Date.now() } = {}) {
+  if (!isLiveRewardV2(entry) || !streamId) return { applied: false };
+  const presence = entry.presence ||= {};
+  const byStream = presence.uptime_ms_by_stream ||= {};
+  const previous = Math.max(0, Number(byStream[streamId]) || 0);
+  const observed = Math.max(0, Math.floor(Number(uptimeMs) || 0));
+  if (observed <= previous) return { applied: false, reason: "already_credited" };
+  const beforeMinutes = Math.max(0, Number(presence.uptime_minutes) || 0);
+  byStream[streamId] = observed;
+  presence.uptime_minutes = Math.floor(Object.values(byStream)
+    .reduce((sum, ms) => sum + Math.max(0, Number(ms) || 0), 0) / 60_000);
+  const minutesAdded = presence.uptime_minutes - beforeMinutes;
+  const uptime = applyCommunityLevelUptime({ data, uptimeMinutes: minutesAdded, nowMs });
+  let working = { ...data, communityLevel: uptime.applied ? uptime.communityLevel : { ...data.communityLevel } };
+  const config = resolveCommunityLevelConfig(rewardConfigForStream(entry, rawConfig));
+  const community = ensureEntryCommunityLevel(entry);
+  const newMinutes = Math.max(0, Math.min(presence.uptime_minutes,
+    config.watchtimeMaxMinutesPerStream) - Math.max(0, Number(community.watchtime_minutes) || 0));
+  let awardXp = 0;
+  const levelUps = [];
+  const legacyFields = {};
+  for (const [source, eventCount] of [["watchtime", newMinutes], ["presence", 1]]) {
+    if (eventCount <= 0 || (source === "presence" && community.presence_awards > 0)) continue;
+    const award = applyCommunityLevelXpProgress({ data: working, entry, streamId,
+      nowMs, rawConfig, source, eventCount });
+    if (!award.awarded) continue;
+    working = { ...working, communityLevel: award.communityLevel, ...award.legacyFields };
+    Object.assign(legacyFields, award.legacyFields);
+    awardXp += award.awardXp;
+    if (award.leveledUp) levelUps.push({ level: award.level, rankName: award.communityLevel.rankName });
+  }
+  return { applied: true, uptimeMinutesAdded: minutesAdded,
+    uptimeMinutes: working.communityLevel.uptimeMinutes || 0,
+    uptimeText: working.communityLevel.uptimeText || "", communityLevel: working.communityLevel,
+    awardXp, levelUps, legacyFields };
 }
 
 function applyFlatCommunityLevelXp({
@@ -772,6 +833,7 @@ async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
 }
 
 module.exports = {
+  applyLiveUptimeProgress,
   DEFAULT_CONFIG,
   DEFAULT_RANK_TITLES,
   normalizeRankTitles,

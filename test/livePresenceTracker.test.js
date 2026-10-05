@@ -19,7 +19,7 @@ test("a failed Helix observation rejects instead of confirming a stale offline s
   await assert.rejects(ticker(), /helix_unavailable/);
 });
 
-test("uptime accumulator credits seen ticks, caps long gaps and skips absences", () => {
+test("uptime accumulator credits only continuous observations and discards unobserved gaps", () => {
   const acc = createUptimeAccumulator({
     tickMs: 120_000,
     maxTickMs: 300_000,
@@ -32,25 +32,26 @@ test("uptime accumulator credits seen ticks, caps long gaps and skips absences",
   );
   assert.deepEqual(first.presentLogins, ["alice"]);
   assert.deepEqual(first.presenceLogins, ["alice"]);
-  assert.equal(first.creditedMs, 120_000);
+  assert.equal(first.creditedMs, 0);
 
   acc.markPresenceNoted("alice");
   const delayed = acc.markSeen(["alice"], 601_000);
   assert.deepEqual(delayed.presenceLogins, []);
-  assert.equal(delayed.creditedMs, 300_000);
+  assert.equal(delayed.creditedMs, 0);
 
   const absent = acc.markSeen([], 721_000);
   assert.deepEqual(absent.presentLogins, []);
   assert.equal(absent.creditedMs, 0);
 
   const returned = acc.markSeen(["alice"], 1_321_000);
-  assert.equal(returned.creditedMs, 120_000);
+  assert.equal(returned.creditedMs, 0);
+  assert.equal(acc.markSeen(["alice"], 1_441_000).creditedMs, 120_000);
 
   const snapshot = acc.snapshot();
   assert.equal(snapshot.length, 1);
   assert.equal(snapshot[0].login, "alice");
   assert.equal(snapshot[0].streamId, "stream-1");
-  assert.equal(snapshot[0].accumulatedMs, 540_000);
+  assert.equal(snapshot[0].accumulatedMs, 120_000);
 });
 
 test("uptime accumulator keeps Twitch ids from Helix chatters", () => {
@@ -86,7 +87,7 @@ test("uptime accumulator keeps Twitch ids from Helix chatters", () => {
   assert.equal(snapshot[0].login, "alice");
   assert.equal(snapshot[0].twitchUserId, "12345");
   assert.equal(snapshot[0].displayName, "Alice Display");
-  assert.equal(snapshot[0].accumulatedMs, 120_000);
+  assert.equal(snapshot[0].accumulatedMs, 60_000);
 });
 
 test("uptime accumulator can clear flushed logins", () => {
@@ -121,14 +122,16 @@ test("uptime accumulator signals the 15-minute level threshold once", () => {
 
   const absent = acc.markSeen([], 1_000 + 14 * 60_000);
   assert.deepEqual(absent.levelAnnouncementLogins, []);
-  assert.equal(acc.snapshot()[0].accumulatedMs, 14 * 60 * 1000);
+  assert.equal(acc.snapshot()[0].accumulatedMs, 13 * 60 * 1000);
 
-  const threshold = acc.markSeen(["alice"], 1_000 + 15 * 60_000);
+  acc.markSeen(["alice"], 1_000 + 15 * 60_000);
+  acc.markSeen(["alice"], 1_000 + 16 * 60_000);
+  const threshold = acc.markSeen(["alice"], 1_000 + 17 * 60_000);
   assert.equal(acc.snapshot()[0].accumulatedMs, 15 * 60 * 1000);
   assert.deepEqual(threshold.levelAnnouncementLogins, ["alice"]);
 
   acc.markLevelAnnouncementNoted("alice");
-  const later = acc.markSeen(["alice"], 1_000 + 16 * 60_000);
+  const later = acc.markSeen(["alice"], 1_000 + 18 * 60_000);
   assert.deepEqual(later.levelAnnouncementLogins, []);
 });
 

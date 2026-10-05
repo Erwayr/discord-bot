@@ -193,6 +193,8 @@ function createTwitchChat({
   });
   livePresenceTick?.setPresenceObservedHandler?.(guardianCostumeGrants.observePresence);
   livePresenceTick?.setPresenceObservationHandler?.(liveActivityBuffer.notePresenceObservation);
+  livePresenceTick?.restorePendingUptime?.(liveActivityBuffer.pendingSnapshot());
+  livePresenceTick?.setUptimeObservationHandler?.(liveActivityBuffer.noteUptimeObservation);
 
   const getPendingUptime =
     typeof livePresenceTick?.getPendingUptime === "function"

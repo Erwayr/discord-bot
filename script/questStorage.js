@@ -6,7 +6,9 @@ const { applyQuestCycleActivity } = require("./quest-cycle.logic.cjs");
 const admin = require("firebase-admin");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { buildHalloweenPresencePatch, mergeQualifyingPresenceMs } = require("./seasonalPresenceRewards");
+const { rewardVersionForStart, isLiveRewardV2 } = require("./live-rewards.shared.cjs");
 const {
+  applyLiveUptimeProgress,
   applyCommunityLevelUptime,
   applyCommunityLevelXpProgress,
   applyChatMessageLevelProgress,
@@ -45,6 +47,9 @@ function toDateMaybe(value) {
   if (typeof value === "object" && typeof value.toDate === "function") {
     const d = value.toDate();
     return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+  }
+  if (value && typeof value === "object" && value.seconds != null) {
+    return new Date(Number(value.seconds) * 1000 + Number(value.nanoseconds || 0) / 1e6);
   }
   return null;
 }
@@ -140,13 +145,14 @@ function latestKnownActivityMs(entry) {
   return latest;
 }
 
-function findRestartMergeIndex(streams, dayKey, startedDate) {
+function findRestartMergeIndex(streams, dayKey, startedDate, rewardVersion = 1) {
   if (!dayKey || !startedDate) return -1;
 
   const startedMs = startedDate.getTime();
   let best = { idx: -1, gapMs: Infinity };
 
   streams.forEach((stream, idx) => {
+    if ((stream.reward_version || 1) !== rewardVersion) return;
     if (streamDayKey(stream) !== dayKey) return;
     const lastActivityMs = latestKnownActivityMs(stream);
     if (lastActivityMs == null || lastActivityMs > startedMs) return;
@@ -309,10 +315,12 @@ function createQuestStorage(db, options = {}) {
     const startedDate = toDateMaybe(startedAt);
     const anchorDate = startedDate || new Date();
     const dayKey = dayKeyUTC(anchorDate);
+    const rewardVersion = rewardVersionForStart(startedAt, await getCommunityLevelConfig());
     const restartIdx = findRestartMergeIndex(
       month.streams,
       dayKey,
-      startedDate
+      startedDate,
+      rewardVersion,
     );
     if (restartIdx >= 0) {
       const entry = month.streams[restartIdx];
@@ -322,6 +330,7 @@ function createQuestStorage(db, options = {}) {
     }
 
     const entry = {
+      reward_version: rewardVersion,
       stream_id: streamId,
       started_at: startedDate
         ? admin.firestore.Timestamp.fromDate(startedDate)
@@ -420,6 +429,10 @@ function createQuestStorage(db, options = {}) {
     streamId,
     { uptimeMs = 0, startedAt = null, endedAt = null, twitchUserId = "", seasonalPresenceAtMs = 0 } = {},
   ) {
+    const config = await getCommunityLevelConfig();
+    if (rewardVersionForStart(startedAt, config) === 2) {
+      return noteLiveActivity(login, streamId, { uptimeMs, startedAt, twitchUserId, seasonalPresenceAtMs });
+    }
     const docId = await canonicalLogin(login, twitchUserId);
     const safeStreamId = normalizeStreamId(streamId);
     const uptimeMinutes = uptimeMinutesFromMs(uptimeMs);
@@ -795,7 +808,6 @@ function createQuestStorage(db, options = {}) {
 
     const ref = col.doc(docId);
     const participantRef = db.collection("participants").doc(docId);
-    const mk = monthKeyUTC();
     let result = {
       applied: false,
       login: docId,
@@ -817,27 +829,24 @@ function createQuestStorage(db, options = {}) {
       uptimeMinutesAdded: 0,
       participantMirrored: false,
     };
+    const initialResult = { ...result };
     const effectiveCommunityLevelConfig =
       normalizedChatEvents.length ||
       safePresenceFirstSeenAtMs > 0 ||
-      safeChannelPointsCount > 0
+      safeChannelPointsCount > 0 || safeUptimeMs > 0
       ? await getCommunityLevelConfig()
       : null;
 
     await db.runTransaction(async (tx) => {
+      result = { ...initialResult, levelUps: [] };
       const cycle = await readQuestCycle(db, tx);
-      const shouldReadParticipant = safeUptimeMinutes > 0;
+      const shouldReadParticipant = safeUptimeMs > 0 || rewardVersionForStart(startedAt, effectiveCommunityLevelConfig || {}) === 2;
       const [snap, participantSnap] = await Promise.all([
         tx.get(ref),
         shouldReadParticipant ? tx.get(participantRef) : Promise.resolve(null),
       ]);
-      const presenceDurationMs =
-        safePresenceFirstSeenAtMs > 0 && safePresenceLastSeenAtMs > 0
-          ? Math.max(0, safePresenceLastSeenAtMs - safePresenceFirstSeenAtMs)
-          : 0;
       const newProfilePresenceMs = Math.max(
         safeUptimeMs,
-        presenceDurationMs,
         Math.max(0, Math.floor(Number(observedPresenceMs) || 0)),
       );
       if (
@@ -858,7 +867,9 @@ function createQuestStorage(db, options = {}) {
       const data = snap.exists ? snap.data() || {} : {};
       const workingData = { ...data };
       const lp = { ...(data.live_presence || {}) };
-      const month = ensureMonthLayer(lp, mk);
+      const found = findStreamEntryAcrossMonths(lp, safeStreamId);
+      const activityMonth = found?.monthKey || monthKeyUTC(toDateMaybe(startedAt) || new Date());
+      const month = ensureMonthLayer(lp, activityMonth);
 
       const { idx, created } = await ensureStreamEntry(
         tx,
@@ -880,7 +891,9 @@ function createQuestStorage(db, options = {}) {
       });
       const patch = { live_presence: lp, ...(cycleState ? { quest_cycle: cycleState } : {}) };
 
-      if (safeFlushId && activityFlushIds(entry).includes(safeFlushId)) {
+      const replayedActivity = !!safeFlushId && activityFlushIds(entry).includes(safeFlushId);
+      if (replayedActivity && (!isLiveRewardV2(entry) ||
+          safeUptimeMs <= Number(entry.presence?.uptime_ms_by_stream?.[safeStreamId] || 0))) {
         result = {
           ...result,
           applied: false,
@@ -939,7 +952,7 @@ function createQuestStorage(db, options = {}) {
         }
       }
 
-      if (normalizedChatEvents.length) {
+      if (!replayedActivity && normalizedChatEvents.length) {
         entry.chat_message = {
           sent: false,
           count: 0,
@@ -996,7 +1009,7 @@ function createQuestStorage(db, options = {}) {
         result.chatCapped = result.chatCount >= CHAT_MESSAGE_CAP_PER_STREAM;
       }
 
-      if (safeChannelPointsCount > 0) {
+      if (!replayedActivity && safeChannelPointsCount > 0) {
         entry.channel_points = {
           used: false,
           redemptions: 0,
@@ -1031,7 +1044,7 @@ function createQuestStorage(db, options = {}) {
         }
       }
 
-      if (safeEmoteCount > 0) {
+      if (!replayedActivity && safeEmoteCount > 0) {
         entry.emote = {
           used: false,
           count: 0,
@@ -1045,7 +1058,26 @@ function createQuestStorage(db, options = {}) {
         entry.emote.last_at = latestAtMs;
       }
 
-      if (safeUptimeMinutes > 0) {
+      if (isLiveRewardV2(entry) && safeUptimeMs > 0) {
+        const uptimeResult = applyLiveUptimeProgress({ data: workingData, entry,
+          streamId: safeStreamId, uptimeMs: safeUptimeMs,
+          rawConfig: effectiveCommunityLevelConfig, nowMs: safePresenceLastSeenAtMs || latestAtMs });
+        if (uptimeResult.applied) {
+          if (!entry.presence.seen) month.count = Math.max(0, Number(month.count || 0)) + 1;
+          entry.presence.seen = true;
+          workingData.communityLevel = uptimeResult.communityLevel;
+          result.uptimeApplied = true;
+          result.uptimeMinutesAdded = uptimeResult.uptimeMinutesAdded;
+          result.uptimeMinutes = uptimeResult.uptimeMinutes;
+          result.uptimeText = uptimeResult.uptimeText;
+          result.levelUps.push(...uptimeResult.levelUps);
+          if (uptimeResult.awardXp > 0) latestLevelResult = {
+            awarded: true, awardXp: uptimeResult.awardXp, communityLevel: uptimeResult.communityLevel,
+            level: uptimeResult.communityLevel.level,
+            legacyFields: uptimeResult.legacyFields,
+          };
+        }
+      } else if (safeUptimeMinutes > 0 && !isLiveRewardV2(entry)) {
         entry.presence = {
           seen: false,
           first_at: null,
@@ -1111,11 +1143,11 @@ function createQuestStorage(db, options = {}) {
         );
       }
 
-      if (result.uptimeApplied && participantSnap?.exists) {
+      if (participantSnap?.exists && (result.uptimeApplied || (isLiveRewardV2(entry) && latestLevelResult?.awarded))) {
         tx.set(
           participantRef,
           {
-            communityLevel: {
+            communityLevel: isLiveRewardV2(entry) ? workingData.communityLevel : {
               uptimeMinutes: result.uptimeMinutes,
               uptimeText: result.uptimeText,
               source: "twitch_presence_uptime",
@@ -1358,4 +1390,4 @@ function createQuestStorage(db, options = {}) {
   };
 }
 
-module.exports = { createQuestStorage };
+module.exports = { createQuestStorage, findRestartMergeIndex };

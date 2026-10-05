@@ -8,18 +8,7 @@ const {
   isExcludedUserLike,
 } = require("../helper/excludedUsers");
 
-const SCORE_WEIGHTS = Object.freeze({
-  presence: 10,
-  chatMessage: 5,
-  emote: 1,
-  channelPoints: 2,
-  clips: 8,
-  raid: 4,
-  chatMessageCapPerStream: 10,
-  emoteCapPerStream: 5,
-  channelPointsCapPerStream: 10,
-  clipsCapPerStream: 5,
-});
+const { streamMetrics, scoreFromMetrics, compareActivity } = require("./podium-activity.shared.cjs");
 
 const DEFAULT_STATE_DOC_PATH = "settings/weekly_recap_state";
 const POPS_SCHEMA_VERSION = 1;
@@ -247,62 +236,9 @@ function streamDayKey(stream, timeZone) {
   return "";
 }
 
-function streamMetrics(stream) {
-  const presence = stream?.presence?.seen ? 1 : 0;
-  const chatMessages = Math.max(
-    0,
-    Math.floor(
-      toNum(
-        stream?.chat_message?.count || (stream?.chat_message?.sent ? 1 : 0),
-      ),
-    ),
-  );
-
-  const emote = Math.max(0, Math.floor(toNum(stream?.emote?.count || 0)));
-
-  let channelPoints = Math.max(
-    0,
-    Math.floor(
-      toNum(
-        stream?.channel_points?.redemptions ||
-          stream?.channel_points?.count ||
-          0,
-      ),
-    ),
-  );
-  if (!channelPoints && stream?.channel_points?.used) channelPoints = 1;
-
-  const clips = Math.max(0, Math.floor(toNum(stream?.clips?.count || 0)));
-  const raids = stream?.raid?.participated ? 1 : 0;
-
-  return { presence, chatMessages, emote, channelPoints, clips, raids };
-}
-
-function scoreFromMetrics(m) {
-  const chatEff = Math.min(
-    m.chatMessages,
-    SCORE_WEIGHTS.chatMessageCapPerStream,
-  );
-  const emoteEff = Math.min(m.emote, SCORE_WEIGHTS.emoteCapPerStream);
-  const pointsEff = Math.min(
-    m.channelPoints,
-    SCORE_WEIGHTS.channelPointsCapPerStream,
-  );
-  const clipsEff = Math.min(m.clips, SCORE_WEIGHTS.clipsCapPerStream);
-
-  return (
-    m.presence * SCORE_WEIGHTS.presence +
-    chatEff * SCORE_WEIGHTS.chatMessage +
-    emoteEff * SCORE_WEIGHTS.emote +
-    pointsEff * SCORE_WEIGHTS.channelPoints +
-    clipsEff * SCORE_WEIGHTS.clips +
-    m.raids * SCORE_WEIGHTS.raid
-  );
-}
-
 function sumActivity(m) {
   return (
-    m.presence + m.chatMessages + m.emote + m.channelPoints + m.clips + m.raids
+    m.presence + m.chatMessages + m.emote + m.channelPoints + m.clips + m.raids + (m.watchtimePoints || 0)
   );
 }
 
@@ -511,17 +447,7 @@ async function computeWeeklyRanking(
     });
   });
 
-  allRows.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (b.presence !== a.presence) return b.presence - a.presence;
-    if (b.clips !== a.clips) return b.clips - a.clips;
-    if (b.chatMessages !== a.chatMessages)
-      return b.chatMessages - a.chatMessages;
-    if (b.channelPoints !== a.channelPoints)
-      return b.channelPoints - a.channelPoints;
-    if (b.emote !== a.emote) return b.emote - a.emote;
-    return a.pseudo.localeCompare(b.pseudo, "fr", { sensitivity: "base" });
-  });
+  allRows.sort(compareActivity);
 
   return {
     range,

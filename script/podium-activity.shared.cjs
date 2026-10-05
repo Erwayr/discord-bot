@@ -1,6 +1,7 @@
 "use strict";
 
 const { podiumDayKey } = require("./podium-periods.shared.cjs");
+const { isLiveRewardV2 } = require("./live-rewards.shared.cjs");
 
 // Keep scoring, stream dating and tie-breaks aligned with the bot's
 // script/weeklyFollowersRecap.js. No rewards or private activity leave this module.
@@ -77,7 +78,8 @@ function streamDayKey(stream) {
 function streamMetrics(stream) {
   const presence = stream?.presence?.seen ? 1 : 0;
   const chatMessages = Math.max(0, Math.floor(toNum(
-    stream?.chat_message?.count || (stream?.chat_message?.sent ? 1 : 0),
+    isLiveRewardV2(stream) ? stream?.podium_activity?.chat_messages || 0
+      : stream?.chat_message?.count || (stream?.chat_message?.sent ? 1 : 0),
   )));
   const emote = Math.max(0, Math.floor(toNum(stream?.emote?.count || 0)));
   let channelPoints = Math.max(0, Math.floor(toNum(
@@ -86,7 +88,9 @@ function streamMetrics(stream) {
   if (!channelPoints && stream?.channel_points?.used) channelPoints = 1;
   const clips = Math.max(0, Math.floor(toNum(stream?.clips?.count || 0)));
   const raids = stream?.raid?.participated ? 1 : 0;
-  return { presence, chatMessages, emote, channelPoints, clips, raids };
+  const watchtimePoints = isLiveRewardV2(stream)
+    ? Math.min(72, Math.floor(Math.max(0, toNum(stream?.presence?.uptime_minutes)) / 5)) : 0;
+  return { presence, chatMessages, emote, channelPoints, clips, raids, watchtimePoints };
 }
 
 function scoreFromMetrics(metrics) {
@@ -95,7 +99,7 @@ function scoreFromMetrics(metrics) {
     Math.min(metrics.emote, SCORE_WEIGHTS.emoteCapPerStream) * SCORE_WEIGHTS.emote +
     Math.min(metrics.channelPoints, SCORE_WEIGHTS.channelPointsCapPerStream) * SCORE_WEIGHTS.channelPoints +
     Math.min(metrics.clips, SCORE_WEIGHTS.clipsCapPerStream) * SCORE_WEIGHTS.clips +
-    metrics.raids * SCORE_WEIGHTS.raid;
+    metrics.raids * SCORE_WEIGHTS.raid + (metrics.watchtimePoints || 0);
 }
 
 function compareActivity(a, b) {
@@ -109,7 +113,7 @@ function compareActivity(a, b) {
 }
 
 function emptyTotals() {
-  return { presence: 0, chatMessages: 0, emote: 0, channelPoints: 0, clips: 0, raids: 0, score: 0 };
+  return { presence: 0, chatMessages: 0, emote: 0, channelPoints: 0, clips: 0, raids: 0, watchtimePoints: 0, score: 0 };
 }
 
 function buildActivityRankings(docs = [], ranges = {}) {
@@ -150,4 +154,4 @@ function buildActivityRankings(docs = [], ranges = {}) {
   return rows;
 }
 
-module.exports = { buildActivityRankings };
+module.exports = { buildActivityRankings, streamMetrics, scoreFromMetrics, compareActivity };
