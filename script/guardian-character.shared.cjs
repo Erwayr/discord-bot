@@ -1,5 +1,5 @@
 "use strict";
-const { BASE_WEAPON_SKIN, getWeaponSkin } = require("./guardian-weapon-skins.shared.cjs");
+const { BASE_WEAPON_SKIN, getWeaponSkinOption: getWeaponSkin } = require("./guardian-weapon-skin-options.shared.cjs");
 const { BASE_COSTUME, COSTUMES, ownsCostume } = require("./guardian-costumes.shared.cjs");
 
 // Canonical catalog: shared with the browser and copied byte-for-byte to the bot.
@@ -15,9 +15,17 @@ const PALETTE = choices([
 ]);
 const OPTIONS = Object.freeze({
   body: choices([["masculine", "Masculine"], ["feminine", "Féminine"]]),
-  face: choices([["oval", "Ovale"], ["round", "Rond"], ["angular", "Anguleux"]]),
-  eyes: choices([["almond", "Amande"], ["round", "Ronds"], ["narrow", "Fins"]]),
-  nose: choices([["fine", "Fin"], ["round", "Arrondi"], ["broad", "Large"]]),
+  face: choices([["oval", "Ovale"], ["round", "Rond"], ["angular", "Anguleux"], ["square", "Carré"], ["heart", "Cœur"], ["elongated", "Allongé"]]),
+  eyes: choices([["almond", "Amande"], ["round", "Ronds"], ["narrow", "Fins"], ["hooded", "Tombants"], ["upturned", "Relevés"]]),
+  nose: choices([["fine", "Fin"], ["round", "Arrondi"], ["broad", "Large"], ["straight", "Droit"], ["aquiline", "Aquilin"]]),
+  mouth: choices([["natural", "Naturelle"], ["thin", "Fine"], ["full", "Pulpeuse"], ["wide", "Large"]]),
+  eyebrows: choices([["natural", "Naturels"], ["fine", "Fins"], ["thick", "Épais"], ["straight", "Droits"], ["arched", "Arqués"]]),
+  facialHair: choices([["none", "Aucune"], ["stubble", "Barbe de trois jours"], ["moustache", "Moustache"], ["goatee", "Bouc"], ["short", "Barbe courte"], ["full", "Barbe complète"]]),
+  ears: choices([["human", "Humaines"], ["pointed", "Pointues"], ["elf", "Elfiques longues"]]),
+  freckles: choices([["none", "Aucune"], ["light", "Légères"], ["dense", "Denses"]]),
+  scar: choices([["none", "Aucune"], ["brow", "Au sourcil"], ["cheek", "À la joue"], ["nose", "Sur le nez"]]),
+  facePaint: choices([["none", "Aucune"], ["warrior", "Guerrière"], ["runes", "Runique"], ["geometric", "Géométrique"]]),
+  facePaintColor: PALETTE,
   hair: choices([
     ["shaved", "Rasée"], ["cropped", "Courte"], ["bob", "Mi-longue"], ["tied", "Attachée"],
     ["fade", "Dégradé"], ["spiky", "Hérissée"], ["afro", "Afro"], ["curly", "Bouclée"],
@@ -29,8 +37,8 @@ const OPTIONS = Object.freeze({
   tunic: PALETTE, trousers: PALETTE, boots: PALETTE, bracers: PALETTE, details: PALETTE,
   costume: choices([[BASE_COSTUME, "Tenue classique"], ...COSTUMES.map(costume => [costume.id, costume.title])]),
   weapon: Object.freeze([
-    { id: "sword", label: "Épée", minLevel: 0 }, { id: "bow", label: "Arc", minLevel: 10 },
-    { id: "hammer", label: "Marteau", minLevel: 20 }, { id: "staff", label: "Bâton", minLevel: 30 },
+    { id: "sword", label: "Épée", minLevel: 0 }, { id: "bow", label: "Arc", minLevel: 0 },
+    { id: "hammer", label: "Marteau", minLevel: 0 }, { id: "staff", label: "Bâton", minLevel: 0 },
   ].map(Object.freeze)),
   aura: Object.freeze([
     { id: "none", label: "Aucune", minLevel: 0 },
@@ -38,7 +46,7 @@ const OPTIONS = Object.freeze({
     { id: "gold", label: "Dorée", minLevel: 200 },
   ].map(Object.freeze)),
 });
-const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", boots: "leather", bracers: "leather", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none", costume: BASE_COSTUME });
+const DEFAULT_CHARACTER = Object.freeze({ schemaVersion: SCHEMA_VERSION, body: "masculine", face: "oval", eyes: "almond", nose: "fine", mouth: "natural", eyebrows: "natural", facialHair: "none", ears: "human", freckles: "none", scar: "none", facePaint: "none", facePaintColor: "ocean", hair: "cropped", skin: "sand", hairColor: "brown", eyeColor: "green", tunic: "ocean", trousers: "slate", boots: "leather", bracers: "leather", details: "gold", weapon: "sword", weaponSkin: BASE_WEAPON_SKIN, aura: "none", costume: BASE_COSTUME });
 
 function characterError(code, status = 400) { return Object.assign(new Error(code), { code, status }); }
 function characterLevel(profile = {}) {

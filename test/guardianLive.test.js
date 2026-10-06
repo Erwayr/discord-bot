@@ -7,6 +7,21 @@ const { buildTwitchHelpResponse } = require("../script/twitchChatCommands");
 const { chatReaction, chatMessageText, actionDuration } = require("../script/guardian-actions.shared.cjs");
 const { publishGuardianChat, pollGuardianLive, readElectedGuardian } = require("../script/guardian-live.store.cjs");
 const { freshState, cleanState, applyGuardianChat, guardianChatPresentation } = require("../script/guardian-live.shared.cjs");
+test("new facial cosmetics survive a viewer passage and retain its prepared snapshot", async () => {
+  const { DEFAULT_CHARACTER } = require("../script/guardian-character.shared.cjs");
+  const { enqueueGuardianViewer } = require("../script/guardian-live.store.cjs");
+  const now = 1000000, db = createMemoryFirestore();
+  const character = { ...DEFAULT_CHARACTER, body: "feminine", face: "heart", eyes: "upturned", nose: "aquiline", mouth: "full", eyebrows: "arched", ears: "elf", facialHair: "goatee", freckles: "dense", scar: "cheek", facePaint: "runes", facePaintColor: "teal" };
+  db.documents.set("followers_all_time/viewer", { twitch_id: "42", pseudo: "Viewer", communityLevel: { level: 0 }, currentGuardian: { title: "minimoys", character } });
+  db.documents.set("guardian_live_channels/123", { ...freshState("live", now), initialized: true, guardianUntilMs: now, liveUntilMs: now + 90000, liveCheckedAtMs: now });
+  assert.equal((await enqueueGuardianViewer({ db, channelId: "123", streamId: "live", now, request: { requestId: "face", userId: "42", login: "viewer", displayName: "Viewer" } })).accepted, true);
+  assert.deepEqual((await pollGuardianLive({ db, channelId: "123", now })).viewer.character, character);
+  assert.equal((await pollGuardianLive({ db, channelId: "123", now })).viewer.level, 0);
+  db.documents.get("followers_all_time/viewer").currentGuardian.character = { ...DEFAULT_CHARACTER };
+  db.documents.get("followers_all_time/viewer").communityLevel.level = 200;
+  assert.deepEqual((await pollGuardianLive({ db, channelId: "123", now: now + 5000 })).viewer.character, character);
+  assert.equal((await pollGuardianLive({ db, channelId: "123", now: now + 5000 })).viewer.level, 0, "prepared level is held until the viewer leaves");
+});
 test("!perso accepts the Twitch author, resolves canonical login and is listed in help", async () => {
   const db = createMemoryFirestore(); const messages = [];
   const app = createGuardianLive({ db, channelId: "123", now: () => 1000000,
@@ -65,11 +80,16 @@ function chatFixture() {
 test("weapon skins survive elected Guardian reads, queued appearances and reconnects without exposing purchases", async () => {
   const { db, app } = chatFixture();
   const profile = db.documents.get("followers_all_time/renamed");
-  profile.communityLevel = { level: 30 };
-  profile.currentGuardian = { character: { weapon: "staff", weaponSkin: "staff-void" } };
-  profile.popsShop = { weaponSkins: { owned: { "staff-void": { id: "staff-void", price: 2500 } } } };
+  profile.communityLevel = { level: 0 };
+  profile.currentGuardian = { character: { weapon: "staff", weaponSkin: "staff-royal" } };
+  profile.popsShop = { weaponSkins: { owned: { "staff-royal": { id: "staff-royal", price: 2500 } } } };
   const guardian = await readElectedGuardian({ db });
-  assert.equal(guardian.character.weaponSkin, "staff-void");
+  assert.equal(guardian.character.weaponSkin, "staff-royal");
+  assert.equal(guardian.level,0);
+  for(const level of [49,50,99,100,199,200,250,0]){
+    profile.communityLevel.level=level;
+    assert.equal((await readElectedGuardian({db})).level,level,'Elected Guardian level follows the canonical profile');
+  }
   assert.equal(guardian.popsShop, undefined);
   await app.tick();
   await pollGuardianLive({ db, channelId: "123", now: 1000000 });
@@ -78,11 +98,37 @@ test("weapon skins survive elected Guardian reads, queued appearances and reconn
     request: { requestId: "skin-preview", userId: "42", login: "renamed", displayName: "Viewer" } });
   assert.equal(queued.accepted, true);
   const started = await pollGuardianLive({ db, channelId: "123", now: 1006000 });
-  assert.equal(started.viewer.character.weaponSkin, "staff-void");
+  assert.equal(started.viewer.character.weaponSkin, "staff-royal");
   const resumed = await pollGuardianLive({ db, channelId: "123", now: 1007000 });
   assert.deepEqual(resumed.viewer, started.viewer);
   assert.equal(resumed.startsAtMs, started.startsAtMs);
   assert(!JSON.stringify(resumed).includes("owned"));
+});
+
+test("all sixty acquired skins remain visible at level zero after purchase tier changes", async () => {
+  const { WEAPON_SKINS } = require("../script/guardian-weapon-skins.shared.cjs");
+  const additions = WEAPON_SKINS.filter(skin => skin.variant !== undefined);
+  assert.equal(additions.length, 60);
+  for (const skin of additions) {
+    const { db } = chatFixture();
+    const profile = db.documents.get("followers_all_time/renamed");
+    profile.communityLevel = { level: 0 };
+    profile.currentGuardian = { character: { weapon: skin.weapon, weaponSkin: skin.id } };
+    profile.popsShop = { weaponSkins: { owned: { [skin.id]: { id: skin.id, price: 2500 } } } };
+    const guardian = await readElectedGuardian({ db });
+    assert.equal(guardian.character.weaponSkin, skin.id);
+    assert.equal(guardian.character.weapon, skin.weapon);
+    assert.equal(guardian.popsShop, undefined);
+  }
+});
+
+test("all four classic weapon types remain visible in public Guardian reads at level zero", async () => {
+  for (const weapon of ["sword", "bow", "hammer", "staff"]) {
+    const { db }=chatFixture(),profile=db.documents.get("followers_all_time/renamed");
+    profile.communityLevel={level:0};profile.currentGuardian={character:{weapon,weaponSkin:"classic"}};
+    const guardian=await readElectedGuardian({db});
+    assert.equal(guardian.character.weapon,weapon);assert.equal(guardian.character.weaponSkin,"classic");
+  }
 });
 
 test("regular Guardian messages greet by stable Twitch ID without swallowing chat or sending a bot reply", async () => {

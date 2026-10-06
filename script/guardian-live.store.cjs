@@ -3,7 +3,7 @@ const { isDeepStrictEqual } = require("node:util");
 const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
 const { TRAVEL_MS, ARRIVAL_MS } = require("./guardian-actions.shared.cjs");
 
-const { characterForProfile } = require("./guardian-character.shared.cjs");
+const { characterForProfile, characterLevel } = require("./guardian-character.shared.cjs");
 const { freshState, cleanState, enqueueAppearance, advanceAppearance, LIVE_LEASE_MS, applyGuardianChat, guardianChatPresentation } = require("./guardian-live.shared.cjs");
 const channelRef = (db, channelId) => {
   if (!/^\d{1,25}$/.test(String(channelId))) throw new Error("guardian_channel_invalid");
@@ -53,7 +53,7 @@ async function readQueuedViewer(tx, db, request) {
   if (/^[a-z0-9_]{1,50}$/.test(login)) profile = (await tx.get(db.collection("followers_all_time").doc(login))).data() || {};
   const linkedIds = [profile.twitch_id, profile.twitchId, profile.twitchUserId, profile.user_id].filter(Boolean).map(String);
   if (linkedIds.some((id) => id !== request.userId)) profile = {};
-  return { login: login || request.login, pseudo: request.displayName || request.login, character: characterForProfile(profile) };
+  return { login: login || request.login, pseudo: request.displayName || request.login, level: characterLevel(profile), character: characterForProfile(profile) };
 }
 
 const twitchIds = profile => [profile.twitch_id, profile.twitchId, profile.twitchUserId, profile.user_id].filter(Boolean).map(String);
@@ -62,7 +62,7 @@ const validLogin = value => /^[a-z0-9_]{1,50}$/.test(String(value || "").toLower
 // winnerId is a Discord ID. Resolve the Twitch account from the elected
 // follower, then its stable identity record, including after a Twitch rename.
 async function readElectedGuardian({ db, read = ref => ref.get() }) {
-  const empty = { electionId: "", userId: "", login: "", pseudo: "Gardien du Stream", character: characterForProfile({}) };
+  const empty = { electionId: "", userId: "", login: "", pseudo: "Gardien du Stream", level: 0, character: characterForProfile({}) };
   const snapshot = await read(db.collection("elections").orderBy("endedAt", "desc").limit(1));
   const election = snapshot.docs[0];
   const data = election?.data() || {};
@@ -90,7 +90,7 @@ async function readElectedGuardian({ db, read = ref => ref.get() }) {
   }
   return { electionId: election.id, userId, login,
     pseudo: String(profile.pseudo || info.display_name || info.pseudo || login || empty.pseudo).slice(0, 80),
-    character: characterForProfile(profile) };
+    level: characterLevel(profile), character: characterForProfile(profile) };
 }
 
 async function publishGuardianChat({ db, channelId, streamId, userId, messageId, message, now = Date.now(), sentAtMs = now }) {
