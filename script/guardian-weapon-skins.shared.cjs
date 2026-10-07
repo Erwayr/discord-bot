@@ -29,7 +29,7 @@ const WEAPON_SKINS = Object.freeze([
   ...THEMES.flatMap(([theme, color, description, titles], variant) => WEAPONS.map((weapon, index) =>
     [`${weapon}-${theme}`, weapon, titles[index], color, description, theme, variant])),
 ].map(([id, weapon, title, color, description, theme, variant]) => Object.freeze({
-  id, weapon, title, minLevel: getWeaponSkinOption(id).minLevel, color, description, rarity: "epic", basePrice: 2500,
+  id, weapon, title, minLevel: getWeaponSkinOption(id).minLevel, color, description, rarity: "epic", basePrice: 0,
   ...(theme ? { theme, variant } : {}),
   model: `assets/guardian/weapon-skins/${id}.glb`,
   thumbnail: `assets/guardian/weapon-skins/${id}.webp`,
@@ -40,8 +40,6 @@ function weaponSkinWallet(profile = {}) {
   const integer = value => Number.isSafeInteger(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
   return { balance: integer(source.balance), lifetimeEarned: integer(source.lifetimeEarned), schemaVersion: 1 };
 }
-function weaponSkinPrice(profile = {}) {
-  const balance = weaponSkinWallet(profile).balance;
-  return 2500 + (balance > 10000 ? Math.ceil(balance * .05) : 0);
-}
+// Acquisition is now a free, permanent community-level unlock.
+function weaponSkinPrice() { return 0; }
 module.exports = { BASE_WEAPON_SKIN, WEAPON_SKINS, getWeaponSkin, weaponSkinWallet, weaponSkinPrice, ownsWeaponSkin };

@@ -4,6 +4,7 @@ const { BASE_COSTUME, COSTUMES, ownsCostume } = require("./guardian-costumes.sha
 
 // Canonical catalog: shared with the browser and copied byte-for-byte to the bot.
 const SCHEMA_VERSION = 1;
+const normalizeWeaponForm = value => [1, 2, 3, 4].includes(Number(value)) ? Number(value) : 1;
 const choices = (rows) => Object.freeze(rows.map(([id, label, color]) => Object.freeze({ id, label, ...(color ? { color } : {}) })));
 const PALETTE = choices([
   ["ocean", "Océan", "#237eac"], ["forest", "Forêt", "#38794b"],
@@ -89,4 +90,4 @@ function characterForProfile(profile = {}) {
   if (!ownsCostume(profile, character.costume)) character.costume = BASE_COSTUME;
   return character;
 }
-module.exports = { SCHEMA_VERSION, OPTIONS, PALETTE, DEFAULT_CHARACTER, normalizeCharacter, characterForProfile, characterLevel };
+module.exports = { SCHEMA_VERSION, OPTIONS, PALETTE, DEFAULT_CHARACTER, normalizeCharacter, characterForProfile, characterLevel, normalizeWeaponForm };

@@ -22,6 +22,30 @@ test("new facial cosmetics survive a viewer passage and retain its prepared snap
   assert.deepEqual((await pollGuardianLive({ db, channelId: "123", now: now + 5000 })).viewer.character, character);
   assert.equal((await pollGuardianLive({ db, channelId: "123", now: now + 5000 })).viewer.level, 0, "prepared level is held until the viewer leaves");
 });
+test("Pops forms come from canonical progress and prepared !perso forms survive upgrades", async () => {
+  const { db, app } = chatFixture();
+  const profile = db.documents.get("followers_all_time/renamed");
+  profile.communityLevel = { level: 200 };
+  profile.currentGuardian = { character: { weapon: "staff", weaponSkin: "staff-royal" } };
+  profile.popsShop = { weaponSkins: { owned: { "staff-royal": { id: "staff-royal", price: 2500 } }, progress: {} } };
+  assert.equal((await readElectedGuardian({ db })).weaponForm, 1, "legacy skins do not evolve with community level");
+  const progress = { schemaVersion: 1, form: 2, invested: 100, target: 5000, totalInvested: 2600, revision: 2 };
+  profile.popsShop.weaponSkins.progress["staff-royal"] = progress;
+  profile.communityLevel.level = 0;
+  assert.equal((await readElectedGuardian({ db })).weaponForm, 2);
+  await app.tick(); await pollGuardianLive({ db, channelId: "123", now: 1000000 });
+  const { enqueueGuardianViewer } = require("../script/guardian-live.store.cjs");
+  await enqueueGuardianViewer({ db, channelId: "123", streamId: "live", now: 1000000,
+    request: { requestId: "paid-form", userId: "42", login: "renamed", displayName: "Viewer" } });
+  const started = await pollGuardianLive({ db, channelId: "123", now: 1006000 });
+  assert.equal(started.viewer.weaponForm, 2);
+  profile.popsShop.weaponSkins.progress["staff-royal"] = { ...progress, form: 4, invested: 0, target: null, totalInvested: 17500, revision: 4 };
+  assert.equal((await readElectedGuardian({ db })).weaponForm, 4);
+  const resumed = await pollGuardianLive({ db, channelId: "123", now: 1007000 });
+  assert.equal(resumed.viewer.weaponForm, 2); assert.deepEqual(resumed.viewer, started.viewer);
+  assert(!JSON.stringify(resumed).includes("totalInvested"));
+});
+
 test("!perso accepts the Twitch author, resolves canonical login and is listed in help", async () => {
   const db = createMemoryFirestore(); const messages = [];
   const app = createGuardianLive({ db, channelId: "123", now: () => 1000000,
