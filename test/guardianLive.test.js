@@ -4,9 +4,9 @@ const assert = require("node:assert/strict");
 const { createGuardianLive } = require("../script/guardianLive");
 const { createMemoryFirestore } = require("./helpers/live-chest-firestore.cjs");
 const { buildTwitchHelpResponse } = require("../script/twitchChatCommands");
-const { chatReaction, chatMessageText, actionDuration } = require("../script/guardian-actions.shared.cjs");
+const { chatReaction, chatMessageText, actionDuration, ARRIVAL_MS, TRAVEL_MS } = require("../script/guardian-actions.shared.cjs");
 const { publishGuardianChat, pollGuardianLive, readElectedGuardian } = require("../script/guardian-live.store.cjs");
-const { freshState, cleanState, applyGuardianChat, guardianChatPresentation } = require("../script/guardian-live.shared.cjs");
+const { freshState, cleanState, applyGuardianChat, guardianChatPresentation, APPEARANCE_MS, COOLDOWN_MS } = require("../script/guardian-live.shared.cjs");
 test("new facial cosmetics survive a viewer passage and retain its prepared snapshot", async () => {
   const { DEFAULT_CHARACTER } = require("../script/guardian-character.shared.cjs");
   const { enqueueGuardianViewer } = require("../script/guardian-live.store.cjs");
@@ -46,6 +46,26 @@ test("Pops forms come from canonical progress and prepared !perso forms survive 
   assert(!JSON.stringify(resumed).includes("totalInvested"));
 });
 
+test("chosen lower forms are used by the elected guardian and prepared viewer passages", async () => {
+  const { db, app } = chatFixture();
+  const profile = db.documents.get("followers_all_time/renamed");
+  profile.currentGuardian = { character: { weapon: "staff", weaponSkin: "staff-royal" }, weaponForm: 1 };
+  profile.popsShop = { weaponSkins: { owned: { "staff-royal": { id: "staff-royal" } }, progress: {
+    "staff-royal": { schemaVersion: 1, form: 4, invested: 0, target: null, totalInvested: 17500, revision: 3 },
+  } } };
+  assert.equal((await readElectedGuardian({ db })).weaponForm, 1);
+  await app.tick(); await pollGuardianLive({ db, channelId: "123", now: 1000000 });
+  const { enqueueGuardianViewer } = require("../script/guardian-live.store.cjs");
+  await enqueueGuardianViewer({ db, channelId: "123", streamId: "live", now: 1000000,
+    request: { requestId: "chosen-form", userId: "42", login: "renamed", displayName: "Viewer" } });
+  const started = await pollGuardianLive({ db, channelId: "123", now: 1006000 });
+  assert.equal(started.viewer.weaponForm, 1);
+  profile.currentGuardian.weaponForm = 3;
+  assert.equal((await readElectedGuardian({ db })).weaponForm, 3);
+  assert.equal((await pollGuardianLive({ db, channelId: "123", now: 1007000 })).viewer.weaponForm, 1, "an active passage keeps its prepared form");
+  assert(!JSON.stringify(started.viewer).includes("totalInvested"));
+});
+
 test("!perso accepts the Twitch author, resolves canonical login and is listed in help", async () => {
   const db = createMemoryFirestore(); const messages = [];
   const app = createGuardianLive({ db, channelId: "123", now: () => 1000000,
@@ -58,8 +78,56 @@ test("!perso accepts the Twitch author, resolves canonical login and is listed i
   const result = await app.handleMessage({ message: " !PeRsO ", login: "newname", displayName: "NewName", tags: { "user-id": "42", id: "message42" } });
   assert.equal(result.accepted, true); assert.equal(messages.length, 1);
   assert.match(messages[0], /position 1/);
+  assert.match(messages[0], /1 min 30 \(hors animations d’entrée et de sortie\)/u);
   assert.equal(db.documents.get("guardian_live_channels/123").queue[0].login, "canonical");
-  assert.match(buildTwitchHelpResponse(), /!perso/);
+  assert.match(buildTwitchHelpResponse(), /!perso[^|]*1 min 30 hors animations d’entrée et de sortie, toutes les 10 min/u);
+});
+
+test("!perso keeps 90 seconds between arrival and departure, survives lease refreshes and retains its ten-minute cooldown", async () => {
+  const initial = 1000000, db = createMemoryFirestore();
+  let time = initial;
+  db.documents.set("guardian_live_channels/123", { ...freshState("live", initial), initialized: true, guardianUntilMs: initial });
+  const app = createGuardianLive({ db, channelId: "123", now: () => time,
+    getLiveState: async () => ({ streamId: "live" }), sendMessage: async () => {} });
+  const summon = id => app.handleMessage({ message: "!perso", login: "viewer", tags: { "user-id": "42", id } });
+  const poll = () => pollGuardianLive({ db, channelId: "123", now: time });
+
+  assert.equal((await summon("first")).accepted, true);
+  const started = await poll();
+  assert.equal(started.kind, "viewer");
+  assert.equal(started.startsAtMs, initial + TRAVEL_MS, "the previous Guardian leaves before the viewer enters");
+  assert.equal(started.endsAtMs - started.startsAtMs, 97000);
+  const settledAt = started.startsAtMs + ARRIVAL_MS;
+  const departureAt = started.endsAtMs - TRAVEL_MS;
+  assert.equal(departureAt - settledAt, 90000, "entry and exit do not consume the ninety-second stay");
+  const initialLease = db.documents.get("guardian_live_channels/123").liveUntilMs;
+
+  for (const elapsed of [30000, 60000, 90000]) {
+    time = initial + elapsed;
+    await app.tick();
+    const ongoing = await poll();
+    assert.equal(ongoing.kind, "viewer");
+    assert.equal(ongoing.appearanceId, started.appearanceId);
+    assert.equal(ongoing.endsAtMs, started.endsAtMs, "heartbeats preserve the scheduled end");
+  }
+  time = initialLease + 1;
+  assert.equal((await poll()).kind, "viewer", "the active passage survives beyond its original live lease");
+  assert.ok(db.documents.get("guardian_live_channels/123").liveUntilMs > time);
+  time = departureAt - 1;
+  assert.equal((await poll()).kind, "viewer");
+  time = started.endsAtMs - 1;
+  assert.equal((await poll()).kind, "viewer", "the viewer remains active through the exit animation");
+  time = started.endsAtMs;
+  assert.equal((await poll()).kind, "guardian");
+
+  assert.equal(COOLDOWN_MS, 600000);
+  time = initial + 599999;
+  const refused = await summon("too-soon");
+  assert.equal(refused.reason, "cooldown");
+  assert.equal(refused.retryAfterMs, 1);
+  assert.equal(db.documents.get("guardian_live_channels/123/viewers/42").lastAcceptedAtMs, initial);
+  time = initial + 600000;
+  assert.equal((await summon("ready")).accepted, true);
 });
 test("offline calls are rejected without consuming cooldown, missing Twitch identity does not enqueue", async () => {
   const db = createMemoryFirestore(); const messages = [];
@@ -261,7 +329,7 @@ test("concurrent Guardian speech appends during an action, survives transaction 
 test("a viewer passage reacts to everyone while Guardian speech is dropped through transitions and absence", async () => {
   const { db, app, chat, advance } = chatFixture(); await app.tick();
   const ref = "guardian_live_channels/123";
-  const active = { requestId: "visit", userId: "99", streamId: "live", startsAtMs: 1002000, endsAtMs: 1062000, viewer: { pseudo: "Viewer" } };
+  const active = { requestId: "visit", userId: "99", streamId: "live", startsAtMs: 1002000, endsAtMs: 1002000 + APPEARANCE_MS, viewer: { pseudo: "Viewer" } };
   db.documents.set(ref, { ...db.documents.get(ref), initialized: true, active });
   await chat("42", "outgoing", undefined, "Bonjour");
   advance(3000); await chat("42", "incoming", undefined, "Coucou");
@@ -274,9 +342,9 @@ test("a viewer passage reacts to everyone while Guardian speech is dropped throu
   assert.deepEqual(state.active, active);
   const guardian = await readElectedGuardian({ db });
   assert.equal(guardianChatPresentation(state, guardian, 1007000).action.type, "victory");
-  advance(53000); await chat("42", "leaving", undefined, "GG");
-  assert.deepEqual(guardianChatPresentation(db.documents.get(ref), guardian, 1060000), { action: null, bubble: null });
-  const returned = await pollGuardianLive({ db, channelId: "123", guardian, now: 1062000 });
+  advance(active.endsAtMs - TRAVEL_MS - 1007000); await app.tick(); await chat("42", "leaving", undefined, "GG");
+  assert.deepEqual(guardianChatPresentation(db.documents.get(ref), guardian, active.endsAtMs - TRAVEL_MS), { action: null, bubble: null });
+  const returned = await pollGuardianLive({ db, channelId: "123", guardian, now: active.endsAtMs });
   assert.equal(returned.kind, "guardian"); assert.equal(returned.bubble, null); assert.equal(returned.action, null);
 });
 

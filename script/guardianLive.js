@@ -1,7 +1,8 @@
 "use strict";
 const { randomUUID } = require("node:crypto");
-const { syncGuardianLive, enqueueGuardianViewer, readElectedGuardian, publishGuardianChat } = require("./guardian-live.store.cjs");
+const { syncGuardianLive, enqueueGuardianViewer, enqueueGuardianSubscription, readElectedGuardian, publishGuardianChat } = require("./guardian-live.store.cjs");
 const { CHAT_MAX_AGE_MS, isChatMessage, chatReaction } = require("./guardian-actions.shared.cjs");
+const SUBSCRIPTION_MAX_AGE_MS = 5 * 60_000;
 
 function createGuardianLive({ db, channelId, getLiveState, resolveTwitchIdentity, sendMessage, now = Date.now, logger = console }) {
   let timer = null;
@@ -74,10 +75,39 @@ function createGuardianLive({ db, channelId, getLiveState, resolveTwitchIdentity
         cooldown: `tu pourras rappeler ton personnage dans ${Math.ceil(result.retryAfterMs / 60_000)} min.`,
         identity_missing: "ton identité Twitch n’a pas pu être vérifiée.",
       };
-      await sendMessage(`@${displayName || login}, ${result.accepted ? `ton personnage est en position ${result.position} pour un passage de 60 s ! Personnalisation : https://erwayr.online/gardien.html` : messages[result.reason] || "apparition indisponible, réessaie."}`);
+      await sendMessage(`@${displayName || login}, ${result.accepted ? `ton personnage est en position ${result.position} pour un passage de 1 min 30 (hors animations d’entrée et de sortie) ! Personnalisation : https://erwayr.online/gardien.html` : messages[result.reason] || "apparition indisponible, réessaie."}`);
     }
     return { handled: true, ...result };
   }
-  return { handleMessage, tick, start() { if (timer) return; void tick(); timer = setInterval(tick, 30_000); timer.unref?.(); }, stop() { clearInterval(timer); timer = null; } };
+  async function handleSubscription({ event, messageId, sentAtMs } = {}) {
+    const userId = String(event?.user_id || event?.user?.id || "").trim();
+    const login = String(event?.user_login || event?.user?.login || "").trim().toLowerCase();
+    const requestId = String(messageId || "").trim();
+    const requestedAtMs = now();
+    const isFresh = () => {
+      const at = now();
+      return Number.isFinite(sentAtMs) && at - sentAtMs <= SUBSCRIPTION_MAX_AGE_MS && sentAtMs <= at + 2000;
+    };
+    if (!/^\d{1,25}$/.test(userId) || !login || !requestId) return { accepted: false, reason: "identity_missing" };
+    if (!isFresh()) return { accepted: false, reason: "stale" };
+    if (event?.broadcaster_user_id && String(event.broadcaster_user_id) !== String(channelId)) return { accepted: false, reason: "channel_mismatch" };
+    try {
+      const live = await getLiveState();
+      if (!live?.streamId) return { accepted: false, reason: "offline" };
+      const identity = typeof resolveTwitchIdentity === "function"
+        ? await resolveTwitchIdentity({ login, twitchUserId: userId, allowCreate: false })
+        : { login };
+      if (!identity?.login) return { accepted: false, reason: "identity_missing" };
+      if (!isFresh()) return { accepted: false, reason: "stale" };
+      return await enqueueGuardianSubscription({
+        db, channelId, streamId: live.streamId, now: requestedAtMs,
+        request: { userId, login: identity.login, displayName: event?.user_name || event?.user?.name || login, requestId },
+      });
+    } catch (error) {
+      logger.warn("[guardian-live] subscription appearance failed", error.code || error.message);
+      return { accepted: false, reason: "unavailable" };
+    }
+  }
+  return { handleMessage, handleSubscription, tick, start() { if (timer) return; void tick(); timer = setInterval(tick, 30_000); timer.unref?.(); }, stop() { clearInterval(timer); timer = null; } };
 }
 module.exports = { createGuardianLive };

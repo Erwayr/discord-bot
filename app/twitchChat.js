@@ -520,6 +520,7 @@ function createTwitchChat({
 
   return {
     start,
+    handleGuardianSubscription: guardianLive.handleSubscription,
     stopGuardianLive: guardianLive.stop,
     stopGuardianCostumeGrants: guardianCostumeGrants.stop,
     stopLiveChestDraws: liveChestDraws.stop,

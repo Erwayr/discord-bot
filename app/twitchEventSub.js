@@ -167,6 +167,7 @@ function createTwitchEventSub({
   livePresenceTick,
   postDiscord,
   sendTwitchChatMessage,
+  handleGuardianSubscription,
   bufferLiveChannelPoints,
   twitchExtensionStatsSync,
   resolveTwitchIdentity,
@@ -496,6 +497,19 @@ function createTwitchEventSub({
     return `⭐ Merci pour le nouvel abonnement mon ${mention} !`;
   }
 
+  async function publishGuardianSubscription(event, req) {
+    if (typeof handleGuardianSubscription !== "function") return;
+    try {
+      await handleGuardianSubscription({
+        event,
+        messageId: req.header("Twitch-Eventsub-Message-Id"),
+        sentAtMs: Date.parse(req.header("Twitch-Eventsub-Message-Timestamp") || ""),
+      });
+    } catch (error) {
+      console.warn("guardian subscription appearance failed:", error?.message || error);
+    }
+  }
+
   async function handleTwitchCallback(req, res) {
     const observedAtMs = Date.parse(req.header("Twitch-Eventsub-Message-Timestamp") || "") || Date.now();
     if (req.body.challenge) return res.status(200).send(req.body.challenge);
@@ -725,6 +739,7 @@ function createTwitchEventSub({
     }
 
     if (subscription.type === "channel.subscribe") {
+      await publishGuardianSubscription(event, req);
       try {
         const canonical = await canonicalEvent(event, { allowCreate: true });
         await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
@@ -755,6 +770,7 @@ function createTwitchEventSub({
     }
 
     if (subscription.type === "channel.subscription.message") {
+      await publishGuardianSubscription(event, req);
       try {
         const canonical = await canonicalEvent(event, { allowCreate: true });
         await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });

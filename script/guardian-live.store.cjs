@@ -5,7 +5,7 @@ const { TRAVEL_MS, ARRIVAL_MS } = require("./guardian-actions.shared.cjs");
 
 const { characterForProfile, characterLevel } = require("./guardian-character.shared.cjs");
 const { weaponFormForProfile } = require("./guardian-weapon-progress.shared.cjs");
-const { freshState, cleanState, enqueueAppearance, advanceAppearance, LIVE_LEASE_MS, applyGuardianChat, guardianChatPresentation } = require("./guardian-live.shared.cjs");
+const { freshState, cleanState, enqueueAppearance, enqueueSubscriptionAppearance, advanceAppearance, LIVE_LEASE_MS, applyGuardianChat, guardianChatPresentation } = require("./guardian-live.shared.cjs");
 const channelRef = (db, channelId) => {
   if (!/^\d{1,25}$/.test(String(channelId))) throw new Error("guardian_channel_invalid");
   return db.collection("guardian_live_channels").doc(String(channelId));
@@ -44,6 +44,32 @@ async function enqueueGuardianViewer({ db, channelId, streamId, request, now = D
       tx.set(cooldownRef, { lastAcceptedAtMs: now, requestId: request.requestId });
     }
     return { accepted: result.accepted, reason: result.reason || null, position: result.position || null, retryAfterMs: result.retryAfterMs || 0 };
+  });
+}
+
+async function enqueueGuardianSubscription({ db, channelId, streamId, request, now = Date.now() }) {
+  if (!/^\d{1,25}$/.test(String(request.userId)) || !/^[a-zA-Z0-9_-]{1,128}$/.test(String(request.requestId || ""))) return { accepted: false, reason: "identity_missing" };
+  if (!streamId) return { accepted: false, reason: "offline" };
+  const ref = channelRef(db, channelId);
+  const viewerRef = ref.collection("viewers").doc(request.userId);
+  return db.runTransaction(async tx => {
+    const [snapshot, viewerSnapshot] = await Promise.all([tx.get(ref), tx.get(viewerRef)]);
+    const previous = snapshot.data() || freshState(streamId, now);
+    if (previous.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
+    const viewer = viewerSnapshot.data() || {};
+    // Retain delivery IDs beyond the bot's five-minute freshness window,
+    // including IDs of correlated events rejected as duplicates.
+    const events = (Array.isArray(viewer.recentSubscriptionEvents) ? viewer.recentSubscriptionEvents : [])
+      .filter(item => item && item.receivedAtMs > now - 600_000).slice(-15);
+    if (events.some(item => item.id === request.requestId)) return { accepted: false, reason: "duplicate" };
+    const result = enqueueSubscriptionAppearance(previous, request, { now, streamId, lastSubscriptionAtMs: viewer.lastSubscriptionAtMs ?? null });
+    if (result.accepted) persistState(tx, db, ref, previous,
+      { ...result.state, liveUntilMs: now + LIVE_LEASE_MS, liveCheckedAtMs: now }, now);
+    if (result.accepted || result.reason === "duplicate") tx.set(viewerRef, {
+      recentSubscriptionEvents: [...events, { id: request.requestId, receivedAtMs: now }],
+      ...(result.accepted ? { lastSubscriptionAtMs: now } : {}),
+    }, { merge: true });
+    return { accepted: result.accepted, reason: result.reason || null, position: result.position || null };
   });
 }
 
@@ -120,8 +146,8 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
     const next = advanceAppearance(cleaned, { now, viewer });
     if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, now);
-    const deadlines = [next.active?.endsAtMs,
-      next.active && next.active.startsAtMs + ARRIVAL_MS,
+    const deadlines = [next.active?.startsAtMs, next.active?.endsAtMs,
+      next.active && next.active.startsAtMs + (next.active.type === "subscription" ? TRAVEL_MS : ARRIVAL_MS),
       next.active && next.active.endsAtMs - TRAVEL_MS,
       !next.active && next.queue.length && next.guardianUntilMs,
       (next.active || next.queue.length) && next.liveUntilMs];
@@ -129,10 +155,11 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     return {
       nextRefreshAtMs: future.length ? Math.min(...future) : null,
       generatedAtMs: now, kind: next.active ? "viewer" : "guardian", pendingCount: next.queue.length,
+      appearanceType: next.active?.type === "subscription" ? "subscription" : "viewer",
       appearanceId: next.active?.requestId || "guardian", viewer: next.active?.viewer || null,
       startsAtMs: next.active?.startsAtMs || null, endsAtMs: next.active?.endsAtMs || null,
       ...guardianChatPresentation(next, guardian, now),
     };
   });
 }
-module.exports = { syncGuardianLive, enqueueGuardianViewer, pollGuardianLive, readElectedGuardian, publishGuardianChat };
+module.exports = { syncGuardianLive, enqueueGuardianViewer, enqueueGuardianSubscription, pollGuardianLive, readElectedGuardian, publishGuardianChat };

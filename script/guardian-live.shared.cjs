@@ -2,11 +2,16 @@
 const { TRAVEL_MS, ARRIVAL_MS, CHAT_MAX_AGE_MS, CHAT_REACTION_COOLDOWN_MS, CHAT_BUBBLE_MS, CHAT_BUBBLE_LIMIT,
   isChatMessage, isChatAction, chatReaction, chatMessageText, actionDuration } = require("./guardian-actions.shared.cjs");
 
-const APPEARANCE_MS = 60_000;
+const VIEWER_STAY_MS = 90_000;
+const APPEARANCE_MS = ARRIVAL_MS + VIEWER_STAY_MS + TRAVEL_MS;
 const GUARDIAN_MS = 5_000;
 const COOLDOWN_MS = 600_000;
 const QUEUE_TTL_MS = 900_000;
 const MAX_QUEUE = 10;
+const MAX_SUBSCRIPTION_QUEUE = 100;
+const SUBSCRIPTION_VICTORY_COUNT = 2;
+const SUBSCRIPTION_APPEARANCE_MS = 2 * TRAVEL_MS + SUBSCRIPTION_VICTORY_COUNT * actionDuration("victory");
+const SUBSCRIPTION_DEDUPE_MS = 30_000;
 const LIVE_LEASE_MS = 90_000;
 const idOf = (value) => String(value || "").trim();
 
@@ -17,9 +22,9 @@ function freshState(streamId = "", now = 0) {
 }
 function cleanState(input = {}, now = 0) {
   const state = { ...freshState(input.streamId, now), ...input };
-  state.queue = (Array.isArray(input.queue) ? input.queue : []).filter((item) => item && item.streamId === state.streamId && item.expiresAtMs > now).slice(0, MAX_QUEUE);
+  state.queue = (Array.isArray(input.queue) ? input.queue : []).filter((item) => item && item.streamId === state.streamId && item.expiresAtMs > now).slice(0, MAX_SUBSCRIPTION_QUEUE + MAX_QUEUE);
   if (state.active && (state.active.streamId !== state.streamId || state.active.endsAtMs <= now)) {
-    state.guardianUntilMs = now + GUARDIAN_MS;
+    state.guardianUntilMs = now + (state.queue[0]?.type === "subscription" ? 0 : GUARDIAN_MS);
     state.active = null;
   }
   const appearanceId = state.active?.requestId || "guardian";
@@ -50,6 +55,7 @@ function applyGuardianChat(input, { guardian, streamId, userId, messageId, messa
   if (!isChatMessage(message)) return rejected("not_chat");
   if (!Number.isFinite(sentAtMs) || now - sentAtMs > CHAT_MAX_AGE_MS || sentAtMs > now + 2000) return rejected("stale_message");
   if (!streamId || state.streamId !== streamId || state.liveUntilMs <= now || state.liveCheckedAtMs > now) return rejected("offline");
+  if (state.active?.type === "subscription") return rejected("subscription_active");
   if (state.lastGuardianChatMessageId === messageId || state.recentChatMessages.some(item => item.id === messageId)) return rejected("duplicate");
   const keyword = chatReaction(message);
   const isGuardian = Boolean(guardian?.userId && guardian.userId === userId);
@@ -88,7 +94,7 @@ function applyGuardianChat(input, { guardian, streamId, userId, messageId, messa
 
 function guardianChatPresentation(input, guardian, now) {
   const state = cleanState(input, now);
-  if (chatTransitionActive(state, now)) return { action: null, bubble: null };
+  if (state.active?.type === "subscription" || chatTransitionActive(state, now)) return { action: null, bubble: null };
   const cue = [state.chatAction, state.chatGreeting].find(item => chatTargetMatches(item, state, guardian) && isChatAction(item.type));
   const speech = state.chatBubble;
   const visibleBubble = chatTargetMatches(speech, state, guardian) && speech.userId === guardian?.userId && speech.electionId === guardian?.electionId;
@@ -107,6 +113,31 @@ function enqueueAppearance(input, request, { now, streamId, lastAcceptedAtMs = n
   state.queue.push({ requestId: idOf(request.requestId), userId: idOf(request.userId), login: idOf(request.login).toLowerCase(), displayName: idOf(request.displayName).slice(0, 80), streamId, requestedAtMs: now, expiresAtMs: now + QUEUE_TTL_MS });
   return { accepted: true, position: state.queue.length, state };
 }
+function enqueueSubscriptionAppearance(input, request, { now, streamId, lastSubscriptionAtMs = null } = {}) {
+  let state = cleanState(input, now);
+  if (!streamId) return { accepted: false, reason: "offline", state };
+  if (state.streamId !== streamId) state = freshState(streamId, now);
+  if (state.active?.requestId === request.requestId || state.queue.some(item => item.requestId === request.requestId)) return { accepted: false, reason: "duplicate", state };
+  // Twitch can send both subscribe and subscription.message for the same sub.
+  // This dedupe is separate from the viewer's !perso cooldown.
+  if (lastSubscriptionAtMs != null && now - lastSubscriptionAtMs < SUBSCRIPTION_DEDUPE_MS) return { accepted: false, reason: "duplicate", state };
+  if (state.queue.filter(item => item.type === "subscription").length >= MAX_SUBSCRIPTION_QUEUE) return { accepted: false, reason: "queue_full", state };
+  const incoming = { type: "subscription", requestId: idOf(request.requestId), userId: idOf(request.userId),
+    login: idOf(request.login).toLowerCase(), displayName: idOf(request.displayName).slice(0, 80), streamId,
+    requestedAtMs: now, expiresAtMs: now + QUEUE_TTL_MS };
+  const subscribers = state.queue.filter(item => item.type === "subscription");
+  const viewers = state.queue.filter(item => item.type !== "subscription");
+  state.queue = [...subscribers, incoming, ...viewers].slice(0, MAX_SUBSCRIPTION_QUEUE + MAX_QUEUE);
+  if (state.active?.type !== "subscription") {
+    state.active = null;
+    state.initialized = true;
+    state.guardianUntilMs = now;
+    state.chatGreeting = null;
+    state.chatAction = null;
+    state.chatBubble = null;
+  }
+  return { accepted: true, position: subscribers.length + 1, state };
+}
 // Pure scheduling; callers persist this transition in a Firestore transaction.
 function advanceAppearance(input, { now, viewer = null } = {}) {
   const state = cleanState(input, now);
@@ -124,10 +155,12 @@ function advanceAppearance(input, { now, viewer = null } = {}) {
   if (!state.active && now >= state.guardianUntilMs && state.queue.length && viewer) {
     const request = state.queue.shift();
     // Announce the incoming viewer while the Guardian leaves. The viewer's
-    // complete minute starts only after this shared departure deadline.
-    state.active = { ...request, viewer, startsAtMs: now + TRAVEL_MS, endsAtMs: now + TRAVEL_MS + APPEARANCE_MS };
+    // arrival, stay and exit start only after this shared departure deadline.
+    const duration = request.type === "subscription" ? SUBSCRIPTION_APPEARANCE_MS : APPEARANCE_MS;
+    state.active = { ...request, viewer, startsAtMs: now + TRAVEL_MS, endsAtMs: now + TRAVEL_MS + duration };
   }
   return cleanState(state, now);
 }
-module.exports = { APPEARANCE_MS, GUARDIAN_MS, COOLDOWN_MS, QUEUE_TTL_MS, MAX_QUEUE, LIVE_LEASE_MS,
-  freshState, cleanState, enqueueAppearance, advanceAppearance, applyGuardianChat, guardianChatPresentation };
+module.exports = { VIEWER_STAY_MS, APPEARANCE_MS, GUARDIAN_MS, COOLDOWN_MS, QUEUE_TTL_MS, MAX_QUEUE, MAX_SUBSCRIPTION_QUEUE,
+  SUBSCRIPTION_VICTORY_COUNT, SUBSCRIPTION_APPEARANCE_MS, SUBSCRIPTION_DEDUPE_MS, LIVE_LEASE_MS,
+  freshState, cleanState, enqueueAppearance, enqueueSubscriptionAppearance, advanceAppearance, applyGuardianChat, guardianChatPresentation };

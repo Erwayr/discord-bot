@@ -51,7 +51,12 @@ function weaponProgressView(profile = {}, key) {
     remaining: Math.max(0, goal - progress.invested), percent: goal ? progress.invested / goal * 100 : 100 };
 }
 function weaponFormForProfile(profile = {}, character = profile.currentGuardian?.character || {}) {
-  return weaponProgress(profile, weaponProgressKey(character.weapon, character.weaponSkin)).form;
+  const key = weaponProgressKey(character.weapon, character.weaponSkin);
+  const acquired = weaponProgress(profile, key).form;
+  const equipped = profile.currentGuardian;
+  const sameWeapon = equipped?.character && weaponProgressKey(equipped.character.weapon, equipped.character.weaponSkin) === key;
+  return sameWeapon && [1, 2, 3, 4].includes(equipped.weaponForm)
+    ? Math.min(equipped.weaponForm, acquired) : acquired;
 }
 // Participants only contain the server-written display projection, never Pops.
 function publicWeaponForm(profile = {}) {

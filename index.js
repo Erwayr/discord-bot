@@ -199,6 +199,7 @@ const twitchEventSub = createTwitchEventSub({
   livePresenceTick,
   postDiscord,
   sendTwitchChatMessage: twitchChat.sendTwitchChatMessage,
+  handleGuardianSubscription: twitchChat.handleGuardianSubscription,
   bufferLiveChannelPoints: twitchChat.noteLiveChannelPoints,
   twitchExtensionStatsSync,
   resolveTwitchIdentity,
