@@ -2,7 +2,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
 const { TRAVEL_MS, ARRIVAL_MS } = require("./guardian-actions.shared.cjs");
-const { subscriptionPresentationFor, SUBSCRIPTION_DATES } = require("./guardian-subscription.shared.cjs");
+const { subscriptionPresentationFor, createSubscriptionPresentation, SUBSCRIPTION_LEAD_MS, SUBSCRIPTION_DATES } = require("./guardian-subscription.shared.cjs");
 
 const { characterForProfile, characterLevel } = require("./guardian-character.shared.cjs");
 const { weaponFormForProfile } = require("./guardian-weapon-progress.shared.cjs");
@@ -34,8 +34,9 @@ async function enqueueGuardianViewer({ db, channelId, streamId, request, now = D
   if (!streamId) return { accepted: false, reason: "offline" };
   const ref = channelRef(db, channelId);
   const cooldownRef = ref.collection("viewers").doc(request.userId);
+  const testRef = ref.collection("tests").doc("subscription");
   return db.runTransaction(async (tx) => {
-    const [snapshot, cooldown] = await Promise.all([tx.get(ref), tx.get(cooldownRef)]);
+    const [snapshot, cooldown, test] = await Promise.all([tx.get(ref), tx.get(cooldownRef), tx.get(testRef)]);
     const previous = snapshot.data() || freshState(streamId, now);
     // Do not let a delayed command revive a stream that the live monitor closed.
     if (previous.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
@@ -43,6 +44,7 @@ async function enqueueGuardianViewer({ db, channelId, streamId, request, now = D
     if (result.accepted) {
       persistState(tx, db, ref, previous, { ...result.state, liveUntilMs: now + LIVE_LEASE_MS, liveCheckedAtMs: now }, now);
       tx.set(cooldownRef, { lastAcceptedAtMs: now, requestId: request.requestId });
+      cancelSubscriptionTest(tx, testRef, test.data(), now);
     }
     return { accepted: result.accepted, reason: result.reason || null, position: result.position || null, retryAfterMs: result.retryAfterMs || 0 };
   });
@@ -53,8 +55,9 @@ async function enqueueGuardianSubscription({ db, channelId, streamId, request, n
   if (!streamId) return { accepted: false, reason: "offline" };
   const ref = channelRef(db, channelId);
   const viewerRef = ref.collection("viewers").doc(request.userId);
+  const testRef = ref.collection("tests").doc("subscription");
   return db.runTransaction(async tx => {
-    const [snapshot, viewerSnapshot] = await Promise.all([tx.get(ref), tx.get(viewerRef)]);
+    const [snapshot, viewerSnapshot, test] = await Promise.all([tx.get(ref), tx.get(viewerRef), tx.get(testRef)]);
     const previous = snapshot.data() || freshState(streamId, now);
     if (previous.liveCheckedAtMs > now) return { accepted: false, reason: "offline" };
     const viewer = viewerSnapshot.data() || {};
@@ -64,14 +67,87 @@ async function enqueueGuardianSubscription({ db, channelId, streamId, request, n
       .filter(item => item && item.receivedAtMs > now - 600_000).slice(-15);
     if (events.some(item => item.id === request.requestId)) return { accepted: false, reason: "duplicate" };
     const result = enqueueSubscriptionAppearance(previous, request, { now, streamId, lastSubscriptionAtMs: viewer.lastSubscriptionAtMs ?? null });
-    if (result.accepted) persistState(tx, db, ref, previous,
-      { ...result.state, liveUntilMs: now + LIVE_LEASE_MS, liveCheckedAtMs: now }, now);
+    if (result.accepted) {
+      persistState(tx, db, ref, previous,
+        { ...result.state, liveUntilMs: now + LIVE_LEASE_MS, liveCheckedAtMs: now }, now);
+      cancelSubscriptionTest(tx, testRef, test.data(), now);
+    }
     if (result.accepted || result.reason === "duplicate") tx.set(viewerRef, {
       recentSubscriptionEvents: [...events, { id: request.requestId, receivedAtMs: now }],
       ...(result.accepted ? { lastSubscriptionAtMs: now } : {}),
     }, { merge: true });
     return { accepted: result.accepted, reason: result.reason || null, position: result.position || null };
   });
+}
+
+function activeSubscriptionTest(value, now) {
+  return value?.type === "subscription" && value.viewer && !Number.isFinite(value.cancelledAtMs)
+    && Number.isFinite(value.expiresAtMs) && value.expiresAtMs > now && value.endsAtMs > now
+    && subscriptionPresentationFor(value) ? value : null;
+}
+function cancelSubscriptionTest(tx, ref, value, now) {
+  const test = activeSubscriptionTest(value, now);
+  if (test) tx.set(ref, { ...test, cancelledAtMs: now, expiresAtMs: now });
+}
+function subscriptionTestAccepted(value, deduped = false) {
+  return { status: "accepted", accepted: true, deduped, requestId: value.requestId,
+    login: value.viewer.login, displayName: value.viewer.pseudo,
+    startsAtMs: value.startsAtMs, endsAtMs: value.endsAtMs,
+    ...(value.subscriptionTest?.subMonths != null ? { subMonths: value.subscriptionTest.subMonths } : {}) };
+}
+
+// Moderator tests own one private, expiring reservation. They never impersonate
+// a live stream, enter its real queue, or grant/update a subscription profile.
+async function publishGuardianSubscriptionTest({ db, channelId, login, displayName, subMonths, subMessage = "", requestId, nowMs = Date.now() }) {
+  const invalid = reason => ({ status: "error", accepted: false, reason });
+  login = String(login || "").trim().toLowerCase();
+  if (!/^[a-z0-9_]{1,25}$/.test(login)) return invalid("invalid_target");
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(String(requestId || ""))) return invalid("invalid_request_id");
+  if (subMonths != null && (!Number.isSafeInteger(subMonths) || subMonths < 1)) return invalid("invalid_months");
+  if (!Number.isFinite(nowMs) || nowMs < 0 || !/^\d{1,25}$/.test(String(channelId))) return invalid("invalid_request");
+  if (!db?.runTransaction) return invalid("unavailable");
+  const ref = channelRef(db, channelId), testRef = ref.collection("tests").doc("subscription");
+  try {
+    return await db.runTransaction(async tx => {
+      const [snapshot, testSnapshot] = await Promise.all([tx.get(ref), tx.get(testRef)]);
+      const previous = cleanState(snapshot.data() || freshState("", nowMs), nowMs);
+      const test = testSnapshot.data();
+      if (test?.requestId === requestId && test.viewer) return subscriptionTestAccepted(test, true);
+      if (previous.active || previous.queue.length) return { status: "busy", accepted: false, reason: "real_appearance_active" };
+      if (activeSubscriptionTest(test, nowMs)) return { status: "busy", accepted: false, reason: "test_active" };
+      let profileSnapshot = await tx.get(db.collection("followers_all_time").doc(login));
+      if (!profileSnapshot.exists) return invalid("profile_not_found");
+      let profile = profileSnapshot.data() || {}, canonicalLogin = login;
+      const ids = twitchIds(profile);
+      if (new Set(ids).size > 1) return invalid("identity_conflict");
+      if (ids[0]) {
+        if (!/^\d{1,25}$/.test(ids[0])) return invalid("identity_conflict");
+        const identity = (await tx.get(db.collection("twitch_identities").doc(ids[0]))).data() || {};
+        if (identity.status === "conflict") return invalid("identity_conflict");
+        canonicalLogin = validLogin(identity.currentLogin || login);
+        if (!canonicalLogin) return invalid("identity_conflict");
+        if (canonicalLogin !== login) {
+          profileSnapshot = await tx.get(db.collection("followers_all_time").doc(canonicalLogin));
+          if (!profileSnapshot.exists) return invalid("profile_not_found");
+          profile = profileSnapshot.data() || {};
+        }
+        if (twitchIds(profile).some(id => id !== ids[0])) return invalid("identity_conflict");
+      }
+      const character = characterForProfile(profile);
+      const viewer = { login: canonicalLogin,
+        pseudo: String(displayName || profile.pseudo || canonicalLogin).replace(/\p{Cc}/gu, " ").trim().slice(0, 80),
+        level: characterLevel(profile), weaponForm: weaponFormForProfile(profile, character), character };
+      const startsAtMs = nowMs + SUBSCRIPTION_LEAD_MS;
+      const cue = createSubscriptionPresentation({ startsAtMs, appearanceId: requestId, viewer });
+      const value = { schemaVersion: 1, type: "subscription", requestId, createdAtMs: nowMs,
+        startsAtMs, endsAtMs: cue.cardEndsAtMs, expiresAtMs: cue.cardEndsAtMs, viewer,
+        subscriptionTest: { ...(subMonths != null ? { subMonths } : {}),
+          subMessage: String(subMessage || "").replace(/\s+/g, " ").trim().slice(0, 500) } };
+      tx.set(testRef, value);
+      writeOverlaySignal(tx, db, "guardian", { now: nowMs });
+      return subscriptionTestAccepted(value);
+    });
+  } catch { return invalid("unavailable"); }
 }
 
 async function readQueuedViewer(tx, db, request) {
@@ -138,8 +214,9 @@ async function publishGuardianChat({ db, channelId, streamId, userId, messageId,
 
 async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now() }) {
   const ref = channelRef(db, channelId);
+  const testRef = ref.collection("tests").doc("subscription");
   return db.runTransaction(async (tx) => {
-    const snapshot = await tx.get(ref);
+    const [snapshot, testSnapshot] = await Promise.all([tx.get(ref), tx.get(testRef)]);
     const previous = snapshot.data() || freshState("", now);
     const cleaned = cleanState(previous, now);
     const request = cleaned.queue[0];
@@ -147,23 +224,32 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
     const next = advanceAppearance(cleaned, { now, viewer });
     if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, now);
-    const subscriptionPresentation = subscriptionPresentationFor(next.active);
-    const deadlines = [next.active?.startsAtMs, next.active?.endsAtMs,
+    let test = activeSubscriptionTest(testSnapshot.data(), now);
+    if (test && (next.active || next.queue.length)) {
+      // Real traffic permanently preempts a test; it must not reappear after
+      // the real card ends or a new stream clears its ordinary state.
+      cancelSubscriptionTest(tx, testRef, test, now);
+      test = null;
+    }
+    const active = next.active || test;
+    const subscriptionPresentation = subscriptionPresentationFor(active);
+    const deadlines = [active?.startsAtMs, active?.endsAtMs,
       ...SUBSCRIPTION_DATES.map(key => subscriptionPresentation?.[key]),
-      next.active && next.active.startsAtMs + (next.active.type === "subscription" ? TRAVEL_MS : ARRIVAL_MS),
-      next.active && next.active.endsAtMs - TRAVEL_MS,
+      active && active.startsAtMs + (active.type === "subscription" ? TRAVEL_MS : ARRIVAL_MS),
+      active && active.endsAtMs - TRAVEL_MS,
       !next.active && next.queue.length && next.guardianUntilMs,
       (next.active || next.queue.length) && next.liveUntilMs];
     const future = deadlines.filter(value => Number.isFinite(value) && value > now);
     return {
       nextRefreshAtMs: future.length ? Math.min(...future) : null,
-      generatedAtMs: now, kind: next.active ? "viewer" : "guardian", pendingCount: next.queue.length,
-      appearanceType: next.active?.type === "subscription" ? "subscription" : "viewer",
-      appearanceId: next.active?.requestId || "guardian", viewer: next.active?.viewer || null,
-      startsAtMs: next.active?.startsAtMs || null, endsAtMs: next.active?.endsAtMs || null,
+      generatedAtMs: now, kind: active ? "viewer" : "guardian", pendingCount: next.queue.length,
+      appearanceType: active?.type === "subscription" ? "subscription" : "viewer",
+      appearanceId: active?.requestId || "guardian", viewer: active?.viewer || null,
+      startsAtMs: active?.startsAtMs || null, endsAtMs: active?.endsAtMs || null,
       ...(subscriptionPresentation ? { subscriptionPresentation } : {}),
-      ...guardianChatPresentation(next, guardian, now),
+      ...(test ? { subscriptionTest: test.subscriptionTest, action: null, bubble: null }
+        : guardianChatPresentation(next, guardian, now)),
     };
   });
 }
-module.exports = { syncGuardianLive, enqueueGuardianViewer, enqueueGuardianSubscription, pollGuardianLive, readElectedGuardian, publishGuardianChat };
+module.exports = { syncGuardianLive, enqueueGuardianViewer, enqueueGuardianSubscription, publishGuardianSubscriptionTest, pollGuardianLive, readElectedGuardian, publishGuardianChat };

@@ -1,5 +1,8 @@
 "use strict";
 
+const { randomUUID } = require("node:crypto");
+const { publishGuardianSubscriptionTest } = require("./guardian-live.store.cjs");
+
 const OVERLAY_SUB_CARD_TEST_ALIASES = Object.freeze([
   "!testsubcard",
   "!testsub",
@@ -81,6 +84,8 @@ function canRunOverlaySubCardTestCommand({
   return listFromCsv(allowedLogins).includes(safeLogin);
 }
 
+// Explicit standalone compatibility path. The chat command uses the Guardian
+// presentation below so OBS never receives a parallel independent card alert.
 async function publishOverlaySubCardTestEvent({
   db,
   config = {},
@@ -147,7 +152,8 @@ async function handleOverlaySubCardTestCommand({
   message = "",
   tags = {},
   sendTwitchChatMessage,
-  now,
+  now = Date.now,
+  publishGuardianTest = publishGuardianSubscriptionTest,
 } = {}) {
   const parsed = parseOverlaySubCardTestCommand(message, login);
   if (!parsed) return { handled: false };
@@ -173,35 +179,56 @@ async function handleOverlaySubCardTestCommand({
     return { handled: true, responded, reason: parsed.error };
   }
 
-  const result = await publishOverlaySubCardTestEvent({
-    db,
-    config,
-    targetLogin: parsed.targetLogin,
-    targetDisplayName: parsed.targetLogin,
-    requestedBy: login,
-    subMessage: parsed.subMessage,
-    subMonths: parsed.subMonths,
-    now,
-  });
-
-  if (!result.published) {
-    return { handled: true, responded: false, reason: result.reason };
+  if (!parsed.targetLogin) {
+    const responded = typeof sendTwitchChatMessage === "function";
+    if (responded) await sendTwitchChatMessage("Pseudo invalide. Exemple : !testsub erwayr 6 [message].");
+    return { handled: true, responded, reason: "invalid_target" };
   }
 
-  if (typeof sendTwitchChatMessage === "function") {
+  const requestId = `test_${safeDocId(tags.id || randomUUID())}`.slice(0, 128);
+  const time = Number(now());
+  let result;
+  try {
+    result = typeof publishGuardianTest === "function"
+      ? await publishGuardianTest({ db, channelId: config.twitch?.channelId,
+        login: parsed.targetLogin,
+        displayName: parsed.targetLogin === normalizeLogin(login) ? displayName || parsed.targetLogin : parsed.targetLogin,
+        subMonths: parsed.subMonths, subMessage: parsed.subMessage, requestId,
+        nowMs: Number.isFinite(time) && time >= 0 ? Math.floor(time) : Date.now() })
+      : { status: "error", reason: "unavailable" };
+  } catch {
+    result = { status: "error", reason: "unavailable" };
+  }
+  if (result?.deduped || result?.status === "deduped") {
+    return { handled: true, responded: false, reason: "duplicate", requestId };
+  }
+
+  const accepted = result?.accepted === true || result?.status === "accepted";
+  const responded = typeof sendTwitchChatMessage === "function";
+  if (responded) {
     const mention = displayName ? `@${String(displayName).replace(/^@+/, "")}` : "@modo";
-    await sendTwitchChatMessage(
-      `${mention} test overlay sub card envoye pour @${result.login}${result.subMonths != null ? ` (${result.subMonths} mois)` : ""}.`,
-    );
+    const months = result?.subMonths ?? parsed.subMonths;
+    const feedback = accepted
+      ? `test Gardien + carte d'abonnement envoyé pour @${result.login || parsed.targetLogin}${months != null ? ` (${months} mois)` : ""}.`
+      : result?.reason === "busy" || result?.status === "busy"
+        ? "une apparition est déjà en cours. Attends la fin de la carte, puis relance !testsub."
+        : result?.reason === "profile_not_found"
+          ? `aucun profil enregistré pour @${parsed.targetLogin}.`
+          : result?.reason === "identity_conflict"
+            ? `l'identité de @${parsed.targetLogin} doit être vérifiée avant ce test.`
+            : "test Gardien indisponible pour le moment. Réessaie après la mise à jour du bot et de la source OBS.";
+    await sendTwitchChatMessage(`${mention} ${feedback}`);
   }
 
   return {
     handled: true,
-    responded: true,
+    responded,
     type: "overlay_sub_card_test",
-    targetLogin: result.login,
-    docId: result.docId,
-    ...(result.subMonths != null ? { subMonths: result.subMonths } : {}),
+    reason: accepted ? null : result?.reason || result?.status || "unavailable",
+    presentation: "guardian",
+    targetLogin: result?.login || parsed.targetLogin,
+    requestId: result?.requestId || requestId,
+    ...((result?.subMonths ?? parsed.subMonths) != null ? { subMonths: result?.subMonths ?? parsed.subMonths } : {}),
   };
 }
 

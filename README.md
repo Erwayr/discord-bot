@@ -16,10 +16,18 @@ yourself. To specify months, include the login. The optional message remains
 supported with or without months. Aliases: `!testsubcard`, `!testcarteabo`,
 `!testsubcarte`.
 
-The chosen month count is written only to the test event's `subMonths` field in
-the configured overlay event collection (`overlay_events` by default). It changes
-the preview artwork, music and animation without updating `participants` or
-`followers_all_time`. Live and Chatting use water from 6 months onward.
+The command starts the complete saved-character attack and subscription-card
+reveal in the Guardian OBS source, including when the channel is offline. It
+uses one private expiring test reservation and the Guardian wake signal, with
+no parallel legacy card event. The optional month count changes only the test
+card's artwork and music, without updating `participants`, `followers_all_time`,
+rewards or real subscription deduplication. An active appearance gives a busy
+reply; real requests take priority over a test.
+
+Deploy `overlayGuardianLiveState` and the site, update this bot together with
+the synchronized Guardian contracts, restart the bot, then refresh the Guardian
+browser source in OBS. The command's confirmation now names the Guardian and
+subscription card.
 
 ## Firestore live-read controls
 
