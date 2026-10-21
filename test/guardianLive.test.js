@@ -673,6 +673,24 @@ test("greeting service errors leave normal chat available", async () => {
   assert.equal(warnings.length, 1);
 });
 
+test("criticism from any viewer produces facepalm while nearby praise stays quiet", async () => {
+  const { db, app, chat, messages, advance } = chatFixture();
+  await app.tick();
+  const read = () => db.documents.get("guardian_live_channels/123");
+  for (const [index, word] of ["NULL", "nulle", "mauvaise", "ZÉRO", "naze", "pourri", "bidons", "eclatee"].entries()) {
+    await chat("99", `criticism-${index}`, undefined, word);
+    assert.equal(read().chatAction.type, "facepalm");
+    assert.equal(read().chatAction.endsAtMs - read().chatAction.startsAtMs, 4000);
+    advance(5000);
+  }
+  await app.tick();
+  for (const [index, word] of ["pas nul", "pas si mauvais", "pas du tout pourrie", "loin d’être éclaté"].entries()) {
+    await chat("99", `praise-${index}`, undefined, word);
+    assert.equal(read().chatAction?.type || null, null);
+  }
+  assert.deepEqual(messages, []);
+});
+
 test("chat keywords match whole Unicode words in message order, excluding commands", () => {
   for (const [text, action] of [
     ["SALUT !", "greet"],
@@ -692,7 +710,7 @@ test("chat keywords match whole Unicode words in message order, excluding comman
     "décharge",
     "surcharge",
     "ggwp",
-    "salut",
+    "salutation",
     "bonjouré",
     "_gg",
     "!danse",

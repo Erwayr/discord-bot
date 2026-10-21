@@ -1,22 +1,8 @@
 "use strict";
 
 // Actions are previews/visual reactions, never inventory or combat commands.
-const ACTIONS = Object.freeze([
-  { id: "rest", clip: "rest", label: "Normale", durationMs: 0 },
-  { id: "greet", clip: "wave", label: "Salut", durationMs: 4000 },
-  { id: "attack", clip: "attack", label: "Attaque", durationMs: 2400 },
-  { id: "victory", clip: "victory", label: "Victoire", durationMs: 3200 },
-  { id: "dance", clip: "dance", label: "Danse", durationMs: 10000 },
-  { id: "walk", clip: "walk", label: "Marche", durationMs: 4000 },
-]);
-const GREETING_MS = ACTIONS.find((action) => action.id === "greet").durationMs;
+const { ACTIONS, GREETING_MS, TRAVEL_MS, EQUIP_MS, ARRIVAL_MS, actionById, actionDuration } = require("./guardian-action-definitions.shared.cjs");
 const CHAT_MAX_AGE_MS = 8000;
-const TRAVEL_MS = 2000;
-const EQUIP_MS = 600;
-const ARRIVAL_MS =
-  TRAVEL_MS +
-  ACTIONS.find((action) => action.id === "attack").durationMs +
-  EQUIP_MS;
 const CHAT_REACTION_COOLDOWN_MS = 5000;
 const CHAT_BUBBLE_MS = 8000;
 const CHAT_BUBBLE_LIMIT = 3;
@@ -36,16 +22,31 @@ const isChatMessage = (message) =>
   Boolean(String(message || "").trim()) &&
   !/^[!/]/.test(String(message).trim());
 const isChatAction = (type) =>
-  ["greet", "victory", "dance", "attack"].includes(type);
+  ["greet", "victory", "dance", "attack", "facepalm"].includes(type);
+const CRITICISM_WORDS = new Set([
+  "null", "nulls", "nul", "nulle", "nuls", "nulles",
+  "mauvais", "mauvaise", "mauvaises", "zero", "zeros", "naze", "nazes",
+  "pourri", "pourrie", "pourris", "pourries", "bidon", "bidons",
+  "eclate", "eclatee", "eclates", "eclatees",
+]);
+// Keep the established Unicode word boundaries. Accent folding applies only
+// to criticism and its immediate negation, leaving existing keywords intact.
+const foldAccents = word => word.normalize("NFD").replace(/\p{M}/gu, "");
+const NEGATED_CRITICISM = /(?:^| )(?:pas|jamais|rien de|loin d etre)(?: (?:si|aussi|vraiment|tellement|trop|du tout))*$/u;
 function chatReaction(message) {
   if (!isChatMessage(message)) return null;
-  const words =
-    String(message)
-      .normalize("NFKC")
-      .toLowerCase()
-      .match(/[\p{L}\p{M}\p{N}_]+/gu) || [];
-  for (const word of words)
+  const text = String(message).normalize("NFKC").toLowerCase();
+  let preceding = [];
+  let end = 0;
+  for (const match of text.matchAll(/[\p{L}\p{M}\p{N}_]+/gu)) {
+    if (/[.!?,;:\n\r]/u.test(text.slice(end, match.index))) preceding = [];
+    const word = match[0], folded = foldAccents(word);
     if (Object.hasOwn(CHAT_KEYWORDS, word)) return CHAT_KEYWORDS[word];
+    if (CRITICISM_WORDS.has(folded) && !NEGATED_CRITICISM.test(preceding.join(" "))) return "facepalm";
+    preceding.push(folded);
+    if (preceding.length > 12) preceding.shift();
+    end = match.index + word.length;
+  }
   return null;
 }
 function chatMessageText(message) {
@@ -58,16 +59,6 @@ function chatMessageText(message) {
     ? characters.slice(0, CHAT_MESSAGE_LIMIT - 1).join("") + "…"
     : text;
 }
-const actionById = (id) =>
-  ACTIONS.find((action) => action.id === (id === "guard" ? "rest" : id)) ||
-  null;
-const actionDuration = (id) => {
-  const action = actionById(id);
-  return action
-    ? action.durationMs + (action.id === "attack" ? 2 * EQUIP_MS : 0)
-    : 0;
-};
-
 module.exports = {
   ACTIONS,
   GREETING_MS,
