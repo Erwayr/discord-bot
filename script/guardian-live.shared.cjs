@@ -1,6 +1,7 @@
 "use strict";
 const { TRAVEL_MS, ARRIVAL_MS, CHAT_MAX_AGE_MS, CHAT_REACTION_COOLDOWN_MS, CHAT_BUBBLE_MS, CHAT_BUBBLE_LIMIT,
   isChatMessage, isChatAction, chatReaction, chatMessageText, actionDuration } = require("./guardian-actions.shared.cjs");
+const { SUBSCRIPTION_LEAD_MS, SUBSCRIPTION_CHARACTER_MS, createSubscriptionPresentation } = require("./guardian-subscription.shared.cjs");
 
 const VIEWER_STAY_MS = 90_000;
 const APPEARANCE_MS = ARRIVAL_MS + VIEWER_STAY_MS + TRAVEL_MS;
@@ -10,7 +11,7 @@ const QUEUE_TTL_MS = 900_000;
 const MAX_QUEUE = 10;
 const MAX_SUBSCRIPTION_QUEUE = 100;
 const SUBSCRIPTION_VICTORY_COUNT = 2;
-const SUBSCRIPTION_APPEARANCE_MS = 2 * TRAVEL_MS + SUBSCRIPTION_VICTORY_COUNT * actionDuration("victory");
+const SUBSCRIPTION_APPEARANCE_MS = SUBSCRIPTION_CHARACTER_MS;
 const SUBSCRIPTION_DEDUPE_MS = 30_000;
 const LIVE_LEASE_MS = 90_000;
 const idOf = (value) => String(value || "").trim();
@@ -156,8 +157,11 @@ function advanceAppearance(input, { now, viewer = null } = {}) {
     const request = state.queue.shift();
     // Announce the incoming viewer while the Guardian leaves. The viewer's
     // arrival, stay and exit start only after this shared departure deadline.
-    const duration = request.type === "subscription" ? SUBSCRIPTION_APPEARANCE_MS : APPEARANCE_MS;
-    state.active = { ...request, viewer, startsAtMs: now + TRAVEL_MS, endsAtMs: now + TRAVEL_MS + duration };
+    const startsAtMs = now + (request.type === "subscription" ? SUBSCRIPTION_LEAD_MS : TRAVEL_MS);
+    const endsAtMs = request.type === "subscription"
+      ? createSubscriptionPresentation({ startsAtMs, appearanceId: request.requestId, viewer }).cardEndsAtMs
+      : startsAtMs + APPEARANCE_MS;
+    state.active = { ...request, viewer, startsAtMs, endsAtMs };
   }
   return cleanState(state, now);
 }

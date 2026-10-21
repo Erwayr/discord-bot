@@ -498,15 +498,36 @@ function createTwitchEventSub({
   }
 
   async function publishGuardianSubscription(event, req) {
-    if (typeof handleGuardianSubscription !== "function") return;
+    if (typeof handleGuardianSubscription !== "function") {
+      return { accepted: false, reason: "unavailable" };
+    }
     try {
-      await handleGuardianSubscription({
+      return await handleGuardianSubscription({
         event,
         messageId: req.header("Twitch-Eventsub-Message-Id"),
         sentAtMs: Date.parse(req.header("Twitch-Eventsub-Message-Timestamp") || ""),
-      });
+      }) || { accepted: false, reason: "unavailable" };
     } catch (error) {
       console.warn("guardian subscription appearance failed:", error?.message || error);
+      return { accepted: false, reason: "unavailable" };
+    }
+  }
+
+  async function publishSubscriptionPresentation(event, twitchEventType, req) {
+    const guardian = await publishGuardianSubscription(event, req);
+    if (guardian.accepted || guardian.reason === "duplicate") {
+      // The Guardian source owns the card and its timing, including a resub
+      // correlated with an already accepted subscription. Cancel any legacy
+      // fallback that was waiting for this viewer before Guardian recovered.
+      cancelPendingOverlaySubCard(getOverlaySubCardCorrelationKey(event));
+      cancelPendingOverlaySubCard(`login:${getLoginFromEvent(event)}`);
+      return;
+    }
+    const deliveryId = req.header("Twitch-Eventsub-Message-Id");
+    if (twitchEventType === "channel.subscription.message") {
+      await publishOverlayResubCardEvent(event, twitchEventType, deliveryId);
+    } else {
+      await scheduleOverlaySubCardEvent(event, twitchEventType, deliveryId);
     }
   }
 
@@ -739,16 +760,11 @@ function createTwitchEventSub({
     }
 
     if (subscription.type === "channel.subscribe") {
-      await publishGuardianSubscription(event, req);
       try {
         const canonical = await canonicalEvent(event, { allowCreate: true });
         await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
         await upsertFollowerMonthsFromSub(db, canonical, { resolveTwitchIdentity });
-        await scheduleOverlaySubCardEvent(
-          canonical,
-          subscription.type,
-          req.header("Twitch-Eventsub-Message-Id"),
-        );
+        await publishSubscriptionPresentation(canonical, subscription.type, req);
 
         const login = getLoginFromEvent(canonical);
         const display = getDisplayFromEvent(canonical, login);
@@ -770,16 +786,11 @@ function createTwitchEventSub({
     }
 
     if (subscription.type === "channel.subscription.message") {
-      await publishGuardianSubscription(event, req);
       try {
         const canonical = await canonicalEvent(event, { allowCreate: true });
         await upsertParticipantFromSubscription(db, canonical, { resolveTwitchIdentity });
         await upsertFollowerMonthsFromSub(db, canonical, { resolveTwitchIdentity });
-        await publishOverlayResubCardEvent(
-          canonical,
-          subscription.type,
-          req.header("Twitch-Eventsub-Message-Id"),
-        );
+        await publishSubscriptionPresentation(canonical, subscription.type, req);
 
         const login = getLoginFromEvent(canonical);
         const display = getDisplayFromEvent(canonical, login);

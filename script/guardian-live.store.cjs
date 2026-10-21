@@ -2,6 +2,7 @@
 const { isDeepStrictEqual } = require("node:util");
 const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
 const { TRAVEL_MS, ARRIVAL_MS } = require("./guardian-actions.shared.cjs");
+const { subscriptionPresentationFor, SUBSCRIPTION_DATES } = require("./guardian-subscription.shared.cjs");
 
 const { characterForProfile, characterLevel } = require("./guardian-character.shared.cjs");
 const { weaponFormForProfile } = require("./guardian-weapon-progress.shared.cjs");
@@ -146,7 +147,9 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
     const next = advanceAppearance(cleaned, { now, viewer });
     if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, now);
+    const subscriptionPresentation = subscriptionPresentationFor(next.active);
     const deadlines = [next.active?.startsAtMs, next.active?.endsAtMs,
+      ...SUBSCRIPTION_DATES.map(key => subscriptionPresentation?.[key]),
       next.active && next.active.startsAtMs + (next.active.type === "subscription" ? TRAVEL_MS : ARRIVAL_MS),
       next.active && next.active.endsAtMs - TRAVEL_MS,
       !next.active && next.queue.length && next.guardianUntilMs,
@@ -158,6 +161,7 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
       appearanceType: next.active?.type === "subscription" ? "subscription" : "viewer",
       appearanceId: next.active?.requestId || "guardian", viewer: next.active?.viewer || null,
       startsAtMs: next.active?.startsAtMs || null, endsAtMs: next.active?.endsAtMs || null,
+      ...(subscriptionPresentation ? { subscriptionPresentation } : {}),
       ...guardianChatPresentation(next, guardian, now),
     };
   });
