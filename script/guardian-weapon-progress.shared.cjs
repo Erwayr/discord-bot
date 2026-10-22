@@ -6,7 +6,6 @@ const { normalizeWeaponForm } = require("./guardian-character.shared.cjs");
 const WEAPONS = Object.freeze(["sword", "bow", "hammer", "staff"]);
 const FORM_COSTS = Object.freeze([2500, 5000, 10000]);
 const WEAPON_KEYS = Object.freeze([...WEAPONS.map(weapon => `classic-${weapon}`), ...WEAPON_SKIN_OPTIONS.map(skin => skin.id)]);
-const integer = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
 
 function getWeaponProgressDefinition(key) {
   const skin = getWeaponSkinOption(key);
@@ -39,14 +38,12 @@ function weaponProgress(profile = {}, key) {
   if (!ownsWeaponProgress(profile, key) || !validWeaponProgress(value)) return emptyWeaponProgress();
   return { ...value };
 }
-function weaponProgressTarget(form, balance) {
-  const base = FORM_COSTS[normalizeWeaponForm(form) - 1] || 0;
-  const safeBalance = integer(Number(balance));
-  return base ? base + (safeBalance > 10000 ? Math.ceil(safeBalance * .05) : 0) : 0;
+function weaponProgressTarget(form) {
+  return FORM_COSTS[normalizeWeaponForm(form) - 1] || 0;
 }
 function weaponProgressView(profile = {}, key) {
   const progress = weaponProgress(profile, key);
-  const goal = progress.form === 4 ? 0 : progress.target ?? weaponProgressTarget(progress.form, profile?.pops?.balance);
+  const goal = progress.form === 4 ? 0 : progress.target ?? weaponProgressTarget(progress.form);
   return { ...progress, owned: ownsWeaponProgress(profile, key), goal, targetLocked: progress.target !== null,
     remaining: Math.max(0, goal - progress.invested), percent: goal ? progress.invested / goal * 100 : 100 };
 }
