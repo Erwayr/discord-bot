@@ -6,7 +6,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 const { createGuardianCostumeGrants, JOURNAL_FILE } = require("../script/guardianCostumeGrants");
-const { HALLOWEEN_COSTUME_ID } = require("../script/guardian-costumes.shared.cjs");
+const { HALLOWEEN_COSTUME_ID, COMMUNITY_BUS_DRIVER_COSTUME_ID, COMMUNITY_ASTRAL_COSTUME_ID,
+  getCostume, getCostumeAppearanceMode } = require("../script/guardian-costumes.shared.cjs");
 const { createLivePresenceTicker } = require("../script/livePresenceTracker");
 
 const START = Date.parse("2026-10-23T22:00:00.000Z");
@@ -71,6 +72,17 @@ test("excluded service users and invalid stable IDs cannot receive costumes", as
   await f.service.observePresence(observation("123", { streamId: "" }));
   assert.equal(f.calls.length, 0);
   assert.equal(f.service.pendingSize(), 0);
+});
+
+test("community costumes cannot be acquired by presence even during Halloween", async t => {
+  const f = fixture(t);
+  for (const costumeId of [COMMUNITY_BUS_DRIVER_COSTUME_ID, COMMUNITY_ASTRAL_COSTUME_ID]) {
+    assert.deepEqual(await f.service.observePresence(observation("123", { costumeId })), { skipped: true });
+  }
+  assert.equal(f.calls.length, 0); assert.equal(f.service.pendingSize(), 0);
+  assert.equal(getCostume(COMMUNITY_BUS_DRIVER_COSTUME_ID).hideHair, true);
+  assert.equal(getCostumeAppearanceMode(COMMUNITY_BUS_DRIVER_COSTUME_ID), "clothes");
+  assert.equal(getCostumeAppearanceMode(HALLOWEEN_COSTUME_ID), "full-body");
 });
 
 test("concurrent observations and login changes use one grant and a persistent success cache", async t => {

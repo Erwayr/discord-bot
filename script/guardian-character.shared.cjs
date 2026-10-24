@@ -1,10 +1,10 @@
 "use strict";
 const { BASE_WEAPON_SKIN, getWeaponSkinOption: getWeaponSkin } = require("./guardian-weapon-skin-options.shared.cjs");
-const { BASE_COSTUME, COSTUMES, ownsCostume } = require("./guardian-costumes.shared.cjs");
+const { BASE_COSTUME, COSTUMES, ownsCostume, normalizeCostumeId } = require("./guardian-costumes.shared.cjs");
+const { normalizeWeaponForm } = require("./guardian-weapon-form.shared.cjs");
 
 // Canonical catalog: shared with the browser and copied byte-for-byte to the bot.
 const SCHEMA_VERSION = 1;
-const normalizeWeaponForm = value => [1, 2, 3, 4].includes(Number(value)) ? Number(value) : 1;
 const choices = (rows) => Object.freeze(rows.map(([id, label, color]) => Object.freeze({ id, label, ...(color ? { color } : {}) })));
 const PALETTE = choices([
   ["ocean", "Océan", "#237eac"], ["forest", "Forêt", "#38794b"],
@@ -64,7 +64,7 @@ function normalizeCharacter(input, { level = 0, strict = false } = {}) {
   if (strict && Object.keys(source).some((key) => !["schemaVersion", "weaponSkin"].includes(key) && !Object.hasOwn(OPTIONS, key))) throw characterError("guardian_character_option_invalid");
   const character = { ...DEFAULT_CHARACTER };
   for (const [key, options] of Object.entries(OPTIONS)) {
-    const value = source[key];
+    const value = key === "costume" ? normalizeCostumeId(source[key]) : source[key];
     const option = options.find((entry) => entry.id === value);
     if (strict && value != null && !option) throw characterError("guardian_character_option_invalid");
     if (option) character[key] = option.id;
