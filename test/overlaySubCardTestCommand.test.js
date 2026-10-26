@@ -5,6 +5,7 @@ const { test } = require("node:test");
 const { createMemoryFirestore } = require("./helpers/live-chest-firestore.cjs");
 const { DEFAULT_CHARACTER } = require("../script/guardian-character.shared.cjs");
 const { freshState } = require("../script/guardian-live.shared.cjs");
+const { pollGuardianLive } = require("../script/guardian-live.store.cjs");
 
 const {
   canRunOverlaySubCardTestCommand,
@@ -379,14 +380,26 @@ test("the production command's default publisher creates only an offline Guardia
   assert.equal(test.viewer.login, "erwayr");
   assert.equal(test.viewer.character.weapon, "staff");
   assert.equal(test.viewer.character.body, "feminine");
-  assert.equal(test.startsAtMs, nowMs + 1200);
+  assert.equal(test.schemaVersion, 2);
+  assert.equal(test.startsAtMs, 0);
+  assert.equal(test.endsAtMs, 0);
   assert.equal(test.subscriptionTest.subMonths, 6);
   assert.equal(test.subscriptionTest.subMessage, "Merci !");
-  assert.equal(test.expiresAtMs, test.endsAtMs);
+  assert.equal(test.expiresAtMs, nowMs + 30000);
   assert.deepEqual(db.writes, ["guardian_live_channels/123/tests/subscription", "overlay_state_signals/guardian"]);
   for (const path of Object.keys(initial)) assert.deepEqual(db.documents.get(path), initial[path], `${path} stays untouched`);
   const writes = db.writes.length;
   assert.equal((await handleOverlaySubCardTestCommand(command)).reason, "duplicate");
   assert.equal(db.writes.length, writes, "a retried message neither rewrites the test nor extends its deadline");
   assert.equal(sent.length, 1);
+  const waiting = await pollGuardianLive({ db, channelId: "123", now: nowMs + 100 });
+  assert.equal(waiting.kind, "guardian");
+  assert.equal(waiting.subscriptionPresentation, undefined);
+  const started = await pollGuardianLive({ db, channelId: "123", now: nowMs + 200,
+    preparedSubscription: waiting.subscriptionPreparation });
+  assert.equal(started.startsAtMs, nowMs + 200 + 1200);
+  assert.equal(started.subscriptionPresentation.version, 3);
+  assert.equal(started.endsAtMs, started.subscriptionPresentation.returnEndsAtMs);
+  assert.equal(started.subscriptionPresentation.exitStartsAtMs, started.subscriptionPresentation.cardEndsAtMs);
+  for (const path of Object.keys(initial)) assert.deepEqual(db.documents.get(path), initial[path], `${path} stays untouched after readiness`);
 });

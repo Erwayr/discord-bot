@@ -1,8 +1,9 @@
 "use strict";
 const { isDeepStrictEqual } = require("node:util");
+const { createHash } = require("node:crypto");
 const { writeOverlaySignal } = require("./overlay-state-signals.shared.cjs");
 const { TRAVEL_MS, ARRIVAL_MS } = require("./guardian-actions.shared.cjs");
-const { subscriptionPresentationFor, createSubscriptionPresentation, SUBSCRIPTION_LEAD_MS, SUBSCRIPTION_DATES } = require("./guardian-subscription.shared.cjs");
+const { subscriptionPresentationFor, createSubscriptionPresentation, SUBSCRIPTION_LEAD_MS, SUBSCRIPTION_DATES, SUBSCRIPTION_PREPARATION_MS } = require("./guardian-subscription.shared.cjs");
 
 const { characterForProfile, characterLevel } = require("./guardian-character.shared.cjs");
 const { weaponFormForProfile } = require("./guardian-weapon-progress.shared.cjs");
@@ -80,10 +81,13 @@ async function enqueueGuardianSubscription({ db, channelId, streamId, request, n
   });
 }
 
+function pendingSubscriptionTest(value) {
+  return value?.schemaVersion === 2 && value.startsAtMs === 0 && value.endsAtMs === 0;
+}
 function activeSubscriptionTest(value, now) {
   return value?.type === "subscription" && value.viewer && !Number.isFinite(value.cancelledAtMs)
-    && Number.isFinite(value.expiresAtMs) && value.expiresAtMs > now && value.endsAtMs > now
-    && subscriptionPresentationFor(value) ? value : null;
+    && Number.isFinite(value.expiresAtMs) && value.expiresAtMs > now
+    && (pendingSubscriptionTest(value) || (value.endsAtMs > now && subscriptionPresentationFor(value))) ? value : null;
 }
 function cancelSubscriptionTest(tx, ref, value, now) {
   const test = activeSubscriptionTest(value, now);
@@ -137,10 +141,8 @@ async function publishGuardianSubscriptionTest({ db, channelId, login, displayNa
       const viewer = { login: canonicalLogin,
         pseudo: String(displayName || profile.pseudo || canonicalLogin).replace(/\p{Cc}/gu, " ").trim().slice(0, 80),
         level: characterLevel(profile), weaponForm: weaponFormForProfile(profile, character), character };
-      const startsAtMs = nowMs + SUBSCRIPTION_LEAD_MS;
-      const cue = createSubscriptionPresentation({ startsAtMs, appearanceId: requestId, viewer });
-      const value = { schemaVersion: 1, type: "subscription", requestId, createdAtMs: nowMs,
-        startsAtMs, endsAtMs: cue.cardEndsAtMs, expiresAtMs: cue.cardEndsAtMs, viewer,
+      const value = { schemaVersion: 2, type: "subscription", requestId, createdAtMs: nowMs,
+        startsAtMs: 0, endsAtMs: 0, expiresAtMs: nowMs + SUBSCRIPTION_PREPARATION_MS, viewer,
         subscriptionTest: { ...(subMonths != null ? { subMonths } : {}),
           subMessage: String(subMessage || "").replace(/\s+/g, " ").trim().slice(0, 500) } };
       tx.set(testRef, value);
@@ -212,43 +214,82 @@ async function publishGuardianChat({ db, channelId, streamId, userId, messageId,
   });
 }
 
-async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now() }) {
+function subscriptionPreparation(request, viewer) {
+  const fingerprint = createHash("sha256").update(JSON.stringify([
+    "guardian-subscription-v3", request.requestId, request.userId || "", request.streamId || "",
+    request.requestedAtMs ?? request.createdAtMs, viewer, request.subscriptionTest || null,
+  ])).digest("hex");
+  return { appearanceId: request.requestId, viewer, fingerprint };
+}
+function preparationMatches(prepared, preparation) {
+  return Boolean(preparation && prepared?.appearanceId === preparation.appearanceId
+    && typeof prepared.fingerprint === "string" && prepared.fingerprint === preparation.fingerprint);
+}
+
+async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now, preparedSubscription = null }) {
   const ref = channelRef(db, channelId);
   const testRef = ref.collection("tests").doc("subscription");
+  const clock = typeof now === "function" ? now : () => now;
   return db.runTransaction(async (tx) => {
     const [snapshot, testSnapshot] = await Promise.all([tx.get(ref), tx.get(testRef)]);
-    const previous = snapshot.data() || freshState("", now);
-    const cleaned = cleanState(previous, now);
+    let at = clock();
+    const previous = snapshot.data() || freshState("", at);
+    let cleaned = cleanState(previous, at);
     const request = cleaned.queue[0];
-    const shouldStart = cleaned.initialized && cleaned.liveUntilMs > now && !cleaned.active && cleaned.guardianUntilMs <= now && request;
+    const canStart = (state, time) => state.initialized && state.liveUntilMs > time && !state.active
+      && state.guardianUntilMs <= time && state.queue[0];
+    const shouldStart = canStart(cleaned, at);
     const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
-    const next = advanceAppearance(cleaned, { now, viewer });
-    if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, now);
-    let test = activeSubscriptionTest(testSnapshot.data(), now);
+    // A transaction can retry or its profile read can cross an expiry. The
+    // final clock and head must still authorize the exact prepared character.
+    at = clock();
+    cleaned = cleanState(previous, at);
+    const eligible = viewer && canStart(cleaned, at) && cleaned.queue[0].requestId === request.requestId;
+    const realPreparation = eligible && request.type === "subscription" && cleaned.streamId
+      && cleaned.liveCheckedAtMs <= at ? subscriptionPreparation(request, viewer) : null;
+    const startViewer = eligible && (request.type !== "subscription" || preparationMatches(preparedSubscription, realPreparation)) ? viewer : null;
+    const next = advanceAppearance(cleaned, { now: at, viewer: startViewer });
+    if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, at);
+    let test = activeSubscriptionTest(testSnapshot.data(), at);
     if (test && (next.active || next.queue.length)) {
       // Real traffic permanently preempts a test; it must not reappear after
       // the real card ends or a new stream clears its ordinary state.
-      cancelSubscriptionTest(tx, testRef, test, now);
+      cancelSubscriptionTest(tx, testRef, test, at);
       test = null;
     }
-    const active = next.active || test;
+    let preparation = !next.active ? realPreparation : null;
+    if (test && pendingSubscriptionTest(test)) {
+      preparation = subscriptionPreparation(test, test.viewer);
+      if (preparationMatches(preparedSubscription, preparation)) {
+        const startsAtMs = at + SUBSCRIPTION_LEAD_MS;
+        const cue = createSubscriptionPresentation({ startsAtMs, appearanceId: test.requestId, viewer: test.viewer });
+        test = { ...test, startsAtMs, endsAtMs: cue.returnEndsAtMs, expiresAtMs: cue.returnEndsAtMs };
+        tx.set(testRef, test);
+        writeOverlaySignal(tx, db, "guardian", { now: at });
+        preparation = null;
+      }
+    }
+    const active = next.active || (test && !pendingSubscriptionTest(test) ? test : null);
     const subscriptionPresentation = subscriptionPresentationFor(active);
     const deadlines = [active?.startsAtMs, active?.endsAtMs,
       ...SUBSCRIPTION_DATES.map(key => subscriptionPresentation?.[key]),
       active && active.startsAtMs + (active.type === "subscription" ? TRAVEL_MS : ARRIVAL_MS),
       active && active.endsAtMs - TRAVEL_MS,
+      test?.expiresAtMs,
+      preparation && next.queue[0]?.expiresAtMs,
       !next.active && next.queue.length && next.guardianUntilMs,
       (next.active || next.queue.length) && next.liveUntilMs];
-    const future = deadlines.filter(value => Number.isFinite(value) && value > now);
+    const future = deadlines.filter(value => Number.isFinite(value) && value > at);
     return {
       nextRefreshAtMs: future.length ? Math.min(...future) : null,
-      generatedAtMs: now, kind: active ? "viewer" : "guardian", pendingCount: next.queue.length,
+      generatedAtMs: at, kind: active ? "viewer" : "guardian", pendingCount: next.queue.length,
       appearanceType: active?.type === "subscription" ? "subscription" : "viewer",
       appearanceId: active?.requestId || "guardian", viewer: active?.viewer || null,
       startsAtMs: active?.startsAtMs || null, endsAtMs: active?.endsAtMs || null,
       ...(subscriptionPresentation ? { subscriptionPresentation } : {}),
+      ...(preparation ? { subscriptionPreparation: preparation } : {}),
       ...(test ? { subscriptionTest: test.subscriptionTest, action: null, bubble: null }
-        : guardianChatPresentation(next, guardian, now)),
+        : guardianChatPresentation(next, guardian, at)),
     };
   });
 }

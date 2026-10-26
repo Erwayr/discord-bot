@@ -159,7 +159,7 @@ function advanceAppearance(input, { now, viewer = null } = {}) {
     // arrival, stay and exit start only after this shared departure deadline.
     const startsAtMs = now + (request.type === "subscription" ? SUBSCRIPTION_LEAD_MS : TRAVEL_MS);
     const endsAtMs = request.type === "subscription"
-      ? createSubscriptionPresentation({ startsAtMs, appearanceId: request.requestId, viewer }).cardEndsAtMs
+      ? createSubscriptionPresentation({ startsAtMs, appearanceId: request.requestId, viewer }).returnEndsAtMs
       : startsAtMs + APPEARANCE_MS;
     state.active = { ...request, viewer, startsAtMs, endsAtMs };
   }
