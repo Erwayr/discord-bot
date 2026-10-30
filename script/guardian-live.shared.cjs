@@ -14,6 +14,7 @@ const SUBSCRIPTION_VICTORY_COUNT = 2;
 const SUBSCRIPTION_APPEARANCE_MS = SUBSCRIPTION_CHARACTER_MS;
 const SUBSCRIPTION_DEDUPE_MS = 30_000;
 const LIVE_LEASE_MS = 90_000;
+const { ordinaryDepth, reservedDepth, isPaidAction, paidDuration } = require("./guardian-paid-actions.shared.cjs");
 const idOf = (value) => String(value || "").trim();
 
 function freshState(streamId = "", now = 0) {
@@ -110,7 +111,7 @@ function enqueueAppearance(input, request, { now, streamId, lastAcceptedAtMs = n
   if (state.streamId !== streamId) state = freshState(streamId, now);
   if (state.active?.userId === request.userId || state.queue.some((item) => item.userId === request.userId)) return { accepted: false, reason: "already_queued", state };
   if (lastAcceptedAtMs != null && now - lastAcceptedAtMs < COOLDOWN_MS) return { accepted: false, reason: "cooldown", retryAfterMs: COOLDOWN_MS - (now - lastAcceptedAtMs), state };
-  if (state.queue.length >= MAX_QUEUE) return { accepted: false, reason: "queue_full", state };
+  if (ordinaryDepth(state.queue) + reservedDepth(state, now, streamId) >= MAX_QUEUE) return { accepted: false, reason: "queue_full", state };
   state.queue.push({ requestId: idOf(request.requestId), userId: idOf(request.userId), login: idOf(request.login).toLowerCase(), displayName: idOf(request.displayName).slice(0, 80), streamId, requestedAtMs: now, expiresAtMs: now + QUEUE_TTL_MS });
   return { accepted: true, position: state.queue.length, state };
 }
@@ -160,7 +161,7 @@ function advanceAppearance(input, { now, viewer = null } = {}) {
     const startsAtMs = now + (request.type === "subscription" ? SUBSCRIPTION_LEAD_MS : TRAVEL_MS);
     const endsAtMs = request.type === "subscription"
       ? createSubscriptionPresentation({ startsAtMs, appearanceId: request.requestId, viewer }).returnEndsAtMs
-      : startsAtMs + APPEARANCE_MS;
+      : startsAtMs + (isPaidAction(request) ? paidDuration(request.actionId) : APPEARANCE_MS);
     state.active = { ...request, viewer, startsAtMs, endsAtMs };
   }
   return cleanState(state, now);

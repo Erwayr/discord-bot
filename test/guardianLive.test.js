@@ -24,6 +24,19 @@ const {
   APPEARANCE_MS,
   COOLDOWN_MS,
 } = require("../script/guardian-live.shared.cjs");
+test("Bits confirmations reserve ordinary queue capacity without changing subscription priority", () => {
+  const contracts = require("../script/guardian-live.shared.cjs");
+  const now = 1_800_000_000_000;
+  const state = { ...freshState("live", now), liveUntilMs: now + 90_000,
+    actionReservations: Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`confirmation-${index}`,
+      { userId: String(index + 100), streamId: "live", expiresAtMs: now + 5000 }])) };
+  const request = { requestId: "free-viewer-request", userId: "222", login: "viewer" };
+  assert.equal(contracts.enqueueAppearance(state, request, { now, streamId: "live" }).reason, "queue_full");
+  const subscription = contracts.enqueueSubscriptionAppearance(state, { ...request, requestId: "subscription" }, { now, streamId: "live" });
+  assert.equal(subscription.accepted, true);
+  assert.equal(subscription.state.queue[0].type, "subscription");
+  assert.equal(contracts.enqueueAppearance(state, request, { now: now + 5001, streamId: "live" }).accepted, true);
+});
 test("new facial cosmetics survive a viewer passage and retain its prepared snapshot", async () => {
   const {
     DEFAULT_CHARACTER,

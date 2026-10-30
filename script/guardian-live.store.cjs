@@ -226,20 +226,25 @@ function preparationMatches(prepared, preparation) {
     && typeof prepared.fingerprint === "string" && prepared.fingerprint === preparation.fingerprint);
 }
 
-async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now, preparedSubscription = null }) {
+async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now, preparedSubscription = null,
+  paidSource = null, preparedPaidAction = null, paidActionAck = null }) {
   const ref = channelRef(db, channelId);
   const testRef = ref.collection("tests").doc("subscription");
   const clock = typeof now === "function" ? now : () => now;
   return db.runTransaction(async (tx) => {
     const [snapshot, testSnapshot] = await Promise.all([tx.get(ref), tx.get(testRef)]);
     let at = clock();
-    const previous = snapshot.data() || freshState("", at);
+    const original = snapshot.data() || freshState("", at);
+    const paidActions = require("./guardian-paid-actions.store.cjs");
+    const paid = await paidActions.prepareErwayrActionPoll({ tx, db, previous: original, channelId, now: at,
+      source: paidSource, prepared: preparedPaidAction, ack: paidActionAck });
+    const previous = paid.raw;
     let cleaned = cleanState(previous, at);
     const request = cleaned.queue[0];
     const canStart = (state, time) => state.initialized && state.liveUntilMs > time && !state.active
       && state.guardianUntilMs <= time && state.queue[0];
     const shouldStart = canStart(cleaned, at);
-    const viewer = shouldStart ? await readQueuedViewer(tx, db, request) : null;
+    const viewer = shouldStart ? paidActions.isPaidAction(request) ? paid.ready ? request.snapshot : null : await readQueuedViewer(tx, db, request) : null;
     // A transaction can retry or its profile read can cross an expiry. The
     // final clock and head must still authorize the exact prepared character.
     at = clock();
@@ -247,9 +252,11 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     const eligible = viewer && canStart(cleaned, at) && cleaned.queue[0].requestId === request.requestId;
     const realPreparation = eligible && request.type === "subscription" && cleaned.streamId
       && cleaned.liveCheckedAtMs <= at ? subscriptionPreparation(request, viewer) : null;
-    const startViewer = eligible && (request.type !== "subscription" || preparationMatches(preparedSubscription, realPreparation)) ? viewer : null;
+    const startViewer = eligible && (!paidActions.isPaidAction(request) || request.leaseUntilMs > at && paid.own(request))
+      && (request.type !== "subscription" || preparationMatches(preparedSubscription, realPreparation)) ? viewer : null;
     const next = advanceAppearance(cleaned, { now: at, viewer: startViewer });
-    if (!isDeepStrictEqual(previous, next)) persistState(tx, db, ref, previous, next, at);
+    if (!isDeepStrictEqual(original, next)) persistState(tx, db, ref, original, next, at);
+    paidActions.commitErwayrActionPoll(tx, paid, next, at);
     let test = activeSubscriptionTest(testSnapshot.data(), at);
     if (test && (next.active || next.queue.length)) {
       // Real traffic permanently preempts a test; it must not reappear after
@@ -269,7 +276,8 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
         preparation = null;
       }
     }
-    const active = next.active || (test && !pendingSubscriptionTest(test) ? test : null);
+    const active = next.active && (!paidActions.isPaidAction(next.active) || paid.own(next.active)) ? next.active
+      : test && !pendingSubscriptionTest(test) ? test : null;
     const subscriptionPresentation = subscriptionPresentationFor(active);
     const deadlines = [active?.startsAtMs, active?.endsAtMs,
       ...SUBSCRIPTION_DATES.map(key => subscriptionPresentation?.[key]),
@@ -283,12 +291,17 @@ async function pollGuardianLive({ db, channelId, guardian = null, now = Date.now
     return {
       nextRefreshAtMs: future.length ? Math.min(...future) : null,
       generatedAtMs: at, kind: active ? "viewer" : "guardian", pendingCount: next.queue.length,
-      appearanceType: active?.type === "subscription" ? "subscription" : "viewer",
+      appearanceType: active?.type === "subscription" ? "subscription" : active?.type === "paid_action" ? "paid_action" : "viewer",
       appearanceId: active?.requestId || "guardian", viewer: active?.viewer || null,
       startsAtMs: active?.startsAtMs || null, endsAtMs: active?.endsAtMs || null,
+      ...(paidActions.isPaidAction(active) ? { paidActionId: active.actionId,
+        paidActionClaim: { eventId: active.eventId, claimToken: active.claimToken, actionId: active.actionId,
+          actionStartedAtMs: active.actionStartedAtMs || null } } : {}),
+      ...(!next.active && paid.preparation ? { paidActionPreparation: paid.preparation } : {}),
       ...(subscriptionPresentation ? { subscriptionPresentation } : {}),
       ...(preparation ? { subscriptionPreparation: preparation } : {}),
-      ...(test ? { subscriptionTest: test.subscriptionTest, action: null, bubble: null }
+      ...(paidActions.isPaidAction(active) ? { action: null, bubble: null }
+        : test ? { subscriptionTest: test.subscriptionTest, action: null, bubble: null }
         : guardianChatPresentation(next, guardian, at)),
     };
   });
