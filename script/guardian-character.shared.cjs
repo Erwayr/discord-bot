@@ -16,7 +16,7 @@ const PALETTE = choices([
 ]);
 const OPTIONS = Object.freeze({
   body: choices([["masculine", "Masculine"], ["feminine", "Féminine"]]),
-  face: choices([["oval", "Ovale"], ["round", "Rond"], ["angular", "Anguleux"], ["square", "Carré"], ["heart", "Cœur"], ["elongated", "Allongé"]]),
+  face: choices([["oval", "Ovale"], ["round", "Rond"], ["angular", "Anguleux"], ["square", "Carré"], ["heart", "Cœur"], ["elongated", "Allongé"], ["elf", "Elfe"], ["dwarf", "Nain"], ["orc", "Orque"]]),
   eyes: choices([["almond", "Amande"], ["round", "Ronds"], ["narrow", "Fins"], ["hooded", "Tombants"], ["upturned", "Relevés"]]),
   nose: choices([["fine", "Fin"], ["round", "Arrondi"], ["broad", "Large"], ["straight", "Droit"], ["aquiline", "Aquilin"]]),
   mouth: choices([["natural", "Naturelle"], ["thin", "Fine"], ["full", "Pulpeuse"], ["wide", "Large"]]),
@@ -32,7 +32,7 @@ const OPTIONS = Object.freeze({
     ["fade", "Dégradé"], ["spiky", "Hérissée"], ["afro", "Afro"], ["curly", "Bouclée"],
     ["long", "Longue"], ["ponytail", "Queue-de-cheval"], ["braid", "Tresse"], ["bun", "Chignon"],
   ]),
-  skin: choices([["porcelain", "Porcelaine", "#f2d2bc"], ["sand", "Sable", "#dcb18b"], ["honey", "Miel", "#c89466"], ["bronze", "Bronze", "#ad7753"], ["brown", "Brun", "#805337"], ["ebony", "Ébène", "#4f342a"]]),
+  skin: choices([["porcelain", "Porcelaine", "#f2d2bc"], ["sand", "Sable", "#dcb18b"], ["honey", "Miel", "#c89466"], ["bronze", "Bronze", "#ad7753"], ["brown", "Brun", "#805337"], ["ebony", "Ébène", "#4f342a"], ["olive", "Vert olive", "#7c8650"], ["forest", "Vert sombre", "#465b3b"], ["ash", "Gris cendré", "#8b8b86"]]),
   hairColor: choices([["black", "Noir", "#241f27"], ["brown", "Châtain", "#533426"], ["chestnut", "Châtaigne", "#835036"], ["blond", "Blond", "#d6b66c"], ["copper", "Cuivré", "#ae5633"], ["silver", "Argent", "#c3c9d2"], ["violet", "Prune", "#735495"], ["blue", "Bleu", "#397d9c"]]),
   eyeColor: choices([["brown", "Marron", "#5a3923"], ["hazel", "Noisette", "#998243"], ["green", "Vert", "#327b5a"], ["blue", "Bleu", "#4288b7"], ["grey", "Gris", "#8791a0"], ["violet", "Violet", "#8c60a8"]]),
   tunic: PALETTE, trousers: PALETTE, boots: PALETTE, bracers: PALETTE, details: PALETTE,
