@@ -9,6 +9,7 @@ const {
   ButtonStyle,
   EmbedBuilder,
   Events,
+  escapeMarkdown,
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
@@ -293,35 +294,110 @@ function votingRuleText(poll) {
 }
 
 function buildMainEmbed(poll, proposalDocs, { closed = false } = {}) {
+  if (closed) return buildFinalResultEmbed(poll, proposalDocs);
+
   const title = poll?.title || "Sondage communautaire";
   const sorted = sortProposals(proposalDocs);
   const descriptionLines = [];
 
-  if (closed) {
-    descriptionLines.push(
-      "Le sondage est terminé. Voici le classement final de la communauté.",
-    );
-  } else {
-    const description = String(poll?.description || "").trim();
-    if (description) descriptionLines.push(description, "");
-    descriptionLines.push(
-      `Clique sur **➕ ${getProposeButtonLabel(poll)}** pour ajouter ton idée.`,
-      votingRuleText(poll),
-    );
-  }
+  const description = String(poll?.description || "").trim();
+  if (description) descriptionLines.push(description, "");
+  descriptionLines.push(
+    `Clique sur **➕ ${getProposeButtonLabel(poll)}** pour ajouter ton idée.`,
+    votingRuleText(poll),
+  );
 
   return new EmbedBuilder()
-    .setTitle(`${closed ? "🏆" : "📊"} ${title}`)
+    .setTitle(`📊 ${title}`)
     .setDescription(descriptionLines.join("\n"))
     .addFields({
-      name: closed ? "Classement final" : "Classement actuel",
+      name: "Classement actuel",
       value: rankingText(sorted),
     })
     .setFooter({
-      text: closed
-        ? `${sorted.length} proposition${sorted.length > 1 ? "s" : ""}`
-        : `Maximum ${getMaxProposals(poll)} propositions par membre`,
+      text: `Maximum ${getMaxProposals(poll)} propositions par membre`,
     });
+}
+
+function buildFinalResultEmbed(poll, proposalDocs) {
+  const sorted = sortProposals(proposalDocs);
+  const proposalName = (proposal) =>
+    escapeMarkdown(
+      truncate(
+        String(proposal.name || "Proposition sans nom")
+          .replace(/\s+/g, " ")
+          .trim(),
+        80,
+      ),
+    );
+  const topVotes = normalizePublicVoteCount(sorted[0]?.voteCount);
+  const leaders =
+    topVotes > 0
+      ? sorted.filter(
+          (proposal) => normalizePublicVoteCount(proposal.voteCount) === topVotes,
+        )
+      : [];
+  let description;
+
+  if (!sorted.length) {
+    description = "Le sondage est clôturé. Aucune proposition n'a été ajoutée.";
+  } else if (!topVotes) {
+    description = "Le sondage est clôturé. **Aucun vote n'a été enregistré.**";
+  } else if (leaders.length === 1) {
+    description = `🥇 **Proposition gagnante**\n\n**${proposalName(leaders[0])}**\n**${topVotes} vote${topVotes > 1 ? "s" : ""}**\n\nMerci pour votre participation !`;
+  } else {
+    const visibleLeaders = leaders.slice(0, MAIN_RANKING_LIMIT);
+    description = [
+      `🥇 **Égalité en tête — ${leaders.length} propositions**`,
+      `**${topVotes} vote${topVotes > 1 ? "s" : ""} chacune**`,
+      "",
+      ...visibleLeaders.map((proposal) => `**${proposalName(proposal)}**`),
+      ...(leaders.length > visibleLeaders.length
+        ? [`… et ${leaders.length - visibleLeaders.length} autres propositions ex æquo.`]
+        : []),
+    ].join("\n");
+  }
+
+  const totalVotes = sorted.reduce(
+    (total, proposal) => total + normalizePublicVoteCount(proposal.voteCount),
+    0,
+  );
+  const embed = new EmbedBuilder()
+    .setColor(0xf1c40f)
+    .setTitle(
+      truncate(`🏆 Résultats — ${poll?.title || "Sondage communautaire"}`, 256),
+    )
+    .setDescription(description)
+    .setFooter({
+      text: `Sondage terminé • ${sorted.length} proposition${sorted.length > 1 ? "s" : ""} • ${totalVotes} vote${totalVotes > 1 ? "s" : ""}`,
+    });
+
+  let rank = 0;
+  let previousVotes;
+  let block = "";
+  let fieldCount = 0;
+  const addRankingField = () => {
+    embed.addFields({
+      name: fieldCount++ ? "Classement final (suite)" : "Classement final · Top 10",
+      value: block,
+    });
+  };
+
+  for (const [index, proposal] of sorted.slice(0, MAIN_RANKING_LIMIT).entries()) {
+    const votes = normalizePublicVoteCount(proposal.voteCount);
+    if (votes !== previousVotes) rank = index + 1;
+    previousVotes = votes;
+    const prefix = ["🥇", "🥈", "🥉"][rank - 1] || `${rank}.`;
+    const line = `${prefix} **${proposalName(proposal)}** — ${votes} vote${votes > 1 ? "s" : ""}`;
+    if (block && block.length + line.length + 1 > 1024) {
+      addRankingField();
+      block = "";
+    }
+    block += `${block ? "\n" : ""}${line}`;
+  }
+  if (block) addRankingField();
+
+  return embed;
 }
 
 function buildProposalEmbed(proposal, poll, { closed = false } = {}) {
@@ -402,6 +478,19 @@ async function fetchPollMessage(interaction, poll) {
   return channel.messages.fetch(poll.messageId).catch(() => null);
 }
 
+async function deletePollMessage(interaction, channelId, messageId) {
+  try {
+    const channel = await fetchChannel(interaction, channelId);
+    if (!channel) throw new Error("POLL_CHANNEL_UNAVAILABLE");
+    const message = await channel.messages.fetch(messageId);
+    await message.delete();
+    return true;
+  } catch (error) {
+    if (error?.code === 10008) return false;
+    throw error;
+  }
+}
+
 async function pinPollMessage(message, reference) {
   try {
     await message.pin("Sondage communautaire actif");
@@ -465,9 +554,11 @@ async function refreshMainMessage(interaction, db, pollId, { closed = false } = 
   const message = await fetchPollMessage(interaction, poll);
   if (!message) return;
 
+  const isClosed = closed || !poll.active;
   await message.edit({
-    embeds: [buildMainEmbed(poll, proposalSnapshot.docs, { closed })],
-    components: buildMainComponents(pollId, poll, closed),
+    embeds: [buildMainEmbed(poll, proposalSnapshot.docs, { closed: isClosed })],
+    components: isClosed ? [] : buildMainComponents(pollId, poll),
+    allowedMentions: { parse: [] },
   });
 }
 
@@ -494,15 +585,17 @@ async function refreshProposalMessage(
     .catch(() => null);
   if (!message) return;
 
+  const isClosed = closed || !poll.active;
   await message.edit({
     embeds: [
       buildProposalEmbed(
         { id: proposalSnapshot.id, ...proposal },
         poll,
-        { closed },
+        { closed: isClosed },
       ),
     ],
-    components: buildVoteComponents(pollId, proposalId, closed),
+    components: buildVoteComponents(pollId, proposalId, isClosed),
+    allowedMentions: { parse: [] },
   });
 }
 
@@ -1069,16 +1162,83 @@ async function closePoll(interaction, db) {
     "after close",
   );
 
-  const unpinResult = await unpinPollMessage(interaction, poll, pollReference);
   const proposals = await proposalsRef(db, pollId).get();
-
-  await refreshMainMessage(interaction, db, pollId, { closed: true }).catch(
-    (error) =>
+  const warnings = [];
+  const metadataWarning =
+    "⚠️ Certaines informations de publication ou de nettoyage n'ont pas pu être enregistrées.";
+  const recordMetadata = async (fields) => {
+    try {
+      await pollReference.update(fields);
+      return true;
+    } catch (error) {
       console.warn(
-        "[community-poll] close main refresh failed:",
+        "[community-poll] close metadata failed:",
         error?.message || error,
-      ),
-  );
+      );
+      if (!warnings.includes(metadataWarning)) warnings.push(metadataWarning);
+      return false;
+    }
+  };
+
+  let resultMessage = null;
+  let resultRecorded = false;
+  try {
+    const channel = await fetchChannel(interaction, poll.channelId);
+    if (!channel?.send) throw new Error("POLL_CHANNEL_UNAVAILABLE");
+    resultMessage = await channel.send({
+      embeds: [buildFinalResultEmbed(poll, proposals.docs)],
+      components: [],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.warn(
+      "[community-poll] result publication failed:",
+      error?.message || error,
+    );
+    warnings.push(
+      "⚠️ Le résultat n'a pas pu être publié. L'ancien message n'a pas été supprimé.",
+    );
+  }
+
+  if (resultMessage) {
+    resultRecorded = await recordMetadata({
+      resultMessageId: resultMessage.id,
+      resultPublishedAt: new Date(),
+      resultPinned: false,
+    });
+  }
+
+  let mainRemoved = !poll.messageId;
+  // Keep the original result available until the new public message is recorded.
+  if (resultRecorded && poll.messageId) {
+    try {
+      await deletePollMessage(interaction, poll.channelId, poll.messageId);
+      mainRemoved = true;
+      await recordMetadata({ pinned: false, messageDeletedAt: new Date() });
+    } catch (error) {
+      console.warn(
+        "[community-poll] main message delete failed:",
+        error?.message || error,
+      );
+      warnings.push("⚠️ L'ancien message du sondage n'a pas pu être supprimé.");
+    }
+  }
+
+  if (!mainRemoved) {
+    await refreshMainMessage(interaction, db, pollId, { closed: true }).catch(
+      (error) => {
+        console.warn(
+          "[community-poll] close main refresh failed:",
+          error?.message || error,
+        );
+        warnings.push(
+          "⚠️ L'ancien message n'a pas pu être actualisé ; les votes sont bloqués, mais ses boutons peuvent rester visibles.",
+        );
+      },
+    );
+    const unpinResult = await unpinPollMessage(interaction, poll, pollReference);
+    if (!unpinResult.ok) warnings.push(unpinResult.warning);
+  }
 
   let deletedProposalMessages = 0;
   let cleanupFailures = 0;
@@ -1087,36 +1247,13 @@ async function closePoll(interaction, db) {
     const proposal = doc.data() || {};
     if (!proposal.channelId || !proposal.messageId) continue;
 
-    const channel = await fetchChannel(interaction, proposal.channelId);
-    if (!channel) {
-      cleanupFailures += 1;
-      continue;
-    }
-
-    let fetchError = null;
-    const message = await channel.messages.fetch(proposal.messageId).catch((error) => {
-      fetchError = error;
-      return null;
-    });
-
-    if (!message) {
-      if (fetchError?.code === 10008) {
-        await doc.ref
-          .update({
-            messageId: null,
-            messageDeletedAt: new Date(),
-          })
-          .catch(() => {});
-        continue;
-      }
-
-      cleanupFailures += 1;
-      continue;
-    }
-
     try {
-      await message.delete();
-      deletedProposalMessages += 1;
+      const deleted = await deletePollMessage(
+        interaction,
+        proposal.channelId,
+        proposal.messageId,
+      );
+      if (deleted) deletedProposalMessages += 1;
       await doc.ref
         .update({
           messageId: null,
@@ -1141,26 +1278,41 @@ async function closePoll(interaction, db) {
     }
   }
 
-  const sorted = sortProposals(proposals.docs);
-  const winner = sorted[0];
-  const winnerVotes = Number(winner?.voteCount || 0);
+  let resultPinned = false;
+  if (resultMessage) {
+    try {
+      await resultMessage.pin("Résultats du sondage communautaire");
+      resultPinned = true;
+    } catch (error) {
+      console.warn("[community-poll] result pin failed:", error?.message || error);
+      warnings.push(
+        "⚠️ Le résultat est publié, mais je n'ai pas pu l'épingler. Vérifie que le bot possède la permission **Gérer les messages** dans ce salon.",
+      );
+    }
+    if (resultPinned && resultRecorded) await recordMetadata({ resultPinned: true });
+  }
+
   const replyLines = [
-    winner
-      ? `🏆 Sondage clôturé. **${winner.name}** arrive en tête avec **${winnerVotes} vote${winnerVotes > 1 ? "s" : ""}**.`
-      : "✅ Sondage clôturé. Aucune proposition n'avait été ajoutée.",
+    resultMessage
+      ? `🏆 Sondage clôturé. [Voir le résultat](https://discord.com/channels/${poll.guildId}/${poll.channelId}/${resultMessage.id})`
+      : "✅ Sondage clôturé.",
   ];
 
+  if (resultPinned) replyLines.push("📌 Le résultat est épinglé dans le salon.");
+  if (mainRemoved && poll.messageId) {
+    replyLines.push("🧹 L'ancien message du sondage a été supprimé.");
+  }
   if (deletedProposalMessages > 0) {
     replyLines.push(
       `🧹 ${deletedProposalMessages} message${deletedProposalMessages > 1 ? "s" : ""} de proposition supprimé${deletedProposalMessages > 1 ? "s" : ""} du salon.`,
     );
   }
-  if (!unpinResult.ok) replyLines.push(unpinResult.warning);
   if (cleanupFailures > 0) {
     replyLines.push(
       `⚠️ ${cleanupFailures} message${cleanupFailures > 1 ? "s" : ""} de proposition n'${cleanupFailures > 1 ? "ont" : "a"} pas pu être supprimé${cleanupFailures > 1 ? "s" : ""}.`,
     );
   }
+  replyLines.push(...warnings);
 
   await interaction.editReply(replyLines.join("\n"));
 }
@@ -1277,6 +1429,7 @@ async function registerCommunityPollEvents({
 module.exports = {
   COMMUNITY_POLL_COMMAND_NAME,
   registerCommunityPollEvents,
+  buildFinalResultEmbed,
   buildPublicCommunityPollSnapshot,
   syncPublicCommunityPollSnapshot,
   queuePublicCommunityPollSync,
