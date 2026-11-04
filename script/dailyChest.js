@@ -74,21 +74,21 @@ const NOTHING_MESSAGES = Object.freeze([
 ]);
 
 const TEST_REWARD_AMOUNTS = Object.freeze({
-  pops: { small: 15, rare: 150 },
+  pops: { small: 225, rare: 500 },
   exp: { small: 15, rare: 150 },
   quest_bonus: { small: 1, legendary: 10 },
 });
 
 const RARE_EXTRA_QUEST_BONUS_AMOUNT = 1;
-const LEGENDARY_EXTRA_POPS_AMOUNT = 250;
+const LEGENDARY_EXTRA_POPS_RANGE = Object.freeze({ min: 600, max: 1000 });
 const LEGENDARY_EXTRA_EXP_AMOUNT = 200;
 
 const REWARD_TABLE = Object.freeze([
   { type: "nothing", tier: "common", weight: 34, min: 0, max: 0 },
-  { type: "pops", tier: "small", weight: 28, min: 5, max: 25 },
+  { type: "pops", tier: "small", weight: 28, min: 100, max: 350 },
   { type: "exp", tier: "small", weight: 22, min: 5, max: 25 },
   { type: "quest_bonus", tier: "small", weight: 10, min: 1, max: 1 },
-  { type: "pops", tier: "rare", weight: 4, min: 100, max: 250 },
+  { type: "pops", tier: "rare", weight: 4, min: 300, max: 700 },
   { type: "exp", tier: "rare", weight: 1.5, min: 100, max: 200 },
   { type: "quest_bonus", tier: "legendary", weight: 0.5, min: 10, max: 10 },
 ]);
@@ -270,7 +270,11 @@ function expandDailyChestRewards(reward, rng = Math.random) {
         {
           type: "pops",
           tier: "legendary",
-          amount: LEGENDARY_EXTRA_POPS_AMOUNT,
+          amount: randomInt(
+            LEGENDARY_EXTRA_POPS_RANGE.min,
+            LEGENDARY_EXTRA_POPS_RANGE.max,
+            rng,
+          ),
         },
         rng,
       ),
@@ -941,6 +945,7 @@ async function openDailyChest(
   }
 
   const plannedReward = normalizeReward(reward, rng);
+  // Resolve random gains once so transaction retries reuse the same bundle.
   const plannedRewards = expandDailyChestRewards(plannedReward, rng);
   const communityLevelConfig =
     plannedRewards.some((entry) => entry.type === "exp")
