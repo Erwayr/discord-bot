@@ -1,4 +1,7 @@
 "use strict";
+const { randomUUID } = require("node:crypto");
+const { FieldPath, FieldValue } = require("firebase-admin/firestore");
+const { isExcludedUserLike } = require("../helper/excludedUsers");
 const { LIVE_REWARD_DEFAULTS, isLiveRewardV2, rewardConfigForStream,
   recordPodiumMessage } = require("./live-rewards.shared.cjs");
 
@@ -742,94 +745,115 @@ function applyCommunityLevelUptime({
   };
 }
 
-function needsCommunityRankPatch(data = {}, rank, rankName, config = {}) {
-  if (!isObject(data.communityLevel)) return true;
+// These are literal root fields accidentally written by set({merge:true}).
+// FieldPath(field) below deletes the literal key, not the nested metadata.
+const LITERAL_RANK_FIELDS = Object.freeze([
+  "communityLevel.rank", "communityLevel.rankName", "communityLevel.updatedAt",
+]);
 
-  const community = data.communityLevel;
-  if (toInt(community.rank, 0) !== rank) return true;
-  if (firstText(community.rankName) !== rankName) return true;
-
-  if (config.legacyDoubleWrite) {
-    if (toInt(data.wizebotRank, 0) !== rank) return true;
-    if (firstText(data.wizebotRankName) !== rankName) return true;
-  }
-
-  return false;
+function isExcludedFromCommunityRanks(id, data) {
+  return isExcludedUserLike({ ...data, __docId: id }) ||
+    [id, data.pseudo, data.login, data.display_name, data.displayName]
+      .some(value => String(value || "").trim().toLowerCase() === "erwayr");
 }
 
-async function recalculateCommunityLevelRanks(db, rawConfig = {}) {
+function buildCommunityRankPlan(followerDocs, participantDocs, rawConfig = {}, nowMs = Date.now()) {
   const config = resolveCommunityLevelConfig(rawConfig);
-  if (!config.enabled) return { updated: 0, skipped: true };
-
-  const snap = await db.collection("followers_all_time").get();
-  const rows = [];
-  snap.forEach((doc) => {
+  const rows = followerDocs.map(doc => {
     const data = doc.data() || {};
-    if (!hasCommunityLevelData(data)) return;
-    const community = normalizeCommunityLevel(data, config);
-    if (community.level <= 0 && community.xpTotal <= 0) return;
-    rows.push({
-      doc,
-      data,
-      community,
-      login: String(data.pseudo || doc.id || "").toLowerCase(),
-    });
+    return { doc, data, community: normalizeCommunityLevel(data, config),
+      login: String(data.pseudo || doc.id).trim().toLowerCase() };
   });
+  const ranked = rows.filter(row => !isExcludedFromCommunityRanks(row.doc.id, row.data) &&
+    hasCommunityLevelData(row.data) && (row.community.level > 0 || row.community.xpTotal > 0));
+  ranked.sort((a, b) => b.community.level - a.community.level ||
+    b.community.xpTotal - a.community.xpTotal || a.login.localeCompare(b.login) ||
+    a.doc.id.localeCompare(b.doc.id));
+  const ranks = new Map(ranked.map((row, index) => [row.doc.id, index + 1]));
+  const participants = new Map(participantDocs.map(doc => [doc.id.toLowerCase(), doc]));
+  const changes = [];
 
-  rows.sort((a, b) => {
-    if (b.community.level !== a.community.level) return b.community.level - a.community.level;
-    if (b.community.xpTotal !== a.community.xpTotal) return b.community.xpTotal - a.community.xpTotal;
-    return a.login.localeCompare(b.login);
-  });
-
-  let batch = db.batch();
-  let pending = 0;
-  let updated = 0;
-  const nowMs = Date.now();
-
-  async function commitPending() {
-    if (!pending) return;
-    await batch.commit();
-    batch = db.batch();
-    pending = 0;
-  }
-
-  for (let i = 0; i < rows.length; i += 1) {
-    const rank = i + 1;
-    const row = rows[i];
+  function addChange(doc, rank, rankName) {
+    const data = doc.data() || {};
+    const community = isObject(data.communityLevel) ? data.communityLevel : {};
     const patch = {};
-    const rankName = titleForLevel(row.community.level, config.rankTitles);
-    if (!needsCommunityRankPatch(row.data, rank, rankName, config)) {
-      continue;
-    }
-
-    if (isObject(row.data.communityLevel)) {
+    // Unranked profiles need an explicit zero only when clearing an old rank.
+    // For legacy profiles, leave XP/level in place; the normalizer keeps its fallback.
+    if ((rank > 0 || normalizeCommunityLevel(data, config).rank !== 0) &&
+        (community.rank == null || community.rank !== rank)) {
       patch["communityLevel.rank"] = rank;
+    }
+    if (rankName !== undefined && community.rankName !== rankName) {
       patch["communityLevel.rankName"] = rankName;
-      patch["communityLevel.updatedAt"] = nowMs;
-    } else {
-      const migrated = extractCommunityLevelFields(row.data, config).communityLevel || {};
-      patch.communityLevel = {
-        ...migrated,
-        rank,
-        rankName,
-        source: migrated.source || "legacy_migration",
-        updatedAt: nowMs,
-      };
     }
     if (config.legacyDoubleWrite) {
-      patch.wizebotRank = rank;
-      patch.wizebotRankName = rankName;
+      if ((rank > 0 || toInt(data.wizebotRank, 0) !== 0) && data.wizebotRank !== rank) {
+        patch.wizebotRank = rank;
+      }
+      if (rankName !== undefined && data.wizebotRankName !== rankName) patch.wizebotRankName = rankName;
     }
-
-    batch.set(row.doc.ref, patch, { merge: true });
-    pending += 1;
-    updated += 1;
-    if (pending >= config.rankBatchSize) await commitPending();
+    if (Object.keys(patch).length) patch["communityLevel.updatedAt"] = nowMs;
+    const deleteFields = LITERAL_RANK_FIELDS.filter(field => Object.hasOwn(data, field));
+    if (Object.keys(patch).length || deleteFields.length) {
+      changes.push({ ref: doc.ref, rank, patch, deleteFields,
+        before: { rank: normalizeCommunityLevel(data, config).rank,
+          rankName: community.rankName ?? null,
+          literalFields: Object.fromEntries(deleteFields.map(field => [field, data[field]])) } });
+    }
   }
 
-  await commitPending();
-  return { updated, skipped: false };
+  for (const row of rows) {
+    const rank = ranks.get(row.doc.id) || 0;
+    const rankName = rank > 0 ? titleForLevel(row.community.level, config.rankTitles) : undefined;
+    addChange(row.doc, rank, rankName);
+    // Canonical document IDs are the join key, never a mutable display name.
+    const participant = participants.get(row.doc.id.toLowerCase());
+    if (participant) addChange(participant, rank, rankName);
+  }
+  return changes;
+}
+
+async function recalculateCommunityLevelRanks(db, rawConfig = {}, options = {}) {
+  const config = resolveCommunityLevelConfig(rawConfig);
+  if (!config.enabled) return { updated: 0, skipped: true };
+  const followers = [];
+  (await db.collection("followers_all_time").get()).forEach(doc => followers.push(doc));
+  if (!followers.length) return { updated: 0, skipped: false };
+  const participants = [];
+  (await db.collection("participants").get()).forEach(doc => participants.push(doc));
+  const changes = buildCommunityRankPlan(followers, participants, config, options.nowMs);
+  if (options.onPlan) await options.onPlan(changes);
+  if (options.dryRun || !changes.length) return { updated: changes.length, skipped: false };
+
+  const batchSize = Math.min(450, config.rankBatchSize);
+  let committed = 0;
+  let failure;
+  try {
+    for (let offset = 0; offset < changes.length; offset += batchSize) {
+      const batch = db.batch();
+      const chunk = changes.slice(offset, offset + batchSize);
+      for (const change of chunk) {
+        const fields = Object.entries(change.patch).flatMap(([field, value]) => [field, value]);
+        fields.push(...change.deleteFields.flatMap(field => [new FieldPath(field), FieldValue.delete()]));
+        batch.update(change.ref, ...fields);
+      }
+      await batch.commit();
+      committed += chunk.length;
+    }
+  } catch (error) {
+    failure = error;
+  }
+  // Even a partially completed repair must invalidate snapshots of old ranks.
+  if (committed) {
+    try {
+      await db.collection("function_cache").doc("public_home_followers_v1")
+        .set({ revision: randomUUID() }, { merge: true });
+    } catch (error) {
+      failure = failure ? new AggregateError([failure, error], "Rank refresh and cache invalidation failed") : error;
+    }
+  }
+  if (failure) throw failure;
+  return { updated: changes.length, skipped: false };
 }
 
 module.exports = {
@@ -847,4 +871,5 @@ module.exports = {
   applyFlatCommunityLevelXp,
   applyCommunityLevelUptime,
   recalculateCommunityLevelRanks,
+  buildCommunityRankPlan,
 };

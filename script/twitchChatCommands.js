@@ -438,7 +438,7 @@ async function buildTwitchCommandResponse({
   if (type === "help") return buildTwitchHelpResponse();
 
   const data =
-    typeof loadProfile === "function"
+    type !== "rank" && typeof loadProfile === "function"
       ? await loadProfile(login)
       : await loadFollowerDoc(db, login);
   if (!data) return `${mention} Profil introuvable pour le moment.`;

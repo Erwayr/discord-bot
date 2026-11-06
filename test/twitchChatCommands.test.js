@@ -301,7 +301,7 @@ test("ignores target arguments and reads only the sender profile", async () => {
   assert.match(sent[0], /^@Alice Niveau 42/);
 });
 
-test("caches Twitch command profile reads within the configured ttl", async () => {
+test("level reads stay cached while rank commands always read the current profile", async () => {
   const db = new FakeDb({
     alice: { communityLevel: { level: 42, rank: 7, xpTotal: 1234 } },
   });
@@ -327,11 +327,20 @@ test("caches Twitch command profile reads within the configured ttl", async () =
   await commands.handleMessage({
     login: "alice",
     displayName: "Alice",
+    message: "!level",
+  });
+  db.docs.alice = { communityLevel: { level: 43, rank: 1, xpTotal: 2000 } };
+  now += 1000;
+  await commands.handleMessage({
+    login: "alice",
+    displayName: "Alice",
     message: "!rank",
   });
 
-  assert.deepEqual(db.reads, ["alice"]);
-  assert.equal(sent.length, 2);
+  assert.deepEqual(db.reads, ["alice", "alice"]);
+  assert.equal(sent.length, 3);
+  assert.match(sent[1], /Niveau 42/);
+  assert.equal(sent[2], "@Alice #1 au classement communautaire - Niveau 43");
 });
 
 test("level command includes pending live chat deltas", async () => {
