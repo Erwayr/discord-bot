@@ -6,6 +6,8 @@ const { applyQuestCycleActivity } = require("./quest-cycle.logic.cjs");
 const admin = require("firebase-admin");
 const { isExcludedLogin } = require("../helper/excludedUsers");
 const { buildHalloweenPresencePatch, mergeQualifyingPresenceMs } = require("./seasonalPresenceRewards");
+const { NOEL_2026_EVENT } = require("./seasonal-cosmetics.shared.cjs");
+const { prepareNoelPackReconciliation } = require("./noel-pack.shared.cjs");
 const { rewardVersionForStart, isLiveRewardV2 } = require("./live-rewards.shared.cjs");
 const {
   applyLiveUptimeProgress,
@@ -865,6 +867,10 @@ function createQuestStorage(db, options = {}) {
       }
 
       const data = snap.exists ? snap.data() || {} : {};
+      // Receipt replay follows the ordinary profile gate; event rewards alone
+      // never create a follower. This also recovers a grant after the event.
+      const noelReceipt = /^\d{1,25}$/.test(String(twitchUserId)) && Date.now() >= NOEL_2026_EVENT.startsAtMs
+        ? await tx.get(db.collection("guardian_costume_grants").doc(`${twitchUserId}_${NOEL_2026_EVENT.id}`)) : null;
       const workingData = { ...data };
       const lp = { ...(data.live_presence || {}) };
       const found = findStreamEntryAcrossMonths(lp, safeStreamId);
@@ -1129,12 +1135,25 @@ function createQuestStorage(db, options = {}) {
       }
       Object.assign(patch, buildHalloweenPresencePatch(data, seasonalPresenceAtMs, Date.now()));
 
+      const noel = noelReceipt?.exists ? prepareNoelPackReconciliation({
+        profile: { ...data, ...(!snap.exists ? { pseudo: docId, ...twitchIdentityFields(twitchUserId) } : {}), ...patch },
+        twitchUserId: String(twitchUserId), grant: noelReceipt.data(),
+      }) : null;
+
       if (snap.exists) {
-        tx.update(ref, patch);
+        const combined = { ...patch, ...noel?.update };
+        if (noel && patch.popsShop) {
+          // A delayed Halloween patch may already replace this parent map.
+          // Firestore forbids parent and dotted child paths in one update.
+          combined.popsShop = noel.profile.popsShop;
+          delete combined["popsShop.profileFrames.owned"];
+          delete combined["popsShop.experienceBars.owned"];
+        }
+        tx.update(ref, combined);
       } else {
         tx.set(
           ref,
-          {
+          noel?.profile || {
             pseudo: docId,
             ...twitchIdentityFields(twitchUserId),
             ...patch,

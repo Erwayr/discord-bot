@@ -190,6 +190,7 @@ function createTwitchChat({
   const guardianCostumeGrants = createGuardianCostumeGrants({
     db,
     persistenceDir: config.twitchLiveActivity?.persistenceDir,
+    resolveTwitchIdentity,
   });
   livePresenceTick?.setPresenceObservedHandler?.(guardianCostumeGrants.observePresence);
   livePresenceTick?.setPresenceObservationHandler?.(liveActivityBuffer.notePresenceObservation);

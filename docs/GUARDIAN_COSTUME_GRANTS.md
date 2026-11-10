@@ -1,4 +1,48 @@
-# Guardian Halloween costume grants
+# Guardian seasonal costume grants
+
+## Noël 2026: one presence receipt, three permanent cosmetics
+
+The full-body `noel-2026` outfit, frame `card-frame-game-noel-2026` and XP bar
+`game-noel-2026` are earned together by one real Helix chatter observation from
+December 1 through December 31, 2026, inclusive, in `Europe/Warsaw`:
+`2026-11-30T23:00:00Z <= observedAtMs < 2026-12-31T23:00:00Z`.
+No message, minimum watch time, follower profile or purchase is required to
+record that entitlement. The immutable authority is
+`guardian_costume_grants/{twitchUserId}_noel-2026`, using the same five fields as
+Halloween: `costumeId`, `twitchUserId`, `observedAtMs`, `streamId`, `unlockedAt`.
+
+After either a new receipt or an existing receipt, the bot resolves the stable
+Twitch ID with `allowCreate: false`, reads the canonical existing follower and
+stored receipt in a transaction, and uses the portable pure Noël helper to
+project all three private ownership maps atomically. Conflicting identity or an
+invalid receipt cannot produce rewards. No participant is created or updated;
+wallets, equipment and unrelated owned entries stay intact. Acquiring the pack
+does not equip it.
+
+The journal stores the observed login only as replay routing context, outside
+the receipt. A missing follower is a valid deferred state: the receipt survives
+and the journal remains pending until projection succeeds. Retry uses the
+existing minute/startup/shutdown cycle, even after the event closes. Normal
+activity profile creation keeps its existing ten-minute presence gate and
+replays the earlier receipt in that same creation transaction. Successful
+projection is acknowledged durably; restarts recognize both Noël and old
+Halloween completion records. Old observation rows without a costume ID still
+mean Halloween. The older Halloween frame/XP buffer is unchanged.
+
+The shared `guardian-costumes.shared.cjs`, `guardian-character.shared.cjs`,
+`seasonal-cosmetics.shared.cjs` and `noel-pack.shared.cjs` files must match the
+canonical site copies. No bot startup or production data write is needed for
+the focused offline checks:
+
+```powershell
+node --test test/noelPresencePack.test.js test/guardianCostumeGrants.test.js test/livePresenceTracker.test.js test/seasonalPresenceRewards.test.js test/questStorage.test.js
+node --check script/guardianCostumeGrants.js
+node --check script/questStorage.js
+node --check app/twitchChat.js
+node --check index.js
+```
+
+## Halloween 2026 compatibility
 
 `script/guardianCostumeGrants.js` permanently grants the `halloween-2026`
 costume on a real Helix live-presence tick from October 24 through November 7,

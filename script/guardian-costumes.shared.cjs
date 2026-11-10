@@ -1,8 +1,11 @@
 "use strict";
 const { COMMUNITY_PACK, LEGACY_COMMUNITY_PACK, isCommunityPackCosmeticId, normalizeCommunityPackGrant } = require("./community-pack.shared.cjs");
+const { NOEL_2026_EVENT, getSeasonalEventById } = require("./seasonal-cosmetics.shared.cjs");
+const { normalizeNoelPackGrant } = require("./noel-pack.shared.cjs");
 
 // Credential-free catalog, shared by the site, Functions and the presence bot.
 const HALLOWEEN_COSTUME_ID = "halloween-2026";
+const NOEL_COSTUME_ID = NOEL_2026_EVENT.costumeId;
 const COMMUNITY_ASTRAL_COSTUME_ID = LEGACY_COMMUNITY_PACK.costumeId;
 const COMMUNITY_BUS_DRIVER_COSTUME_ID = COMMUNITY_PACK.costumeId;
 const BASE_COSTUME = "none";
@@ -21,6 +24,14 @@ const COSTUMES = Object.freeze([Object.freeze({
   fallback: "assets/guardian/costumes/halloween-2026/fallback.png",
   appearanceMode: "full-body",
 }), Object.freeze({
+  id: NOEL_COSTUME_ID, eventId: NOEL_2026_EVENT.id,
+  title: "Lutin de Noël", label: "Lutin de Noël", edition: 2026,
+  description: "Un lutin complet à tête et oreilles pointues, bonnet rouge et vert, clochettes et tenue festive, édition Noël 2026.",
+  model: "assets/guardian/costumes/noel-2026/costume.glb",
+  thumbnail: "assets/guardian/costumes/noel-2026/preview.webp",
+  fallback: "assets/guardian/costumes/noel-2026/fallback.png",
+  appearanceMode: "full-body", acquisitionMode: "event-reward",
+}), Object.freeze({
   id: COMMUNITY_BUS_DRIVER_COSTUME_ID,
   title: "Chauffeur de la commu", label: "Chauffeur de la commu",
   description: "Veste jaune, casquette et détails de conducteur humoristique, assortis à la bordure de bus communautaire.",
@@ -37,14 +48,16 @@ const TWITCH_ID_FIELDS = Object.freeze(["twitch_id", "twitchId", "twitchUserId",
 function normalizeCostumeId(id) { return id === LEGACY_COMMUNITY_PACK.costumeId ? COMMUNITY_BUS_DRIVER_COSTUME_ID : id; }
 function getCostume(id) { return COSTUMES.find(costume => costume.id === normalizeCostumeId(id)) || null; }
 function getCostumeAppearanceMode(id) { return getCostume(id)?.appearanceMode || "full-body"; }
-function costumeEventState(now = Date.now()) {
+function costumeEventState(now = Date.now(), costumeId = HALLOWEEN_COSTUME_ID) {
   const at = Number(now);
-  if (!Number.isFinite(at) || at >= HALLOWEEN_EVENT_END_MS) return "closed";
-  return at < HALLOWEEN_EVENT_START_MS ? "upcoming" : "open";
+  const event = getSeasonalEventById(costumeId);
+  if (!event || !Number.isFinite(at) || at >= event.endsAtMs) return "closed";
+  return at < event.startsAtMs ? "upcoming" : "open";
 }
 function isCostumePresenceEligible(id, observedAtMs) {
-  return id === HALLOWEEN_COSTUME_ID && Number.isSafeInteger(observedAtMs)
-    && observedAtMs >= HALLOWEEN_EVENT_START_MS && observedAtMs < HALLOWEEN_EVENT_END_MS;
+  const event = getSeasonalEventById(id);
+  return Boolean(event && [HALLOWEEN_COSTUME_ID, NOEL_COSTUME_ID].includes(id) && Number.isSafeInteger(observedAtMs)
+    && observedAtMs >= event.startsAtMs && observedAtMs < event.endsAtMs);
 }
 function costumeGrantId(twitchUserId, id) {
   const userId = String(twitchUserId || "");
@@ -65,10 +78,11 @@ function ownsCostume(profile = {}, id) {
     const owned = profile?.guardianCosmetics?.costumes?.owned?.[candidate];
     if (owned?.costumeId !== candidate || !/^\d{1,25}$/.test(String(owned?.twitchUserId || ""))) return false;
     if (isCommunityPackCosmeticId(candidate) && !normalizeCommunityPackGrant(owned)) return false;
+    if (candidate === NOEL_COSTUME_ID && !normalizeNoelPackGrant(owned)) return false;
     return linkedIds.length > 0 && linkedIds.every(value => value === String(owned.twitchUserId));
   });
 }
 
-module.exports = { HALLOWEEN_COSTUME_ID, COMMUNITY_ASTRAL_COSTUME_ID, COMMUNITY_BUS_DRIVER_COSTUME_ID, BASE_COSTUME, COSTUMES, COSTUME_TIMEZONE,
+module.exports = { HALLOWEEN_COSTUME_ID, NOEL_COSTUME_ID, COMMUNITY_ASTRAL_COSTUME_ID, COMMUNITY_BUS_DRIVER_COSTUME_ID, BASE_COSTUME, COSTUMES, COSTUME_TIMEZONE,
   HALLOWEEN_EVENT_START_MS, HALLOWEEN_EVENT_END_MS, TWITCH_ID_FIELDS,
   normalizeCostumeId, getCostume, getCostumeAppearanceMode, costumeEventState, isCostumePresenceEligible, ownsCostume, costumeGrantId };
