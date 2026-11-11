@@ -6,6 +6,7 @@ const { ChannelType, PermissionFlagsBits } = require("discord.js");
 
 const MAX_GIF_BYTES = 8 * 1024 * 1024;
 const TEST_PATH = "/admin/discord/gift-test";
+const PACK_PATH = "/admin/discord/packs";
 const REQUIRED_PERMISSIONS = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles];
 const snowflake = (value) => typeof value === "string" && /^\d{17,20}$/.test(value);
 const testError = (code, status) => Object.assign(new Error(code), { code, status });
@@ -27,7 +28,7 @@ async function authenticateGiftAdmin(req, config, fetchImpl) {
   return String(identity.user_id);
 }
 
-function createDiscordGiftTestService({ client, config, now = Date.now }) {
+function createDiscordGiftTestService({ client, config, now = Date.now, presentation = false }) {
   const deliveries = new Map();
   const guildAllowed = (guild) => Boolean(guild && client.guilds.cache.has(guild.id)
     && (!config.discord.guildId || guild.id === config.discord.guildId));
@@ -54,18 +55,22 @@ function createDiscordGiftTestService({ client, config, now = Date.now }) {
     return channels.sort((a, b) => a.guildName.localeCompare(b.guildName, "fr") || a.position - b.position || a.name.localeCompare(b.name, "fr"));
   }
 
-  async function sendPreview({ adminId, channelId, requestId, filename, buffer }) {
+  async function sendPreview({ adminId, channelId, requestId, filename, buffer, content, packId }) {
     ready();
     if (!snowflake(channelId)) throw testError("invalid_discord_channel", 400);
     if (typeof requestId !== "string" || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId)) throw testError("invalid_test_request", 400);
-    if (typeof filename !== "string" || !/^[a-z0-9_]{1,25}\.gif$/.test(filename)) throw testError("invalid_gif_filename", 400);
+    if (presentation) {
+      if (typeof packId !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(packId) || packId.length > 80
+        || filename !== `pack-${packId}.gif`) throw testError("invalid_gif_filename", 400);
+      if (typeof content !== "string" || !content.trim() || content.length > 1500) throw testError("invalid_pack_message", 400);
+    } else if (typeof filename !== "string" || !/^[a-z0-9_]{1,25}\.gif$/.test(filename)) throw testError("invalid_gif_filename", 400);
     if (!Buffer.isBuffer(buffer) || buffer.length < 13 || !/^GIF8[79]a$/.test(buffer.subarray(0, 6).toString("ascii"))) throw testError("invalid_gif_file", 400);
     if (buffer.length > MAX_GIF_BYTES) throw testError("gif_too_large", 413);
     for (const [key, entry] of deliveries) {
       if (entry.completedAt && now() - entry.completedAt > 30 * 60_000) deliveries.delete(key);
     }
-    const key = `${adminId}:${requestId}`;
-    const signature = createHash("sha256").update(`${channelId}:${filename}:`).update(buffer).digest("hex");
+    const key = `${presentation ? "pack:" : ""}${adminId}:${requestId}`;
+    const signature = createHash("sha256").update(presentation ? JSON.stringify([channelId, filename, content, packId]) : `${channelId}:${filename}:`).update(buffer).digest("hex");
     const previous = deliveries.get(key);
     if (previous) {
       if (previous.signature !== signature) throw testError("test_request_conflict", 409);
@@ -79,7 +84,7 @@ function createDiscordGiftTestService({ client, config, now = Date.now }) {
       const member = await channel.guild.members.fetchMe({ force: true });
       if (!channelAllowed(channel, member)) throw testError("discord_channel_forbidden", 403);
       const message = await channel.send({
-        content: `🧪 **Test cadeau Discord**\nMerci de ta fidelite, ${filename.slice(0, -4)} !`,
+        content: presentation ? content : `🧪 **Test cadeau Discord**\nMerci de ta fidelite, ${filename.slice(0, -4)} !`,
         files: [{ attachment: buffer, name: filename }],
         allowedMentions: { parse: [] },
         nonce: createHash("sha256").update(key).digest("hex").slice(0, 24), enforceNonce: true,
@@ -99,18 +104,20 @@ function createDiscordGiftTestService({ client, config, now = Date.now }) {
   return { listChannels, sendPreview };
 }
 
-function mountDiscordGiftTestRoutes({ app, client, config, fetchImpl = fetch, logger = console }) {
-  const service = createDiscordGiftTestService({ client, config });
+function mountDiscordGiftTestRoutes({ app, client, config, fetchImpl = fetch, logger = console, presentation = false }) {
+  const basePath = presentation ? PACK_PATH : TEST_PATH;
+  const service = createDiscordGiftTestService({ client, config, presentation });
   function failure(res, error) {
     let code = error.code, status = error.status;
     if ([50001, 50013].includes(Number(code))) { code = "discord_channel_forbidden"; status = 403; }
     else if (Number(code) === 10003) { code = "invalid_discord_channel"; status = 404; }
     else if (error.type === "entity.too.large") { code = "gif_too_large"; status = 413; }
+    else if (error.type === "entity.parse.failed") { code = "invalid_pack_request"; status = 400; }
     else if (!Number.isInteger(status) || typeof code !== "string") { code = "discord_test_unconfirmed"; status = 502; }
-    logger.warn("[discord-gift-test] request failed", { code, status });
+    logger.warn(presentation ? "[discord-packs] request failed" : "[discord-gift-test] request failed", { code, status });
     if (!res.destroyed) res.status(status).json({ ok: false, error: code });
   }
-  app.use(TEST_PATH, (req, res, next) => {
+  app.use(basePath, (req, res, next) => {
     res.set("Cache-Control", "no-store");
     res.vary("Origin");
     const origin = req.header("origin");
@@ -125,21 +132,33 @@ function mountDiscordGiftTestRoutes({ app, client, config, fetchImpl = fetch, lo
     try { req.giftAdminId = await authenticateGiftAdmin(req, config, fetchImpl); next(); }
     catch (error) { failure(res, error); }
   };
-  app.get(`${TEST_PATH}/channels`, authenticate, async (req, res) => {
+  app.get(`${basePath}/channels`, authenticate, async (req, res) => {
     try { res.json({ ok: true, channels: await service.listChannels() }); }
     catch (error) { failure(res, error); }
   });
-  app.post(`${TEST_PATH}/send`, authenticate, (req, res, next) => {
-    if (!req.is("image/gif")) return failure(res, testError("invalid_gif_type", 415));
+  app.post(`${basePath}/send`, authenticate, (req, res, next) => {
+    if (!req.is(presentation ? "application/json" : "image/gif")) return failure(res, testError("invalid_gif_type", 415));
     next();
-  }, bodyParser.raw({ type: "image/gif", limit: MAX_GIF_BYTES, inflate: false }), async (req, res) => {
+  }, presentation ? bodyParser.json({ limit: 12 * 1024 * 1024, inflate: false })
+    : bodyParser.raw({ type: "image/gif", limit: MAX_GIF_BYTES, inflate: false }), async (req, res) => {
     try {
-      const delivery = await service.sendPreview({ adminId: req.giftAdminId, channelId: req.query.channelId,
-        requestId: req.query.requestId, filename: req.query.filename, buffer: req.body });
+      let payload;
+      if (presentation) {
+        const body = req.body || {}, encoded = body.gifBase64;
+        if (typeof encoded !== "string") throw testError("invalid_gif_file", 400);
+        if (encoded.length > 4 * Math.ceil(MAX_GIF_BYTES / 3)) throw testError("gif_too_large", 413);
+        if (!encoded.length || encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw testError("invalid_gif_file", 400);
+        const buffer = Buffer.from(encoded, "base64");
+        if (buffer.toString("base64") !== encoded) throw testError("invalid_gif_file", 400);
+        payload = { channelId: body.channelId, requestId: body.requestId, filename: body.filename,
+          content: body.content, packId: body.packId, buffer };
+      } else payload = { channelId: req.query.channelId, requestId: req.query.requestId, filename: req.query.filename, buffer: req.body };
+      const delivery = await service.sendPreview({ ...payload, adminId: req.giftAdminId });
       res.json({ ok: true, ...delivery });
     } catch (error) { failure(res, error); }
   });
-  app.use(TEST_PATH, (error, req, res, next) => failure(res, error));
+  app.use(basePath, (error, req, res, next) => failure(res, error));
 }
 
-module.exports = { MAX_GIF_BYTES, createDiscordGiftTestService, mountDiscordGiftTestRoutes };
+const mountDiscordPackRoutes = options => mountDiscordGiftTestRoutes({ ...options, presentation: true });
+module.exports = { MAX_GIF_BYTES, createDiscordGiftTestService, mountDiscordGiftTestRoutes, mountDiscordPackRoutes };
